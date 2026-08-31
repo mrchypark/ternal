@@ -55,6 +55,8 @@ if workflow.count("-e DOCKER_CONFIG=/auth") != 2:
     raise SystemExit("both private-registry scanners must use the mounted Docker auth directory")
 if "/root/.docker/config.json" in workflow:
     raise SystemExit("scanner authentication must not assume the container runs as root")
+if re.search(r"(?:tar -tzf|unzip -Z1).*\| grep -Eq", workflow):
+    raise SystemExit("archive inventory checks must consume the full pipe under pipefail")
 
 inventories = re.findall(r"expected='(.*?)'\n\s+actual=", workflow, re.DOTALL)
 if len(inventories) != 2:
