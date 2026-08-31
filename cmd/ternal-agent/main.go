@@ -340,6 +340,10 @@ func supervise(parent context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
+	if err := heartbeat(ctx, cfg, "starting"); isUnauthorized(err) {
+		_ = writeStatus(cfg.StatusFile, runtimeStatus{Service: "revoked", EndpointID: endpointID, Child: "stopped", LastError: "device authorization revoked", UpdatedAt: time.Now().Unix()})
+		return err
+	}
 	for {
 		child := exec.CommandContext(ctx, cfg.Pigeons, roostArgs(cfg)...)
 		child.Stdout, child.Stderr = os.Stderr, os.Stderr
@@ -350,9 +354,12 @@ func supervise(parent context.Context, cfg config) error {
 		exit := make(chan error, 1)
 		go func() { exit <- child.Wait() }()
 		ticker := time.NewTicker(cfg.HeartbeatEvery)
-		_ = heartbeat(ctx, cfg, "pigeons-running")
-		if cfg.AuthorizedKeysPath != "" {
-			_ = syncAuthorizedKeys(ctx, cfg, cfg.AuthorizedKeysPath)
+		if err := syncControlPlane(ctx, cfg, "pigeons-running"); isUnauthorized(err) {
+			ticker.Stop()
+			_ = child.Process.Kill()
+			<-exit
+			_ = writeStatus(cfg.StatusFile, runtimeStatus{Service: "revoked", EndpointID: endpointID, Child: "stopped", LastError: "device authorization revoked", UpdatedAt: time.Now().Unix()})
+			return err
 		}
 		for {
 			select {
@@ -375,11 +382,13 @@ func supervise(parent context.Context, cfg config) error {
 				}
 				goto restart
 			case <-ticker.C:
-				heartbeatErr := heartbeat(ctx, cfg, "pigeons-running")
-				if cfg.AuthorizedKeysPath != "" {
-					if syncErr := syncAuthorizedKeys(ctx, cfg, cfg.AuthorizedKeysPath); heartbeatErr == nil {
-						heartbeatErr = syncErr
-					}
+				heartbeatErr := syncControlPlane(ctx, cfg, "pigeons-running")
+				if isUnauthorized(heartbeatErr) {
+					ticker.Stop()
+					_ = child.Process.Kill()
+					<-exit
+					_ = writeStatus(cfg.StatusFile, runtimeStatus{Service: "revoked", EndpointID: endpointID, Child: "stopped", LastError: "device authorization revoked", UpdatedAt: time.Now().Unix()})
+					return heartbeatErr
 				}
 				state := runtimeStatus{Service: "healthy", EndpointID: endpointID, Child: "running", UpdatedAt: time.Now().Unix()}
 				if heartbeatErr != nil {
@@ -390,6 +399,18 @@ func supervise(parent context.Context, cfg config) error {
 		}
 	restart:
 	}
+}
+
+func syncControlPlane(ctx context.Context, cfg config, status string) error {
+	heartbeatErr := heartbeat(ctx, cfg, status)
+	if cfg.AuthorizedKeysPath == "" {
+		return heartbeatErr
+	}
+	syncErr := syncAuthorizedKeys(ctx, cfg, cfg.AuthorizedKeysPath)
+	if isUnauthorized(syncErr) || heartbeatErr == nil {
+		return syncErr
+	}
+	return heartbeatErr
 }
 
 func loadDevice(cfg config) (ed25519.PrivateKey, deviceauth.Identity, string, error) {
@@ -482,9 +503,18 @@ func request(ctx context.Context, base, method, path string, body io.Reader, hea
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		response.Body.Close()
-		return nil, fmt.Errorf("API returned HTTP %d", response.StatusCode)
+		return nil, &apiStatusError{Code: response.StatusCode}
 	}
 	return response, nil
+}
+
+type apiStatusError struct{ Code int }
+
+func (e *apiStatusError) Error() string { return fmt.Sprintf("API returned HTTP %d", e.Code) }
+
+func isUnauthorized(err error) bool {
+	var status *apiStatusError
+	return errors.As(err, &status) && status.Code == http.StatusUnauthorized
 }
 
 func validateAuthorizedKeys(body []byte) error {

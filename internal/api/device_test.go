@@ -18,6 +18,9 @@ import (
 )
 
 func TestSignedDeviceHeartbeatAndAuthorizedKeys(t *testing.T) {
+	t.Setenv("TERNAL_DEV_HEADERS", "1")
+	const relaySecret = "relay-secret-for-device-revocation-test"
+	t.Setenv("TERNAL_RELAY_ACCESS_TOKEN", relaySecret)
 	ctx := context.Background()
 	s, err := store.Open(ctx, t.TempDir())
 	if err != nil {
@@ -110,6 +113,10 @@ func TestSignedDeviceHeartbeatAndAuthorizedKeys(t *testing.T) {
 	if keysRes.Code != http.StatusOK || keysRes.Body.String() != key+"\n" {
 		t.Fatalf("keys status=%d body=%q", keysRes.Code, keysRes.Body.String())
 	}
+	clientEndpointID := strings.Repeat("b", 64)
+	if _, err := s.CreateRelayAccessGrant(ctx, device.HostID, clientEndpointID, "user-1", 300); err != nil {
+		t.Fatal(err)
+	}
 
 	stale := keysReq.Clone(context.Background())
 	stale.Header = keysReq.Header.Clone()
@@ -118,5 +125,41 @@ func TestSignedDeviceHeartbeatAndAuthorizedKeys(t *testing.T) {
 	router.ServeHTTP(staleRes, stale)
 	if staleRes.Code != http.StatusUnauthorized {
 		t.Fatalf("stale signed request status=%d", staleRes.Code)
+	}
+
+	if err := s.DeleteDevice(ctx, device.ID); err != nil {
+		t.Fatal(err)
+	}
+	revokedHeartbeatReq := httptest.NewRequest(http.MethodPost, "/agents/heartbeat", strings.NewReader(string(heartbeatBody)))
+	revokedHeartbeatReq.Header.Set("Content-Type", "application/json")
+	revokedHeartbeat := httptest.NewRecorder()
+	router.ServeHTTP(revokedHeartbeat, revokedHeartbeatReq)
+	if revokedHeartbeat.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked heartbeat status=%d", revokedHeartbeat.Code)
+	}
+
+	for name, testCase := range map[string][3]string{
+		"ssh grant":   {http.MethodPost, "/access/ssh", `{"host_id":"` + device.HostID + `","ssh_user":"ops"}`},
+		"relay grant": {http.MethodPost, "/access/relay-grants", `{"host_id":"` + device.HostID + `","client_endpoint_id":"` + clientEndpointID + `","ttl":300}`},
+		"discovery":   {http.MethodGet, "/access/discovery/" + device.HostID, ""},
+	} {
+		method, path, body := testCase[0], testCase[1], testCase[2]
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("X-Ternal-User", "admin")
+		req.Header.Set("X-Ternal-Groups", "ternal-admins")
+		req.Header.Set("X-CSRF-Token", "dev-csrf")
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		if res.Code != http.StatusNotFound {
+			t.Errorf("%s on revoked host status=%d body=%s", name, res.Code, res.Body.String())
+		}
+	}
+	relayReq := httptest.NewRequest(http.MethodPost, "/internal/iroh-relay/access", nil)
+	relayReq.Header.Set("Authorization", "Bearer "+relaySecret)
+	relayReq.Header.Set("X-Iroh-Nodeid", clientEndpointID)
+	relayRes := httptest.NewRecorder()
+	router.ServeHTTP(relayRes, relayReq)
+	if relayRes.Code != http.StatusForbidden || relayRes.Body.String() != "false" {
+		t.Fatalf("revoked relay callback status/body=%d %q", relayRes.Code, relayRes.Body.String())
 	}
 }

@@ -561,7 +561,11 @@ func (s *Server) handleIssueSSHCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	if device == nil || !core.ValidHostKeyFingerprint(device.SSHHostKeyFingerprint) {
+	if device == nil || device.State == "revoked" {
+		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
+	if !core.ValidHostKeyFingerprint(device.SSHHostKeyFingerprint) {
 		writeError(w, http.StatusConflict, "host has no verified SSH host-key fingerprint")
 		return
 	}
@@ -623,7 +627,7 @@ func (s *Server) handleSSHConfig(w http.ResponseWriter, r *http.Request) {
 	for _, h := range visible {
 		device, deviceErr := s.store.GetDeviceByHostID(r.Context(), h.ID)
 		discovery, discoveryErr := s.store.GetEndpointDiscovery(r.Context(), h.ID)
-		if deviceErr != nil || discoveryErr != nil || device == nil || discovery == nil {
+		if deviceErr != nil || discoveryErr != nil || device == nil || device.State == "revoked" || discovery == nil {
 			continue
 		}
 		cmd, err := core.BuildStrictGrantAwareSSHCommand("ternalctl", h.ID, h.EndpointID, h.SSHUser, h.SSHPort, device.SSHHostKeyFingerprint, &core.RelayConfig{RelayURLs: discovery.RelayURLs}, discovery.DirectAddresses)
@@ -670,6 +674,15 @@ func (s *Server) handleIssueRelayGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "host not found")
 		return
 	}
+	device, err := s.store.GetDeviceByHostID(r.Context(), host.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if device == nil || device.State == "revoked" {
+		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
 	if !identity.IsAdmin {
 		policies, err := s.store.ListPolicies(r.Context())
 		if err != nil {
@@ -705,6 +718,15 @@ func (s *Server) handleGetEndpointDiscovery(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if host == nil || !s.canAccessHost(r, host, host.SSHUser) {
+		writeError(w, http.StatusNotFound, "discovery not found")
+		return
+	}
+	device, err := s.store.GetDeviceByHostID(r.Context(), host.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	if device == nil || device.State == "revoked" {
 		writeError(w, http.StatusNotFound, "discovery not found")
 		return
 	}
