@@ -243,8 +243,8 @@ jobs:
           sbom-amd64.spdx.json
           sbom-arm64.spdx.json
           signature-verification.json
-          ternal-agent-linux-amd64.tar.gz
           ternal-'"$version"'.tgz
+          ternal-agent-linux-amd64.tar.gz
           ternalctl-linux-amd64.tar.gz
           ternalctl-linux-arm64.tar.gz
           ternalctl-macos-amd64.tar.gz
@@ -341,8 +341,8 @@ jobs:
           sbom-amd64.spdx.json
           sbom-arm64.spdx.json
           signature-verification.json
-          ternal-agent-linux-amd64.tar.gz
           ternal-'"${GITHUB_REF_NAME#v}"'.tgz
+          ternal-agent-linux-amd64.tar.gz
           ternalctl-linux-amd64.tar.gz
           ternalctl-linux-arm64.tar.gz
           ternalctl-macos-amd64.tar.gz
