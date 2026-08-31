@@ -9,14 +9,12 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN ./frontend/build.sh
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w -buildid=' -o /out/ternal-api ./cmd/ternal-api
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w -buildid=' -o /out/ternal-api ./cmd/ternal-api \
+    && install -d -o 65532 -g 65532 -m 0700 /out/data/ternal
 
-FROM debian:bookworm-slim
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 65532 --home-dir /data --create-home --shell /usr/sbin/nologin ternal \
-    && install -d -o 65532 -g 65532 -m 0700 /data/ternal
+FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build --chown=65532:65532 /out/data /data
 COPY --from=build --chown=65532:65532 /out/ternal-api /usr/local/bin/ternal-api
 
 ENV TERNAL_BIND=0.0.0.0:3000 \
