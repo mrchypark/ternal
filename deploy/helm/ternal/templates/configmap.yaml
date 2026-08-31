@@ -1,0 +1,29 @@
+{{- if .Values.devHeaders }}
+{{- fail "devHeaders cannot be enabled in Helm because Ternal binds 0.0.0.0; use a loopback-bound local Go server instead" }}
+{{- end }}
+{{- $gateway := default dict .Values.gateway -}}
+{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- $relayUrls := .Values.pigeons.relayUrls -}}
+{{- if and ($managedRelay.enabled | default false) (not $relayUrls) ($gateway.enabled | default false) -}}
+{{- $relayUrls = printf "%s://%s" ($gateway.scheme | default "https") (required "gateway.host is required when gateway is enabled" $gateway.host) -}}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  TERNAL_BIND: 0.0.0.0:3000
+  RHIZA_DATA_DIR: /data/rhiza
+  TERNAL_REQUIRE_RHIZA_ADMIN_TOKEN: "1"
+  RAUTHY_ISSUER: {{ required "rauthy.issuer is required" .Values.rauthy.issuer | quote }}
+  RAUTHY_CLIENT_ID: {{ required "rauthy.clientId is required" .Values.rauthy.clientId | quote }}
+  RAUTHY_REDIRECT_URL: {{ required "rauthy.redirectUrl is required" .Values.rauthy.redirectUrl | quote }}
+  RAUTHY_ADMIN_GROUP: {{ required "rauthy.adminGroup is required" .Values.rauthy.adminGroup | quote }}
+  RAUTHY_GROUPS_CLAIM: {{ required "rauthy.groupsClaim is required" .Values.rauthy.groupsClaim | quote }}
+  TERNAL_SESSION_TTL_SECONDS: {{ .Values.session.ttlSeconds | quote }}
+  TERNAL_DEV_HEADERS: {{ ternary "1" "0" .Values.devHeaders | quote }}
+  TERNAL_AGENT_RELAY_URLS: {{ $relayUrls | quote }}
+  TERNAL_AGENT_EXTRA_RELAY_URLS: {{ .Values.pigeons.extraRelayUrls | quote }}

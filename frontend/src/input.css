@@ -1,0 +1,31 @@
+@import "tailwindcss" source(none);
+@source "../../internal/web";
+
+@theme {
+  --font-sans: "Avenir Next", "Segoe UI", sans-serif;
+  --color-forest-50: oklch(97% 0.015 151);
+  --color-forest-100: oklch(93% 0.035 151);
+  --color-forest-500: oklch(48% 0.13 151);
+  --color-forest-600: oklch(41% 0.12 151);
+  --color-forest-900: oklch(24% 0.055 151);
+  --color-ink-50: oklch(98% 0.006 247);
+  --color-ink-100: oklch(95% 0.01 247);
+  --color-ink-200: oklch(89% 0.016 247);
+  --color-ink-400: oklch(62% 0.025 247);
+  --color-ink-500: oklch(50% 0.03 247);
+  --color-ink-700: oklch(34% 0.035 247);
+  --color-ink-900: oklch(22% 0.04 247);
+}
+
+@layer base {
+  html { color-scheme: light; }
+  body { @apply m-0 min-w-80 bg-ink-50 font-sans text-ink-700 antialiased; }
+  :focus-visible { @apply outline-2 outline-offset-2 outline-forest-500; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

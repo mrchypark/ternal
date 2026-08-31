@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install pinned verification tools
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          install -d "$RUNNER_TEMP/ternal-tools"
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/ternal-tools/helm.tar.gz" \
+            https://get.helm.sh/helm-v4.2.3-linux-amd64.tar.gz
+          echo "e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c  $RUNNER_TEMP/ternal-tools/helm.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/ternal-tools/helm.tar.gz" \
+            -C "$RUNNER_TEMP/ternal-tools" --strip-components=1 linux-amd64/helm
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/ternal-tools/yq" \
+            https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  $RUNNER_TEMP/ternal-tools/yq" | sha256sum --check --strict
+          chmod 0755 "$RUNNER_TEMP/ternal-tools/helm" "$RUNNER_TEMP/ternal-tools/yq"
+          echo "$RUNNER_TEMP/ternal-tools" >> "$GITHUB_PATH"
+
+      - name: Check source and workflows
+        run: |
+          test -z "$(gofmt -l cmd internal)"
+          go vet ./...
+          "$(go env GOPATH)/bin/actionlint" -shellcheck '' -pyflakes ''
+
+      - name: Rebuild pinned frontend assets
+        run: |
+          ./frontend/build.sh
+          git diff --exit-code -- internal/web/static
+
+      - name: Test and build Go binaries
+        run: |
+          go test -race -count=1 -timeout=10m ./...
+          mkdir -p dist/bin
+          go build -trimpath -o dist/bin/ternal-api ./cmd/ternal-api
+          go build -trimpath -o dist/bin/ternalctl ./cmd/ternalctl
+          go build -trimpath -o dist/bin/ternal-agent ./cmd/ternal-agent
+
+      - name: Verify packaging and deployment contracts
+        run: |
+          sh deploy/agent/build-pigeons-native.test.sh
+          sh deploy/agent/package-linux-amd64.test.sh
+          sh deploy/cli/package-linux-amd64.test.sh
+          sh deploy/backup/local-backup.test.sh
+          sh deploy/backup/local-backup-restore.test.sh
+          sh deploy/e2e/local-go-smoke.sh
+          sh deploy/pigeons-smoke/parse-transport-jsonl.test.sh
+          sh deploy/pigeons-smoke/transport-matrix.test.sh
+          python3 deploy/release/release-candidate-workflow.test.py
+          python3 deploy/release/tag-release-workflow.test.py
+          sh deploy/vind/helm-render-check.sh

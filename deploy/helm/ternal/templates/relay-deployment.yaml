@@ -1,0 +1,132 @@
+{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- if ($managedRelay.enabled | default false) }}
+{{- $secretName := .Values.secrets.existingSecret | default .Release.Name -}}
+{{- if ne (int $managedRelay.replicas) 1 -}}
+{{- fail "pigeons.managedRelay.replicas must be 1; process-local client state cannot be load-balanced behind one Service" -}}
+{{- end -}}
+{{- $relayImage := default dict $managedRelay.image -}}
+{{- $repository := required "pigeons.managedRelay.image.repository is required" $relayImage.repository -}}
+{{- $tag := default "v0.96.1" $relayImage.tag -}}
+{{- $digest := default "" $relayImage.digest -}}
+{{- if and (not $digest) (eq $tag "latest") -}}
+{{- fail "pigeons.managedRelay.image.tag must not be latest unless a digest is set" -}}
+{{- end -}}
+{{- if and $digest (not (regexMatch "^sha256:[0-9a-f]{64}$" $digest)) -}}
+{{- fail "pigeons.managedRelay.image.digest must be a sha256 digest" -}}
+{{- end -}}
+{{- $image := printf "%s:%s" $repository $tag -}}
+{{- if $digest -}}
+{{- $image = printf "%s@%s" $repository $digest -}}
+{{- end -}}
+{{- $metrics := default dict $managedRelay.metrics -}}
+{{- $topology := default dict $managedRelay.topologySpread -}}
+{{- $terminationGracePeriodSeconds := int (default 120 $managedRelay.terminationGracePeriodSeconds) -}}
+{{- $preStopDelaySeconds := int (default 60 $managedRelay.preStopDelaySeconds) -}}
+{{- if lt $terminationGracePeriodSeconds 60 -}}
+{{- fail "pigeons.managedRelay.terminationGracePeriodSeconds must be at least 60" -}}
+{{- end -}}
+{{- if or (lt $preStopDelaySeconds 15) (ge $preStopDelaySeconds $terminationGracePeriodSeconds) -}}
+{{- fail "pigeons.managedRelay.preStopDelaySeconds must be at least 15 and less than terminationGracePeriodSeconds" -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-relay
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-relay
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: relay
+    app.kubernetes.io/part-of: {{ .Chart.Name }}
+spec:
+  replicas: 1
+  strategy:
+    # iroh-relay keeps client state in-process. Never overlap two
+    # processes behind the same singleton Service during an update.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}-relay
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}-relay
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: relay
+        app.kubernetes.io/part-of: {{ .Chart.Name }}
+      annotations:
+        checksum/relay-config: {{ include (print $.Template.BasePath "/relay-configmap.yaml") . | sha256sum }}
+    spec:
+      terminationGracePeriodSeconds: {{ $terminationGracePeriodSeconds }}
+      securityContext:
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if ($topology.enabled | default false) }}
+      topologySpreadConstraints:
+        - maxSkew: {{ default 1 $topology.maxSkew }}
+          topologyKey: {{ default "kubernetes.io/hostname" $topology.topologyKey | quote }}
+          whenUnsatisfiable: {{ default "ScheduleAnyway" $topology.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}-relay
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- end }}
+      containers:
+        - name: iroh-relay
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ default "IfNotPresent" $relayImage.pullPolicy }}
+          args:
+            - --config-path
+            - /etc/iroh-relay/relay.toml
+          env:
+            - name: IROH_RELAY_HTTP_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: TERNAL_PIGEONS_RELAY_ACCESS_TOKEN
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - {{ printf "sleep %d" $preStopDelaySeconds | quote }}
+          ports:
+            - name: relay
+              containerPort: {{ default 3340 $managedRelay.port }}
+            {{- if ($metrics.enabled | default false) }}
+            - name: metrics
+              containerPort: {{ default 9090 $metrics.port }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: relay
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: relay
+            periodSeconds: 10
+            timeoutSeconds: 2
+          volumeMounts:
+            - name: config
+              mountPath: /etc/iroh-relay
+              readOnly: true
+          resources:
+            {{- toYaml ($managedRelay.resources | default dict) | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-relay
+{{- end }}

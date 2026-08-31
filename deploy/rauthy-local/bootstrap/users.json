@@ -1,0 +1,37 @@
+[
+  {
+    "email": "ternal-admin@example.com",
+    "preferred_username": "ternal-admin",
+    "given_name": "Ternal",
+    "family_name": "Admin",
+    "password": {
+      "Plain": "123SuperSafe"
+    },
+    "roles": [
+      "admin"
+    ],
+    "groups": [
+      "ternal-admins",
+      "platform"
+    ],
+    "enabled": true,
+    "email_verified": true
+  },
+  {
+    "email": "alice@example.com",
+    "preferred_username": "alice",
+    "given_name": "Alice",
+    "family_name": "Platform",
+    "password": {
+      "Plain": "123SuperSafe"
+    },
+    "roles": [
+      "user"
+    ],
+    "groups": [
+      "platform"
+    ],
+    "enabled": true,
+    "email_verified": true
+  }
+]

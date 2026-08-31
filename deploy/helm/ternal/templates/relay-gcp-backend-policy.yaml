@@ -1,0 +1,23 @@
+{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- $policy := default dict $managedRelay.gcpBackendPolicy -}}
+{{- if and ($managedRelay.enabled | default false) ($policy.enabled | default false) }}
+{{- $draining := default dict $policy.connectionDraining -}}
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: {{ .Release.Name }}-relay
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-relay
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: relay
+    app.kubernetes.io/part-of: {{ .Chart.Name }}
+spec:
+  default:
+    timeoutSec: {{ required "pigeons.managedRelay.gcpBackendPolicy.timeoutSec is required" $policy.timeoutSec }}
+    connectionDraining:
+    drainingTimeoutSec: {{ required "pigeons.managedRelay.gcpBackendPolicy.connectionDraining.drainingTimeoutSec is required" $draining.drainingTimeoutSec }}
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ .Release.Name }}-relay
+{{- end }}

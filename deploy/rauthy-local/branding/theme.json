@@ -1,0 +1,28 @@
+{
+  "client_id": "ternal",
+  "light": {
+    "text": [209, 21, 24],
+    "text_high": [208, 51, 12],
+    "bg": [210, 61, 97],
+    "bg_high": [209, 25, 84],
+    "action": [147, 100, 22],
+    "accent": [207, 83, 11],
+    "error": [3, 64, 43],
+    "btn_text": "white",
+    "theme_sun": "hsla(var(--action) / .8)",
+    "theme_moon": "hsla(var(--accent) / .85)"
+  },
+  "dark": {
+    "text": [209, 20, 80],
+    "text_high": [209, 37, 93],
+    "bg": [207, 83, 11],
+    "bg_high": [208, 55, 17],
+    "action": [138, 40, 51],
+    "accent": [209, 20, 80],
+    "error": [3, 64, 58],
+    "btn_text": "hsl(var(--bg))",
+    "theme_sun": "hsla(var(--action) / .8)",
+    "theme_moon": "hsla(var(--accent) / .85)"
+  },
+  "border_radius": "6px"
+}

@@ -1,0 +1,39 @@
+[access]
+# Local HTTP requires non-Secure cookies. Never copy this into production.
+cookie_mode = "danger-insecure"
+
+[bootstrap]
+bootstrap_dir = "/app/bootstrap"
+# Base64-encoded local-only API key definition. It grants only Clients:update,
+# which is sufficient to upload the Ternal theme and client logo.
+api_key = "eyJuYW1lIjoidGVybmFsLWJyYW5kaW5nIiwiZXhwIjpudWxsLCJhY2Nlc3MiOlt7Imdyb3VwIjoiQ2xpZW50cyIsImFjY2Vzc19yaWdodHMiOlsidXBkYXRlIl19XX0="
+# Deterministic throwaway secret for the disposable local stack only (65 chars).
+api_key_secret = "TernalLocalBrandingSecretAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+[cluster]
+node_id = 1
+nodes = ["1 localhost:8100 localhost:8200"]
+data_dir = "/app/data"
+secret_raft = "ternal-local-rauthy-raft-secret"
+secret_api = "ternal-local-rauthy-api-secret"
+
+[database]
+hiqlite = true
+
+[encryption]
+# Deterministic throwaway key for the disposable local database only.
+keys = ["local01/dGVybmFsLXJhdXRoeS1sb2NhbC1rZXktMDEyMzQ1Njc="]
+key_active = "local01"
+
+[server]
+listen_address = "0.0.0.0"
+port_http = 18080
+scheme = "http"
+pub_url = "rauthy.localhost:18080"
+proxy_mode = false
+http_workers = 1
+
+[webauthn]
+rp_id = "rauthy.localhost"
+rp_origin = "http://rauthy.localhost:18080"
+rp_name = "Ternal local Rauthy"

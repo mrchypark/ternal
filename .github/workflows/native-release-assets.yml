@@ -1,0 +1,141 @@
+name: Native release assets
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-amd64
+            runner: ubuntu-24.04
+            family: unix
+            archive: ternalctl-linux-amd64.tar.gz
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            family: unix
+            archive: ternalctl-linux-arm64.tar.gz
+          - platform: macos-amd64
+            runner: macos-15-intel
+            family: unix
+            archive: ternalctl-macos-amd64.tar.gz
+          - platform: macos-arm64
+            runner: macos-15
+            family: unix
+            archive: ternalctl-macos-arm64.tar.gz
+          - platform: windows-amd64
+            runner: windows-2025
+            family: windows
+            archive: ternalctl-windows-amd64.zip
+          - platform: windows-arm64
+            runner: windows-11-arm
+            family: windows
+            archive: ternalctl-windows-arm64.zip
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --no-self-update
+
+      - name: Select pinned Rust toolchain
+        run: rustup default 1.95.0
+
+      - name: Install Linux native build dependencies
+        if: startsWith(matrix.platform, 'linux-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake libssl-dev patch pkg-config
+
+      - name: Assert immutable source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF" in
+            refs/heads/main|refs/tags/v*) ;;
+            *) exit 1 ;;
+          esac
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --short)"
+
+      - name: Build Go CLI and Linux agent
+        if: matrix.family == 'unix'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/bin
+          go build -trimpath -ldflags='-s -w -buildid=' -o dist/bin/ternalctl ./cmd/ternalctl
+          if [ "${{ matrix.platform }}" = linux-amd64 ]; then
+            go build -trimpath -ldflags='-s -w -buildid=' -o dist/bin/ternal-agent ./cmd/ternal-agent
+          fi
+
+      - name: Build Go CLI
+        if: matrix.family == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/bin -Force | Out-Null
+          go build -trimpath '-ldflags=-s -w -buildid=' -o dist/bin/ternalctl.exe ./cmd/ternalctl
+
+      - name: Build and package patched pigeons bundle
+        if: matrix.family == 'unix'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh deploy/agent/build-pigeons-native.sh "${{ matrix.platform }}"
+          TERNAL_PIGEONS_BIN="dist/pigeons-${{ matrix.platform }}" \
+            sh deploy/cli/package-unix.sh "${{ matrix.platform }}"
+          cp "dist/${{ matrix.archive }}" "$RUNNER_TEMP/first-${{ matrix.archive }}"
+          TERNAL_PIGEONS_BIN="dist/pigeons-${{ matrix.platform }}" \
+            sh deploy/cli/package-unix.sh "${{ matrix.platform }}" >/dev/null
+          cmp "$RUNNER_TEMP/first-${{ matrix.archive }}" "dist/${{ matrix.archive }}"
+          if [ "${{ matrix.platform }}" = linux-amd64 ]; then
+            TERNAL_PIGEONS_BIN=dist/pigeons-linux-amd64 sh deploy/agent/package-linux-amd64.sh
+            cp dist/ternal-agent-linux-amd64.tar.gz "$RUNNER_TEMP/first-ternal-agent-linux-amd64.tar.gz"
+            TERNAL_PIGEONS_BIN=dist/pigeons-linux-amd64 sh deploy/agent/package-linux-amd64.sh >/dev/null
+            cmp "$RUNNER_TEMP/first-ternal-agent-linux-amd64.tar.gz" dist/ternal-agent-linux-amd64.tar.gz
+          fi
+
+      - name: Build and package patched pigeons bundle
+        if: matrix.family == 'windows'
+        shell: pwsh
+        run: |
+          ./deploy/agent/build-pigeons-windows.ps1
+          $env:TERNAL_PIGEONS_BIN = "dist/pigeons-${{ matrix.platform }}.exe"
+          ./deploy/cli/package-windows.ps1
+          $first = Join-Path $env:RUNNER_TEMP "first-${{ matrix.archive }}"
+          Copy-Item -LiteralPath "dist/${{ matrix.archive }}" -Destination $first
+          ./deploy/cli/package-windows.ps1 | Out-Null
+          $firstHash = (Get-FileHash -LiteralPath $first -Algorithm SHA256).Hash
+          $secondHash = (Get-FileHash -LiteralPath "dist/${{ matrix.archive }}" -Algorithm SHA256).Hash
+          if ($firstHash -cne $secondHash) { throw 'Windows archive is not reproducible' }
+
+      - name: Upload CLI archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ternalctl-${{ matrix.platform }}
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Linux agent archive
+        if: matrix.platform == 'linux-amd64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ternal-agent-linux-amd64
+          path: dist/ternal-agent-linux-amd64.tar.gz
+          if-no-files-found: error
+          retention-days: 30

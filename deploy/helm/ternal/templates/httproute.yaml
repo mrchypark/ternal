@@ -1,0 +1,52 @@
+{{- $gateway := default dict .Values.gateway -}}
+{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- if ($gateway.enabled | default false) }}
+{{- $host := required "gateway.host is required when gateway is enabled" $gateway.host -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  hostnames:
+    - {{ $host | quote }}
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ required "gateway.parentRef.name is required when gateway is enabled" $gateway.parentRef.name | quote }}
+      {{- with $gateway.parentRef.namespace }}
+      namespace: {{ . | quote }}
+      {{- end }}
+      {{- with $gateway.parentRef.port }}
+      port: {{ . }}
+      {{- end }}
+      {{- with $gateway.parentRef.sectionName }}
+      sectionName: {{ . | quote }}
+      {{- end }}
+  rules:
+    {{- if ($managedRelay.enabled | default false) }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /relay
+      backendRefs:
+        - name: {{ $.Release.Name }}-relay
+          port: {{ default 3340 $managedRelay.servicePort }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /ping
+      backendRefs:
+        - name: {{ $.Release.Name }}-relay
+          port: {{ default 3340 $managedRelay.servicePort }}
+    {{- end }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ .Release.Name }}
+          port: {{ .Values.service.port }}
+{{- end }}

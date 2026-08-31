@@ -1,0 +1,19 @@
+{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- $pdb := default dict $managedRelay.pdb -}}
+{{- if and ($managedRelay.enabled | default false) ($pdb.enabled | default false) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-relay
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-relay
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: relay
+    app.kubernetes.io/part-of: {{ .Chart.Name }}
+spec:
+  minAvailable: {{ default 1 $pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}-relay
+      app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

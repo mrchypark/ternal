@@ -1,0 +1,33 @@
+[
+  {
+    "id": "ternal",
+    "name": "Ternal",
+    "secret": {
+      "Plain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "redirect_uris": [
+      "http://127.0.0.1:3000/auth/callback"
+    ],
+    "allowed_origins": [
+      "http://127.0.0.1:3000"
+    ],
+    "enabled": true,
+    "flows_enabled": [
+      "authorization_code",
+      "urn:ietf:params:oauth:grant-type:device_code"
+    ],
+    "access_token_alg": "RS256",
+    "id_token_alg": "RS256",
+    "auth_code_lifetime": 300,
+    "access_token_lifetime": 1800,
+    "scopes": [
+      "openid",
+      "groups"
+    ],
+    "default_scopes": [
+      "openid",
+      "groups"
+    ],
+    "force_mfa": false
+  }
+]

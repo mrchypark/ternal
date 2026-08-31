@@ -1,0 +1,99 @@
+services:
+  rauthy:
+    image: ghcr.io/sebadob/rauthy:0.35.2@sha256:a73dbf58359f7fb009b6257759107cf886647109906a3fe06755e5cff07b5661
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./bootstrap:/app/bootstrap:ro
+      # Keep branding and bootstrap data across an ordinary container restart.
+      # `down -v` still resets this disposable local fixture completely.
+      - rauthy-data:/app/data
+    ports:
+      - "127.0.0.1:18080:18080"
+    networks:
+      default:
+        aliases:
+          - rauthy.localhost
+
+  rauthy-branding:
+    image: curlimages/curl:8.15.0@sha256:4026b29997dc7c823b51c164b71e2b51e0fd95cce4601f78202c513d97da2922
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    restart: "no"
+    depends_on:
+      - rauthy
+    environment:
+      RAUTHY_BRANDING_API_KEY: ternal-branding$$TernalLocalBrandingSecretAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+    volumes:
+      - ./branding/theme.json:/branding/theme.json:ro
+      - ./branding/ternal-icon-rauthy.png:/branding/ternal-icon-rauthy.png:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - |
+        set -eu
+        base_url=http://rauthy:18080/auth/v1
+        attempts=0
+        until curl -fsS --connect-timeout 2 --max-time 5 "$$base_url/.well-known/openid-configuration" >/dev/null 2>&1; do
+          attempts=$$((attempts + 1))
+          if [ "$$attempts" -ge 120 ]; then
+            echo "timed out waiting for Rauthy discovery" >&2
+            exit 1
+          fi
+          sleep 1
+        done
+        curl -fsS --retry 10 --retry-delay 1 --retry-all-errors --connect-timeout 2 --max-time 15 \
+          -X PUT -H "Authorization: API-Key $$RAUTHY_BRANDING_API_KEY" \
+          -H "Content-Type: application/json" --data-binary @/branding/theme.json \
+          "$$base_url/theme/ternal"
+        curl -fsS --retry 10 --retry-delay 1 --retry-all-errors --connect-timeout 2 --max-time 15 \
+          -X PUT -H "Authorization: API-Key $$RAUTHY_BRANDING_API_KEY" \
+          -F "logo=@/branding/ternal-icon-rauthy.png;type=image/png" \
+          "$$base_url/clients/ternal/logo"
+
+  ternal:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      rauthy-branding:
+        condition: service_completed_successfully
+    environment:
+      TERNAL_BIND: 0.0.0.0:3000
+      RHIZA_DATA_DIR: /data/rhiza
+      RHIZA_ADMIN_TOKEN: ternal-local-rhiza-admin-token-minimum-32-characters
+      TERNAL_REQUIRE_RHIZA_ADMIN_TOKEN: "1"
+      RAUTHY_ISSUER: http://rauthy.localhost:18080/auth/v1/
+      RAUTHY_CLIENT_ID: ternal
+      RAUTHY_CLIENT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      RAUTHY_REDIRECT_URL: http://127.0.0.1:3000/auth/callback
+      RAUTHY_ADMIN_GROUP: ternal-admins
+      RAUTHY_GROUPS_CLAIM: groups
+      TERNAL_SESSION_KEY: ternal-local-session-key-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      TERNAL_SESSION_TTL_SECONDS: 3600
+      TERNAL_DEV_HEADERS: "0"
+      TERNAL_PIGEONS_RELAY_ACCESS_TOKEN: ternal-local-relay-access-token-minimum-32-characters
+      TERNAL_AGENT_RELAY_URLS: ""
+      TERNAL_AGENT_EXTRA_RELAY_URLS: ""
+    volumes:
+      - ternal-data:/data
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  rauthy-data:
+  ternal-data:

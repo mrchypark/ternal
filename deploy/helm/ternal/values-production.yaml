@@ -1,0 +1,33 @@
+pigeons:
+  managedRelay:
+    enabled: true
+    replicas: 1
+    image:
+      repository: n0computer/iroh-relay
+      tag: v0.96.1
+      digest: sha256:f49ffd736f7507f33a104fcedb78c8b0d41a17cca99f955d28706dc0c9b08c15
+      pullPolicy: IfNotPresent
+    pdb:
+      # A one-replica minAvailable=1 PDB blocks voluntary maintenance.
+      enabled: false
+      minAvailable: 1
+    terminationGracePeriodSeconds: 120
+    preStopDelaySeconds: 60
+    topologySpread:
+      enabled: true
+      maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+    access:
+      enabled: true
+      path: /internal/iroh-relay/access
+    # Provider-specific backend policies are opt-in.
+    gcpBackendPolicy:
+      enabled: false
+      timeoutSec: 86400
+      connectionDraining:
+        drainingTimeoutSec: 300
+
+persistence:
+  enabled: true
+  size: 10Gi

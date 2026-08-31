@@ -1,0 +1,32 @@
+{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- if ($managedRelay.enabled | default false) }}
+{{- $metrics := default dict $managedRelay.metrics -}}
+{{- $relayService := default dict $managedRelay.service -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-relay
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-relay
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: relay
+    app.kubernetes.io/part-of: {{ .Chart.Name }}
+  {{- with $relayService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}-relay
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: relay
+      port: {{ default 3340 $managedRelay.servicePort }}
+      targetPort: relay
+    {{- if ($metrics.enabled | default false) }}
+    - name: metrics
+      port: {{ default 9090 $metrics.port }}
+      targetPort: metrics
+    {{- end }}
+{{- end }}

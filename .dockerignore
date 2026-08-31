@@ -1,0 +1,16 @@
+/target/
+/frontend/node_modules/
+/frontend/dist/
+/frontend/src/paraglide/
+/frontend/project.inlang/.gitignore
+/frontend/project.inlang/.meta.json
+/frontend/project.inlang/README.md
+/frontend/project.inlang/cache/
+/ternal-hiqlite/
+/backups/
+/.git/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*

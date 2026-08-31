@@ -1,0 +1,34 @@
+services:
+  api:
+    build: .
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    environment:
+      TERNAL_BIND: 0.0.0.0:3000
+      RAUTHY_ISSUER: ${RAUTHY_ISSUER:?set RAUTHY_ISSUER in .env}
+      RAUTHY_CLIENT_ID: ${RAUTHY_CLIENT_ID:?set RAUTHY_CLIENT_ID in .env}
+      RAUTHY_CLIENT_SECRET: ${RAUTHY_CLIENT_SECRET:?set RAUTHY_CLIENT_SECRET in .env}
+      RAUTHY_REDIRECT_URL: ${RAUTHY_REDIRECT_URL:?set RAUTHY_REDIRECT_URL in .env}
+      RAUTHY_ADMIN_GROUP: ${RAUTHY_ADMIN_GROUP:-ternal-admins}
+      RAUTHY_GROUPS_CLAIM: ${RAUTHY_GROUPS_CLAIM:-groups}
+      TERNAL_SESSION_KEY: ${TERNAL_SESSION_KEY:?set TERNAL_SESSION_KEY in .env}
+      RHIZA_ADMIN_TOKEN: ${RHIZA_ADMIN_TOKEN:?set RHIZA_ADMIN_TOKEN in .env}
+      TERNAL_REQUIRE_RHIZA_ADMIN_TOKEN: "1"
+      TERNAL_PIGEONS_RELAY_ACCESS_TOKEN: ${TERNAL_PIGEONS_RELAY_ACCESS_TOKEN:?set TERNAL_PIGEONS_RELAY_ACCESS_TOKEN in .env}
+      TERNAL_SESSION_TTL_SECONDS: 3600
+      TERNAL_DEV_HEADERS: "0"
+      TERNAL_AGENT_RELAY_URLS: ${TERNAL_AGENT_RELAY_URLS:-}
+      TERNAL_AGENT_EXTRA_RELAY_URLS: ${TERNAL_AGENT_EXTRA_RELAY_URLS:-}
+    volumes:
+      - ternal-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  ternal-data:

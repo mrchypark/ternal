@@ -1,0 +1,29 @@
+{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- if ($managedRelay.enabled | default false) }}
+{{- $metrics := default dict $managedRelay.metrics -}}
+{{- $access := default dict $managedRelay.access -}}
+{{- if not ($access.enabled | default false) -}}
+{{- fail "pigeons.managedRelay.access.enabled must be true; public access=everyone relay deployment is forbidden" -}}
+{{- end -}}
+{{- $accessPath := required "pigeons.managedRelay.access.path is required" $access.path -}}
+{{- if not (hasPrefix "/internal/" $accessPath) -}}
+{{- fail "pigeons.managedRelay.access.path must stay under /internal/" -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-relay
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-relay
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: relay
+    app.kubernetes.io/part-of: {{ .Chart.Name }}
+data:
+  relay.toml: |
+    enable_relay = true
+    http_bind_addr = "[::]:{{ default 3340 $managedRelay.port }}"
+    enable_quic_addr_discovery = false
+    enable_metrics = {{ $metrics.enabled | default false }}
+    metrics_bind_addr = "[::]:{{ default 9090 $metrics.port }}"
+    access.http.url = "http://{{ .Release.Name }}:{{ .Values.service.port }}{{ $accessPath }}"
+{{- end }}

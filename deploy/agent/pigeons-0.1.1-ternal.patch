@@ -1,0 +1,878 @@
+diff --git a/src/config.rs b/src/config.rs
+index b85e558..cca934b 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -19,11 +19,15 @@ impl Config {
+     }
+ 
+     pub async fn load() -> Result<Self> {
+-        let config_file_path = Self::config_path()?;
++        Self::load_from(Self::config_path()?).await
++    }
++
++    async fn load_from(config_file_path: PathBuf) -> Result<Self> {
+         tokio::fs::create_dir_all(config_file_path.parent().expect("joined path")).await?;
+ 
+         let mut file = File::options()
+             .read(true)
++            .write(true)
+             .truncate(false)
+             .create(true)
+             .open(&config_file_path)
+@@ -78,4 +82,13 @@ mod tests {
+         let config = toml::from_str::<Config>("").unwrap();
+         assert!(!config.telemetry_enabled());
+     }
++
++    #[tokio::test]
++    async fn load_creates_a_missing_config_file() {
++        let dir = tempfile::tempdir().unwrap();
++        let path = dir.path().join("pigeons").join("config.toml");
++        let config = Config::load_from(path.clone()).await.unwrap();
++        assert!(!config.telemetry_enabled());
++        assert!(path.is_file());
++    }
+ }
+diff --git a/src/lib.rs b/src/lib.rs
+index a40810c..98f7d49 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -11,6 +11,6 @@ pub use service::{
+ };
+ pub use ssh::{
+     SshConfigPigeonEntry, add_tunnel_host, dot_ssh_secret_key, home_ssh_dir, list_tunnel_hosts,
+-    remove_tunnel_host,
++    persistent_endpoint_id, persistent_roost_endpoint_id, remove_tunnel_host,
+ };
+-pub use tunnel::{RoostConfig, Tunnel, TunnelBuilder};
++pub use tunnel::{RoostConfig, TransportDiagnostics, Tunnel, TunnelBuilder};
+diff --git a/src/main.rs b/src/main.rs
+index cda5b46..dae85a1 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,10 +1,11 @@
+-use std::str::FromStr;
++use std::{net::SocketAddr, path::PathBuf, str::FromStr};
+ 
+ use clap::{ArgAction, Args, Parser, Subcommand};
+-use iroh::{EndpointId, RelayUrl};
++use iroh::{EndpointAddr, EndpointId, RelayUrl};
+ use pigeons::{Config, home_ssh_dir};
+ 
+ const RELAY_URL_HELP: &str = "use this relay server, replacing the defaults (repeatable)";
++const EXTRA_RELAY_URL_HELP: &str = "add this relay server to the N0 defaults (repeatable)";
+ 
+ #[derive(Parser, Debug)]
+ #[command(
+@@ -37,6 +38,8 @@ pub enum Cmd {
+     Version,
+     /// Print the paths used for config and other files
+     Paths,
++    /// Print this persistent endpoint ID
++    EndpointId(EndpointIdArgs),
+ }
+ 
+ #[derive(Subcommand, Clone, Debug)]
+@@ -71,6 +74,9 @@ pub struct RoostArgs {
+ 
+     #[arg(long, value_name = "URL", help = RELAY_URL_HELP, action = ArgAction::Append)]
+     pub relay_url: Vec<String>,
++
++    #[arg(long, value_name = "URL", help = EXTRA_RELAY_URL_HELP, action = ArgAction::Append)]
++    pub extra_relay_url: Vec<String>,
+ }
+ 
+ #[derive(Args, Clone, Debug)]
+@@ -83,8 +89,34 @@ pub struct FlyArgs {
+     #[arg(long, default_value_t = false)]
+     pub stdio: bool,
+ 
++    /// Directory containing the persistent pigeons identity
++    #[arg(long, value_name = "DIR")]
++    pub key_dir: Option<PathBuf>,
++
++    /// Direct socket address for the remote endpoint (repeatable)
++    #[arg(long, value_name = "ADDR", action = ArgAction::Append)]
++    pub direct_address: Vec<SocketAddr>,
++
+     #[arg(long, value_name = "URL", help = RELAY_URL_HELP, action = ArgAction::Append)]
+     pub relay_url: Vec<String>,
++
++    #[arg(long, value_name = "URL", help = EXTRA_RELAY_URL_HELP, action = ArgAction::Append)]
++    pub extra_relay_url: Vec<String>,
++
++    /// Write redacted transport diagnostics to stderr or an append-only file
++    #[arg(long, value_name = "stderr|FILE")]
++    pub transport_diagnostics: Option<String>,
++}
++
++#[derive(Args, Clone, Debug)]
++pub struct EndpointIdArgs {
++    /// Directory containing the persistent pigeons identity
++    #[arg(long, value_name = "DIR")]
++    pub key_dir: Option<PathBuf>,
++
++    /// Print the persistent roost/server endpoint ID instead of the client identity
++    #[arg(long)]
++    pub roost: bool,
+ }
+ 
+ #[derive(Args, Clone, Debug)]
+@@ -131,6 +159,12 @@ async fn main() -> anyhow::Result<()> {
+                         .map_err(|e| anyhow::anyhow!("invalid relay URL '{url}': {e}"))?,
+                 );
+             }
++            for url in &args.extra_relay_url {
++                builder.extra_relay_urls.push(
++                    RelayUrl::from_str(url)
++                        .map_err(|e| anyhow::anyhow!("invalid extra relay URL '{url}': {e}"))?,
++                );
++            }
+             let tunnel = builder.build().await?;
+             tunnel
+                 .clone()
+@@ -161,23 +195,36 @@ async fn main() -> anyhow::Result<()> {
+                 .await
+         }
+         Cmd::Fly(args) => {
+-            let mut builder = pigeons::Tunnel::builder_ephemeral().await?;
+-            for url in &args.relay_url {
+-                builder.relay_urls.push(
+-                    RelayUrl::from_str(url)
+-                        .map_err(|e| anyhow::anyhow!("invalid relay URL '{url}': {e}"))?,
+-                );
+-            }
++            let key_dir = args.key_dir.unwrap_or(pigeons::home_ssh_dir()?);
++            let mut builder = pigeons::Tunnel::builder_from_client_dir(key_dir).await?;
++            let relay_urls = parse_relay_urls(&args.relay_url, "relay")?;
++            let extra_relay_urls = parse_relay_urls(&args.extra_relay_url, "extra relay")?;
++            builder.relay_urls = relay_urls.clone();
++            builder.extra_relay_urls = extra_relay_urls.clone();
++            let diagnostics = pigeons::TransportDiagnostics::from_cli_or_env(
++                args.transport_diagnostics.as_deref(),
++            )?;
+             let tunnel = builder.build().await?;
+             tunnel
+                 .clone()
+                 .close_after(async move {
+                     let remote_id = EndpointId::from_str(&args.public_key)?;
+ 
++                    let remote_relay_urls = relay_urls
++                        .iter()
++                        .chain(&extra_relay_urls)
++                        .cloned()
++                        .collect::<Vec<_>>();
++                    let remote = fly_endpoint_addr(
++                        remote_id,
++                        remote_relay_urls,
++                        args.direct_address,
++                        !relay_urls.is_empty(),
++                    )?;
+                     if args.stdio {
+-                        tunnel.fly_stdio(remote_id).await?;
++                        tunnel.fly_stdio(remote, diagnostics.as_ref()).await?;
+                     } else {
+-                        let fut = tunnel.fly(remote_id);
++                        let fut = tunnel.fly(remote, diagnostics.as_ref());
+                         tokio::select! {
+                             res = fut => {
+                                 if let Err(err) = res {
+@@ -252,6 +299,16 @@ async fn main() -> anyhow::Result<()> {
+             println!("ssh private key: {priv_key:?}");
+             Ok(())
+         }
++        Cmd::EndpointId(args) => {
++            let key_dir = args.key_dir.unwrap_or(home_ssh_dir()?);
++            let endpoint_id = if args.roost {
++                pigeons::persistent_roost_endpoint_id(key_dir)?
++            } else {
++                pigeons::persistent_endpoint_id(key_dir)?
++            };
++            println!("{endpoint_id}");
++            Ok(())
++        }
+         Cmd::Service { op } => {
+             match op {
+                 ServiceCmd::Install {
+@@ -320,3 +372,82 @@ async fn main() -> anyhow::Result<()> {
+         }
+     }
+ }
++
++fn parse_relay_urls(urls: &[String], kind: &str) -> anyhow::Result<Vec<RelayUrl>> {
++    urls.iter()
++        .map(|url| {
++            RelayUrl::from_str(url).map_err(|e| anyhow::anyhow!("invalid {kind} URL '{url}': {e}"))
++        })
++        .collect()
++}
++
++fn fly_endpoint_addr(
++    remote: EndpointId,
++    relay_urls: Vec<RelayUrl>,
++    direct_addresses: Vec<SocketAddr>,
++    custom_relay_mode: bool,
++) -> anyhow::Result<EndpointAddr> {
++    if custom_relay_mode && relay_urls.is_empty() && direct_addresses.is_empty() {
++        anyhow::bail!("custom relay routes require a remote relay or direct address");
++    }
++    Ok(relay_urls.into_iter().fold(
++        direct_addresses
++            .into_iter()
++            .fold(EndpointAddr::new(remote), |addr, direct| {
++                addr.with_ip_addr(direct)
++            }),
++        |addr, relay| addr.with_relay_url(relay),
++    ))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn endpoint_id_and_fly_key_dir_accept_deterministic_identity_paths() {
++        let endpoint =
++            Cli::try_parse_from(["pigeons", "endpoint-id", "--key-dir", "/tmp/key"]).unwrap();
++        assert!(matches!(
++            endpoint.cmd,
++            Cmd::EndpointId(EndpointIdArgs {
++                key_dir: Some(_),
++                roost: false,
++                ..
++            })
++        ));
++        let roost =
++            Cli::try_parse_from(["pigeons", "endpoint-id", "--roost", "--key-dir", "/tmp/key"])
++                .unwrap();
++        assert!(matches!(
++            roost.cmd,
++            Cmd::EndpointId(EndpointIdArgs {
++                key_dir: Some(_),
++                roost: true,
++            })
++        ));
++        let fly =
++            Cli::try_parse_from(["pigeons", "fly", "--stdio", "--key-dir", "/tmp/key", "abc"])
++                .unwrap();
++        assert!(matches!(
++            fly.cmd,
++            Cmd::Fly(FlyArgs {
++                key_dir: Some(_),
++                stdio: true,
++                ..
++            })
++        ));
++    }
++
++    #[test]
++    fn custom_relay_routes_are_attached_to_remote_address() {
++        let id = pigeons::persistent_endpoint_id(tempfile::tempdir().unwrap().path().to_path_buf())
++            .unwrap();
++        let relay: RelayUrl = "https://custom.example.com".parse().unwrap();
++        let addr = fly_endpoint_addr(id, vec![relay.clone()], vec![], true).unwrap();
++        assert!(addr.addrs.iter().any(|address| address.is_relay()));
++        assert!(fly_endpoint_addr(id, vec![], vec![], true).is_err());
++        let default_addr = fly_endpoint_addr(id, vec![], vec![], false).unwrap();
++        assert!(default_addr.is_empty());
++    }
++}
+diff --git a/src/protocol.rs b/src/protocol.rs
+index c7f9f93..9e18271 100644
+--- a/src/protocol.rs
++++ b/src/protocol.rs
+@@ -1,7 +1,10 @@
+ use iroh::{endpoint::Connection, protocol::ProtocolHandler};
+-use tokio::net::TcpStream;
++use tokio::{
++    io::{AsyncRead, AsyncReadExt},
++    net::TcpStream,
++};
+ 
+-use crate::tunnel::copy_flush;
++use crate::tunnel::copy_both;
+ 
+ #[derive(Debug)]
+ pub(crate) struct PigeonsProtocol {
+@@ -9,7 +12,8 @@ pub(crate) struct PigeonsProtocol {
+ }
+ 
+ impl PigeonsProtocol {
+-    pub const ALPN: &[u8] = b"/pigeons/0";
++    pub const ALPN: &[u8] = b"/pigeons/1";
++    pub const STREAM_PREFACE: [u8; 1] = [0];
+ 
+     /// create a new pigeons "home" that will forward incoming connections from
+     /// a bound endpoint to the given local ssh server port
+@@ -25,6 +29,10 @@ impl ProtocolHandler for PigeonsProtocol {
+         match connection.accept_bi().await {
+             Ok((mut iroh_send, mut iroh_recv)) => {
+                 tracing::info!("pigeon arrived from {endpoint_id}");
++                if let Err(error) = read_stream_preface(&mut iroh_recv).await {
++                    tracing::error!("pigeon from {endpoint_id} had an invalid preface: {error}");
++                    return Ok(());
++                }
+ 
+                 match TcpStream::connect(format!("127.0.0.1:{}", self.ssh_port)).await {
+                     Ok(ssh_stream) => {
+@@ -33,19 +41,17 @@ impl ProtocolHandler for PigeonsProtocol {
+ 
+                         let (mut local_read, mut local_write) = ssh_stream.into_split();
+ 
+-                        let a_to_b = copy_flush(&mut local_read, &mut iroh_send);
+-                        let b_to_a = copy_flush(&mut iroh_recv, &mut local_write);
+-
+-                        tokio::select! {
+-                            result = a_to_b => {
+-                                let _ = result;
+-                                tracing::info!("pigeon from {endpoint_id} returned home");
+-                            },
+-                            result = b_to_a => {
+-                                let _ = result;
+-                                tracing::info!("pigeon from {endpoint_id} returned home");
+-                            },
+-                        };
++                        if let Err(error) = copy_both(
++                            &mut local_read,
++                            &mut local_write,
++                            &mut iroh_recv,
++                            &mut iroh_send,
++                        )
++                        .await
++                        {
++                            tracing::error!("pigeon from {endpoint_id} failed in transit: {error}");
++                        }
++                        tracing::info!("pigeon from {endpoint_id} returned home");
+                     }
+                     Err(e) => {
+                         tracing::error!("pigeon couldn't reach sshd: {e}");
+@@ -60,3 +66,45 @@ impl ProtocolHandler for PigeonsProtocol {
+         Ok(())
+     }
+ }
++
++async fn read_stream_preface<R>(reader: &mut R) -> std::io::Result<()>
++where
++    R: AsyncRead + Unpin,
++{
++    let mut preface = [0; PigeonsProtocol::STREAM_PREFACE.len()];
++    reader.read_exact(&mut preface).await?;
++    if preface != PigeonsProtocol::STREAM_PREFACE {
++        return Err(std::io::Error::new(
++            std::io::ErrorKind::InvalidData,
++            "invalid pigeons stream preface",
++        ));
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use tokio::io::AsyncWriteExt;
++
++    #[tokio::test]
++    async fn stream_preface_is_required_and_consumed() {
++        let (mut writer, mut reader) = tokio::io::duplex(16);
++        writer
++            .write_all(&PigeonsProtocol::STREAM_PREFACE)
++            .await
++            .unwrap();
++        writer.write_all(b"SSH-").await.unwrap();
++        read_stream_preface(&mut reader).await.unwrap();
++        let mut banner = [0; 4];
++        reader.read_exact(&mut banner).await.unwrap();
++        assert_eq!(&banner, b"SSH-");
++
++        let (mut writer, mut reader) = tokio::io::duplex(1);
++        writer.write_all(&[1]).await.unwrap();
++        assert_eq!(
++            read_stream_preface(&mut reader).await.unwrap_err().kind(),
++            std::io::ErrorKind::InvalidData
++        );
++    }
++}
+diff --git a/src/ssh.rs b/src/ssh.rs
+index 38882f8..1b51b56 100644
+--- a/src/ssh.rs
++++ b/src/ssh.rs
+@@ -15,16 +15,29 @@ pub fn home_ssh_dir() -> anyhow::Result<PathBuf> {
+ }
+ 
+ pub fn dot_ssh_secret_key(ssh_dir: PathBuf) -> anyhow::Result<SecretKey> {
+-    let pub_key = ssh_dir.join("pigeons_ed25519.pub");
+-    let priv_key = ssh_dir.join("pigeons_ed25519");
++    secret_key_at(ssh_dir, "pigeons_ed25519")
++}
++
++/// Client identities are intentionally distinct from roost identities: iroh rejects self-connects.
++pub fn dot_ssh_client_secret_key(ssh_dir: PathBuf) -> anyhow::Result<SecretKey> {
++    secret_key_at(ssh_dir, "pigeons_client_ed25519")
++}
++
++fn secret_key_at(ssh_dir: PathBuf, name: &str) -> anyhow::Result<SecretKey> {
++    let pub_key = ssh_dir.join(format!("{name}.pub"));
++    let priv_key = ssh_dir.join(name);
+ 
+     if !ssh_dir.exists() {
+         tracing::info!("creating ssh directory: {}", ssh_dir.display());
+         std::fs::create_dir_all(&ssh_dir)?;
++        #[cfg(unix)]
++        set_private_dir_mode(&ssh_dir)?;
+     }
+ 
+     if pub_key.exists() && priv_key.exists() {
+         tracing::debug!("loading existing keys from {}", ssh_dir.display());
++        #[cfg(unix)]
++        set_private_mode(&priv_key)?;
+         let secret_key = std::fs::read(&priv_key)
+             .with_context(|| format!("failed to read secret key from {}", priv_key.display()))?;
+         let mut sk_bytes = [0u8; SECRET_KEY_LENGTH];
+@@ -37,11 +50,35 @@ pub fn dot_ssh_secret_key(ssh_dir: PathBuf) -> anyhow::Result<SecretKey> {
+ 
+         std::fs::write(&pub_key, z32::encode(public_key.as_bytes()))?;
+         std::fs::write(&priv_key, z32::encode(&secret_key.to_bytes()))?;
++        #[cfg(unix)]
++        set_private_mode(&priv_key)?;
+ 
+         Ok(secret_key)
+     }
+ }
+ 
++pub fn persistent_endpoint_id(ssh_dir: PathBuf) -> anyhow::Result<PublicKey> {
++    Ok(dot_ssh_client_secret_key(ssh_dir)?.public())
++}
++
++pub fn persistent_roost_endpoint_id(ssh_dir: PathBuf) -> anyhow::Result<PublicKey> {
++    Ok(dot_ssh_secret_key(ssh_dir)?.public())
++}
++
++#[cfg(unix)]
++fn set_private_mode(path: &std::path::Path) -> anyhow::Result<()> {
++    use std::os::unix::fs::PermissionsExt;
++    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
++    Ok(())
++}
++
++#[cfg(unix)]
++fn set_private_dir_mode(path: &std::path::Path) -> anyhow::Result<()> {
++    use std::os::unix::fs::PermissionsExt;
++    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
++    Ok(())
++}
++
+ fn ssh_config_path() -> anyhow::Result<PathBuf> {
+     let home = my_home()?.ok_or_else(|| anyhow::anyhow!("home directory not found"))?;
+     Ok(home.join(".ssh").join("config"))
+@@ -250,3 +283,46 @@ pub(crate) async fn ensure_local_ssh_server_exists(ssh_port: u16) -> anyhow::Res
+         ))),
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn persistent_identity_and_endpoint_are_stable() {
++        let dir = tempfile::tempdir().unwrap();
++        let first = persistent_endpoint_id(dir.path().to_path_buf()).unwrap();
++        let second = persistent_endpoint_id(dir.path().to_path_buf()).unwrap();
++        assert_eq!(first, second);
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::PermissionsExt;
++            assert_eq!(
++                std::fs::metadata(dir.path().join("pigeons_client_ed25519"))
++                    .unwrap()
++                    .permissions()
++                    .mode()
++                    & 0o777,
++                0o600
++            );
++        }
++    }
++
++    #[test]
++    fn client_endpoint_identity_is_distinct_from_roost_identity() {
++        let dir = tempfile::tempdir().unwrap();
++        let endpoint = persistent_endpoint_id(dir.path().to_path_buf()).unwrap();
++        let client = dot_ssh_client_secret_key(dir.path().to_path_buf())
++            .unwrap()
++            .public();
++        let roost = persistent_roost_endpoint_id(dir.path().to_path_buf()).unwrap();
++        assert_eq!(endpoint, client);
++        assert_ne!(endpoint, roost);
++        assert_eq!(
++            roost,
++            dot_ssh_secret_key(dir.path().to_path_buf())
++                .unwrap()
++                .public()
++        );
++    }
++}
+diff --git a/src/tunnel.rs b/src/tunnel.rs
+index bbc30b2..fd2d121 100644
+--- a/src/tunnel.rs
++++ b/src/tunnel.rs
+@@ -1,9 +1,9 @@
+-use std::{path::PathBuf, str::FromStr};
++use std::{path::PathBuf, str::FromStr, sync::Arc};
+ 
+ use anyhow::{Context, Result, anyhow};
+ use iroh::{
+-    Endpoint, EndpointId, RelayUrl, SecretKey,
+-    endpoint::{RelayMode, presets},
++    Endpoint, EndpointAddr, RelayConfig, RelayUrl, SecretKey,
++    endpoint::{Connection, RelayMode, presets},
+     protocol::Router,
+ };
+ use iroh_services::ApiSecret;
+@@ -16,7 +16,7 @@ use tracing::warn;
+ use crate::{
+     config::Config,
+     protocol::PigeonsProtocol,
+-    ssh::{self, dot_ssh_secret_key},
++    ssh::{self, dot_ssh_client_secret_key, dot_ssh_secret_key},
+ };
+ 
+ #[derive(Debug)]
+@@ -41,6 +41,8 @@ pub struct TunnelBuilder {
+     /// the set of iroh relay urls to use. Empty set will default to public
+     /// relay servers run by number 0
+     pub relay_urls: Vec<RelayUrl>,
++    /// Relay URLs added to N0 defaults unless relay_urls replaces them.
++    pub extra_relay_urls: Vec<RelayUrl>,
+     /// iroh services client for telemetry aggregation
+     pub isvc_api_secret: Option<ApiSecret>,
+     /// The pigeons config loaded from the toml file.
+@@ -54,6 +56,7 @@ impl TunnelBuilder {
+             roost: None,
+             secret_key,
+             relay_urls: vec![],
++            extra_relay_urls: vec![],
+             isvc_api_secret,
+             config,
+         })
+@@ -68,9 +71,8 @@ impl TunnelBuilder {
+         tracing::debug!("building tunnel, roost={}", self.roost.is_some());
+         let mut builder = Endpoint::builder(presets::N0).secret_key(self.secret_key.clone());
+ 
+-        if !self.relay_urls.is_empty() {
+-            tracing::debug!("using {} custom relay URLs", self.relay_urls.len());
+-            let relay_map = self.relay_urls.iter().cloned().collect();
++        if !self.relay_urls.is_empty() || !self.extra_relay_urls.is_empty() {
++            let relay_map = relay_map(&self.relay_urls, &self.extra_relay_urls);
+             builder = builder.relay_mode(RelayMode::Custom(relay_map));
+         }
+ 
+@@ -131,36 +133,57 @@ impl Tunnel {
+         Ok(builder)
+     }
+ 
+-    pub async fn fly(&self, remote: EndpointId) -> Result<()> {
++    pub async fn builder_from_client_dir(ssh_dir: PathBuf) -> Result<TunnelBuilder> {
++        let secret_key = dot_ssh_client_secret_key(ssh_dir)?;
++        let config = Config::load_or_default().await;
++        TunnelBuilder::new(secret_key, config)
++    }
++
++    pub async fn fly(
++        &self,
++        remote: EndpointAddr,
++        diagnostics: Option<&TransportDiagnostics>,
++    ) -> Result<()> {
+         let bind_addr = format!("127.0.0.1:{}", 0);
+         let listener = TcpListener::bind(&bind_addr).await?;
+         tracing::info!("fly: listening on {}", listener.local_addr()?);
+-        prepare_pigeon(self.endpoint().clone(), listener, remote).await
++        prepare_pigeon(
++            self.endpoint().clone(),
++            listener,
++            remote,
++            diagnostics.cloned(),
++        )
++        .await
+     }
+ 
+     /// Bridge stdin/stdout directly to a remote roost via iroh.
+     /// Designed for use as an SSH ProxyCommand:
+     ///   ProxyCommand pigeons fly --stdio <endpoint_id>
+-    pub async fn fly_stdio(&self, remote: EndpointId) -> Result<()> {
+-        tracing::debug!("fly_stdio: connecting to {remote}");
++    pub async fn fly_stdio(
++        &self,
++        remote: EndpointAddr,
++        diagnostics: Option<&TransportDiagnostics>,
++    ) -> Result<()> {
++        tracing::debug!("fly_stdio: connecting");
+         let conn = self
+             .endpoint()
+             .connect(remote, PigeonsProtocol::ALPN)
+             .await?;
++        if let Some(diagnostics) = diagnostics {
++            diagnostics.emit(classify_transport(&conn))?;
++        }
+         tracing::debug!("fly_stdio: connected, opening bidirectional stream");
+         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
++        iroh_send
++            .write_all(&PigeonsProtocol::STREAM_PREFACE)
++            .await?;
++        iroh_send.flush().await?;
+         tracing::debug!("fly_stdio: bridging stdin/stdout");
+ 
+         let mut stdin = tokio::io::stdin();
+         let mut stdout = tokio::io::stdout();
+ 
+-        let stdin_to_iroh = copy_flush(&mut stdin, &mut iroh_send);
+-        let iroh_to_stdout = copy_flush(&mut iroh_recv, &mut stdout);
+-
+-        tokio::select! {
+-            result = stdin_to_iroh => { result?; }
+-            result = iroh_to_stdout => { result?; }
+-        }
++        copy_both(&mut stdin, &mut stdout, &mut iroh_recv, &mut iroh_send).await?;
+ 
+         Ok(())
+     }
+@@ -194,15 +217,20 @@ impl Tunnel {
+ async fn prepare_pigeon(
+     endpoint: Endpoint,
+     listener: TcpListener,
+-    remote: EndpointId,
++    remote: EndpointAddr,
++    diagnostics: Option<TransportDiagnostics>,
+ ) -> Result<()> {
+     loop {
+         match listener.accept().await {
+             Ok((tcp_stream, peer_addr)) => {
+                 tracing::info!("pigeon departing from {peer_addr}");
+                 let endpoint = endpoint.clone();
++                let remote = remote.clone();
++                let diagnostics = diagnostics.clone();
+                 tokio::spawn(async move {
+-                    if let Err(e) = bridge_connection(tcp_stream, &endpoint, remote).await {
++                    if let Err(e) =
++                        bridge_connection(tcp_stream, &endpoint, remote, diagnostics.as_ref()).await
++                    {
+                         tracing::error!("pigeon lost in transit: {e}");
+                     }
+                 });
+@@ -219,28 +247,206 @@ async fn prepare_pigeon(
+ async fn bridge_connection(
+     tcp_stream: tokio::net::TcpStream,
+     endpoint: &Endpoint,
+-    remote_id: EndpointId,
++    remote: EndpointAddr,
++    diagnostics: Option<&TransportDiagnostics>,
+ ) -> anyhow::Result<()> {
+     tcp_stream.set_nodelay(true)?;
+-    tracing::debug!("bridge_connection: connecting to {remote_id}");
+-    let conn = endpoint.connect(remote_id, PigeonsProtocol::ALPN).await?;
++    tracing::debug!("bridge_connection: connecting");
++    let conn = endpoint.connect(remote, PigeonsProtocol::ALPN).await?;
++    if let Some(diagnostics) = diagnostics {
++        diagnostics.emit(classify_transport(&conn))?;
++    }
+     tracing::debug!("bridge_connection: connected, opening bi stream");
+     let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
++    iroh_send
++        .write_all(&PigeonsProtocol::STREAM_PREFACE)
++        .await?;
++    iroh_send.flush().await?;
+     let (mut tcp_read, mut tcp_write) = tcp_stream.into_split();
+ 
+-    let tcp_to_iroh = copy_flush(&mut tcp_read, &mut iroh_send);
+-    let iroh_to_tcp = copy_flush(&mut iroh_recv, &mut tcp_write);
++    copy_both(
++        &mut tcp_read,
++        &mut tcp_write,
++        &mut iroh_recv,
++        &mut iroh_send,
++    )
++    .await?;
++
++    Ok(())
++}
++
++/// A redacted diagnostics sink.  It never includes endpoint IDs, IP addresses, or relay URLs.
++#[derive(Clone, Debug)]
++pub struct TransportDiagnostics {
++    sink: DiagnosticsSink,
++}
++
++#[derive(Clone, Debug)]
++enum DiagnosticsSink {
++    Stderr,
++    File(PathBuf),
++}
+ 
+-    tokio::select! {
+-        result = tcp_to_iroh => {
+-            let _ = result;
++impl TransportDiagnostics {
++    pub fn from_cli_or_env(value: Option<&str>) -> Result<Option<Self>> {
++        let Some(value) = value
++            .map(str::to_owned)
++            .or_else(|| std::env::var("PIGEONS_TRANSPORT_DIAGNOSTICS").ok())
++        else {
++            return Ok(None);
++        };
++        if value == "stderr" {
++            return Ok(Some(Self {
++                sink: DiagnosticsSink::Stderr,
++            }));
+         }
+-        result = iroh_to_tcp => {
+-            let _ = result;
++        if value.is_empty() {
++            anyhow::bail!("transport diagnostics sink must be stderr or a file path");
+         }
++        Ok(Some(Self {
++            sink: DiagnosticsSink::File(PathBuf::from(value)),
++        }))
+     }
+ 
+-    Ok(())
++    fn emit(&self, transport: &'static str) -> Result<()> {
++        let event = format!(
++            "{{\"schema\":\"pigeons.transport.v1\",\"event\":\"transport_changed\",\"transport\":\"{transport}\"}}\n"
++        );
++        match &self.sink {
++            DiagnosticsSink::Stderr => eprint!("{event}"),
++            DiagnosticsSink::File(path) => {
++                use std::io::Write as _;
++                std::fs::OpenOptions::new()
++                    .create(true)
++                    .append(true)
++                    .open(path)?
++                    .write_all(event.as_bytes())?;
++            }
++        }
++        Ok(())
++    }
++}
++
++fn classify_transport(connection: &Connection) -> &'static str {
++    connection
++        .paths()
++        .iter()
++        .find(|path| path.is_selected())
++        .map(|path| {
++            if path.is_ip() {
++                "direct"
++            } else if path.is_relay() {
++                "relay"
++            } else {
++                "unknown"
++            }
++        })
++        .unwrap_or("unknown")
++}
++
++fn relay_map(relay_urls: &[RelayUrl], extra_relay_urls: &[RelayUrl]) -> iroh::RelayMap {
++    let map = if relay_urls.is_empty() {
++        RelayMode::Default.relay_map()
++    } else {
++        relay_urls.iter().cloned().collect()
++    };
++    for url in extra_relay_urls {
++        map.insert(url.clone(), Arc::new(RelayConfig::from(url.clone())));
++    }
++    map
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn relay_urls_replace_defaults_and_extra_urls_extend_them() {
++        let custom: RelayUrl = "https://custom.example.com".parse().unwrap();
++        let extra: RelayUrl = "https://extra.example.com".parse().unwrap();
++        let replaced = relay_map(&[custom.clone()], &[extra.clone()]);
++        assert!(replaced.contains(&custom));
++        assert!(replaced.contains(&extra));
++        let extended = relay_map(&[], &[extra.clone()]);
++        assert!(extended.contains(&extra));
++        assert!(extended.len() > 1);
++    }
++
++    #[test]
++    fn diagnostics_redacts_route_values_and_accepts_env_sink() {
++        let dir = tempfile::tempdir().unwrap();
++        let sink = dir.path().join("diagnostics.jsonl");
++        let diagnostics = TransportDiagnostics::from_cli_or_env(Some(sink.to_str().unwrap()))
++            .unwrap()
++            .unwrap();
++        diagnostics.emit("relay").unwrap();
++        let event = std::fs::read_to_string(sink).unwrap();
++        assert!(event.contains("\"transport\":\"relay\""));
++        assert!(!event.contains("127.0.0.1"));
++        assert!(!event.contains("relay.example"));
++    }
++
++    #[tokio::test]
++    async fn bridge_drains_remote_output_after_local_input_eof() {
++        let (local, bridge_local) = tokio::io::duplex(128);
++        let (bridge_remote, mut remote) = tokio::io::duplex(128);
++        let (mut local_read, mut local_write) = tokio::io::split(local);
++        let (mut bridge_local_read, mut bridge_local_write) = tokio::io::split(bridge_local);
++        let (mut bridge_remote_read, mut bridge_remote_write) = tokio::io::split(bridge_remote);
++
++        let bridge = tokio::spawn(async move {
++            copy_both(
++                &mut bridge_local_read,
++                &mut bridge_local_write,
++                &mut bridge_remote_read,
++                &mut bridge_remote_write,
++            )
++            .await
++            .unwrap();
++        });
++        local_write.shutdown().await.unwrap();
++        let remote = tokio::spawn(async move {
++            let mut request = Vec::new();
++            remote.read_to_end(&mut request).await.unwrap();
++            assert!(request.is_empty());
++            remote.write_all(b"SSH-2.0-pigeons-test\r\n").await.unwrap();
++            remote.shutdown().await.unwrap();
++        });
++
++        let mut banner = Vec::new();
++        local_read.read_to_end(&mut banner).await.unwrap();
++        assert_eq!(banner, b"SSH-2.0-pigeons-test\r\n");
++        bridge.await.unwrap();
++        remote.await.unwrap();
++    }
++}
++
++pub(crate) async fn copy_both<AR, AW, BR, BW>(
++    a_reader: &mut AR,
++    a_writer: &mut AW,
++    b_reader: &mut BR,
++    b_writer: &mut BW,
++) -> std::io::Result<(u64, u64)>
++where
++    AR: tokio::io::AsyncRead + Unpin,
++    AW: tokio::io::AsyncWrite + Unpin,
++    BR: tokio::io::AsyncRead + Unpin,
++    BW: tokio::io::AsyncWrite + Unpin,
++{
++    tokio::try_join!(
++        copy_flush_and_shutdown(a_reader, b_writer),
++        copy_flush_and_shutdown(b_reader, a_writer),
++    )
++}
++
++async fn copy_flush_and_shutdown<R, W>(reader: &mut R, writer: &mut W) -> std::io::Result<u64>
++where
++    R: tokio::io::AsyncRead + Unpin,
++    W: tokio::io::AsyncWrite + Unpin,
++{
++    let copied = copy_flush(reader, writer).await?;
++    writer.shutdown().await?;
++    Ok(copied)
+ }
+ 
+ /// Copy data from reader to writer, flushing after every write.

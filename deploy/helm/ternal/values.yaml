@@ -1,0 +1,82 @@
+image:
+  repository: ternal
+  tag: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+service:
+  port: 3000
+
+persistence:
+  enabled: false
+  storageClassName: ""
+  size: 1Gi
+
+gateway:
+  enabled: false
+  scheme: https
+  host: ""
+  parentRef:
+    name: ""
+    namespace: ""
+    port: null
+    sectionName: ""
+
+rauthy:
+  issuer: http://host.docker.internal:8080/auth/v1/
+  clientId: ternal
+  redirectUrl: http://127.0.0.1:3000/auth/callback
+  adminGroup: ternal-admins
+  groupsClaim: groups
+
+session:
+  ttlSeconds: 3600
+
+pigeons:
+  relayUrls: ""
+  extraRelayUrls: ""
+  managedRelay:
+    enabled: false
+    replicas: 1
+    image:
+      repository: n0computer/iroh-relay
+      tag: v0.96.1
+      digest: ""
+      pullPolicy: IfNotPresent
+    port: 3340
+    servicePort: 3340
+    metrics:
+      enabled: true
+      port: 9090
+    pdb:
+      enabled: false
+      minAvailable: 1
+    terminationGracePeriodSeconds: 120
+    preStopDelaySeconds: 60
+    service:
+      annotations: {}
+    topologySpread:
+      enabled: true
+      maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+    resources: {}
+    access:
+      enabled: false
+      path: /internal/iroh-relay/access
+    gcpBackendPolicy:
+      enabled: false
+      timeoutSec: 86400
+      connectionDraining:
+        drainingTimeoutSec: 300
+
+devHeaders: false
+
+secrets:
+  # Set this to a pre-created Secret containing the four environment-variable
+  # keys below. This keeps plaintext values out of Helm release history.
+  existingSecret: ""
+  rauthyClientSecret: ""
+  sessionKey: ""
+  rhizaAdminToken: ""
+  pigeonsRelayAccessToken: ""
