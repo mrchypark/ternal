@@ -56,4 +56,13 @@ if workflow.count("-e DOCKER_CONFIG=/auth") != 2:
 if "/root/.docker/config.json" in workflow:
     raise SystemExit("scanner authentication must not assume the container runs as root")
 
+inventories = re.findall(r"expected='(.*?)'\n\s+actual=", workflow, re.DOTALL)
+if len(inventories) != 2:
+    raise SystemExit("tag release must verify both staged and published asset inventories")
+for inventory in inventories:
+    names = [line.strip() for line in inventory.splitlines()]
+    normalized = [re.sub(r"^ternal-.*\.tgz$", "ternal-0.tgz", name) for name in names]
+    if normalized != sorted(normalized):
+        raise SystemExit("tag release expected asset inventory must be lexically sorted")
+
 print("GitHub Actions tag release workflow contract passed")
