@@ -5,6 +5,7 @@ import re
 
 workflow = pathlib.Path(".github/workflows/release-candidate.yaml").read_text()
 native = pathlib.Path(".github/workflows/native-release-assets.yml").read_text()
+windows_pigeons = pathlib.Path("deploy/agent/build-pigeons-windows.ps1").read_text()
 combined = workflow + native
 
 expected_header = """name: Go release candidate archives
@@ -46,6 +47,8 @@ if workflow.count(f"uses: {allowed_local}") != 1:
     raise SystemExit("release candidate must call the local native build exactly once")
 if native.count("-buildvcs=false") != 3:
     raise SystemExit("every native Go release build must disable ref-dependent VCS stamping")
+if windows_pigeons.count("-C link-arg=/Brepro") != 2:
+    raise SystemExit("Windows pigeons builds must disable PE timestamp stamping")
 
 archives = (
     "ternal-agent-linux-amd64.tar.gz",

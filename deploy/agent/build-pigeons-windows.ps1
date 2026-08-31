@@ -43,11 +43,13 @@ try {
     Assert-Sha256 (Join-Path $sourceDirectory 'Cargo.lock') $config.PIGEONS_CARGO_LOCK_SHA256
     Push-Location $sourceDirectory; try { & git apply --check --whitespace=nowarn $patchFile; if ($LASTEXITCODE -ne 0) { throw 'Ternal pigeons patch check failed' }; & git apply --whitespace=nowarn $patchFile; if ($LASTEXITCODE -ne 0) { throw 'Ternal pigeons patch failed' } } finally { Pop-Location }
     New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
-    $previousTarget = $env:CARGO_TARGET_DIR; $env:CARGO_TARGET_DIR = $targetDirectory
+    $previousTarget = $env:CARGO_TARGET_DIR; $previousRustFlags = $env:RUSTFLAGS
+    $env:CARGO_TARGET_DIR = $targetDirectory
+    $env:RUSTFLAGS = if ([string]::IsNullOrWhiteSpace($previousRustFlags)) { '-C link-arg=/Brepro' } else { "$previousRustFlags -C link-arg=/Brepro" }
     try {
         & cargo test --locked --manifest-path (Join-Path $sourceDirectory 'Cargo.toml'); if ($LASTEXITCODE -ne 0) { throw 'patched pigeons tests failed' }
         & cargo build --locked --release --manifest-path (Join-Path $sourceDirectory 'Cargo.toml'); if ($LASTEXITCODE -ne 0) { throw 'cargo failed to build patched pigeons' }
-    } finally { $env:CARGO_TARGET_DIR = $previousTarget }
+    } finally { $env:RUSTFLAGS = $previousRustFlags; $env:CARGO_TARGET_DIR = $previousTarget }
     $builtBinary = Join-Path $targetDirectory 'release/pigeons.exe'; if (-not (Test-Path -LiteralPath $builtBinary -PathType Leaf)) { throw "cargo did not produce expected binary: $builtBinary" }
     New-Item -ItemType Directory -Path (Split-Path -Parent $output) -Force | Out-Null; Copy-Item -LiteralPath $builtBinary -Destination $output -Force
     Write-Output ("built`t{0}`tpigeons={1}`tcommit={2}" -f $output, $config.PIGEONS_VERSION, $config.PIGEONS_COMMIT)
