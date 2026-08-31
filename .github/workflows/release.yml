@@ -309,15 +309,15 @@ jobs:
           )
           PY
           for archive in release/ternalctl-*.tar.gz; do
-            tar -tzf "$archive" | grep -Eq '/ternalctl$'
-            tar -tzf "$archive" | grep -Eq '/pigeons$'
+            tar -tzf "$archive" | grep -E '/ternalctl$' >/dev/null
+            tar -tzf "$archive" | grep -E '/pigeons$' >/dev/null
           done
           for archive in release/ternalctl-*.zip; do
-            unzip -Z1 "$archive" | grep -Eq '/ternalctl\.exe$'
-            unzip -Z1 "$archive" | grep -Eq '/pigeons\.exe$'
+            unzip -Z1 "$archive" | grep -E '/ternalctl\.exe$' >/dev/null
+            unzip -Z1 "$archive" | grep -E '/pigeons\.exe$' >/dev/null
           done
-          tar -tzf release/ternal-agent-linux-amd64.tar.gz | grep -Eq '/ternal-agent$'
-          tar -tzf release/ternal-agent-linux-amd64.tar.gz | grep -Eq '/pigeons$'
+          tar -tzf release/ternal-agent-linux-amd64.tar.gz | grep -E '/ternal-agent$' >/dev/null
+          tar -tzf release/ternal-agent-linux-amd64.tar.gz | grep -E '/pigeons$' >/dev/null
 
       - name: Create, verify, and publish GitHub Release
         env:
