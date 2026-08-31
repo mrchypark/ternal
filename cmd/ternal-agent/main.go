@@ -354,7 +354,7 @@ func supervise(parent context.Context, cfg config) error {
 		exit := make(chan error, 1)
 		go func() { exit <- child.Wait() }()
 		ticker := time.NewTicker(cfg.HeartbeatEvery)
-		if err := syncControlPlane(ctx, cfg, "pigeons-running"); isUnauthorized(err) {
+		if err := syncControlPlane(ctx, cfg, "healthy"); isUnauthorized(err) {
 			ticker.Stop()
 			_ = child.Process.Kill()
 			<-exit
@@ -382,7 +382,7 @@ func supervise(parent context.Context, cfg config) error {
 				}
 				goto restart
 			case <-ticker.C:
-				heartbeatErr := syncControlPlane(ctx, cfg, "pigeons-running")
+				heartbeatErr := syncControlPlane(ctx, cfg, "healthy")
 				if isUnauthorized(heartbeatErr) {
 					ticker.Stop()
 					_ = child.Process.Kill()

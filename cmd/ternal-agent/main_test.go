@@ -93,9 +93,17 @@ func TestUnauthorizedControlPlaneResponseIsFatal(t *testing.T) {
 }
 
 func TestSupervisorStopsTransportWhenDeviceIsRevoked(t *testing.T) {
+	heartbeats := make(chan string, 4)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/agents/heartbeat":
+			var body struct {
+				Status string `json:"service_status"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			heartbeats <- body.Status
 			w.WriteHeader(http.StatusServiceUnavailable)
 		case "/agents/authorized-keys":
 			w.WriteHeader(http.StatusUnauthorized)
@@ -126,6 +134,9 @@ func TestSupervisorStopsTransportWhenDeviceIsRevoked(t *testing.T) {
 	}
 	if err := supervise(context.Background(), cfg); !isUnauthorized(err) {
 		t.Fatalf("supervisor did not stop on revocation: %v", err)
+	}
+	if first, second := <-heartbeats, <-heartbeats; first != "starting" || second != "healthy" {
+		t.Fatalf("supervisor heartbeat states = %q, %q", first, second)
 	}
 	var status runtimeStatus
 	data, err := os.ReadFile(cfg.StatusFile)
