@@ -19,7 +19,7 @@ systemd -> ternal-agent run -> pigeons roost
 OpenSSH -> ternalctl proxy -> pigeons fly --stdio -> pigeons roost -> sshd
 ```
 
-`ternal-agent` resolves `pigeons` in this order: `TERNAL_PIGEONS_BIN`, a
+`ternal-agent` resolves the transport helper in this order: `TERNAL_TRANSPORT_BIN`, a
 bundled sibling, then `PATH`. It starts `pigeons roost` with the configured
 `--relay-url` and `--extra-relay-url` values, persists the device identity,
 sends signed heartbeats, and restarts a failed child with backoff. Ternal

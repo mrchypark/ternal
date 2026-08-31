@@ -34,8 +34,8 @@ go build -trimpath -o "$work/ternal-api" ./cmd/ternal-api
 TERNAL_BIND="127.0.0.1:$port" \
 	TERNAL_DEV_HEADERS=1 \
 	TERNAL_SESSION_KEY=local-smoke-session-key-at-least-32-bytes \
-	TERNAL_PIGEONS_RELAY_ACCESS_TOKEN=local-smoke-relay-token-at-least-32-bytes \
-	RHIZA_DATA_DIR="$work/rhiza" \
+	TERNAL_RELAY_ACCESS_TOKEN=local-smoke-relay-token-at-least-32-bytes \
+	TERNAL_DATA_DIR="$work/data" \
 	"$work/ternal-api" >"$work/api.log" 2>&1 &
 pid=$!
 

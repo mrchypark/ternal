@@ -6,7 +6,7 @@ Run `./scripts/run-all-tests.sh`. It verifies:
 
 - generated htmx/Tailwind assets and a clean asset diff;
 - Go formatting, race-enabled tests, vet, and all three binaries;
-- Rhiza reopen persistence and offline archive readback (not trust-state reactivation);
+- data-store reopen persistence and offline archive readback (not trust-state reactivation);
 - gomponents rendering, escaping, htmx fragments, and embedded asset hash;
 - OIDC state/session integrity and old-origin rejection;
 - strict host-key acceptance/rejection and endpoint-ID-only route rejection;

@@ -1,6 +1,6 @@
 param(
     [string] $TernalctlBin = $env:TERNALCTL_TEST_BIN,
-    [string] $PigeonsBin = $env:TERNAL_PIGEONS_TEST_BIN
+    [string] $PigeonsBin = $env:TERNAL_TRANSPORT_TEST_BIN
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,10 +82,10 @@ if ([string]::IsNullOrWhiteSpace($TernalctlBin)) {
     throw 'pass -TernalctlBin or set TERNALCTL_TEST_BIN to a real native ternalctl.exe build'
 }
 if ([string]::IsNullOrWhiteSpace($PigeonsBin)) {
-    if (-not [string]::IsNullOrWhiteSpace($env:TERNAL_PIGEONS_BIN)) {
-        $PigeonsBin = $env:TERNAL_PIGEONS_BIN
+    if (-not [string]::IsNullOrWhiteSpace($env:TERNAL_TRANSPORT_BIN)) {
+        $PigeonsBin = $env:TERNAL_TRANSPORT_BIN
     } else {
-        throw 'pass -PigeonsBin or set TERNAL_PIGEONS_TEST_BIN to a real patched pigeons.exe build'
+        throw 'pass -PigeonsBin or set TERNAL_TRANSPORT_TEST_BIN to a real patched pigeons.exe build'
     }
 }
 $TernalctlBin = Get-AbsolutePath $TernalctlBin
@@ -111,7 +111,7 @@ $emptyPath = Join-Path $work 'empty path'
 
 $environmentNames = @(
     'TERNALCTL_BIN',
-    'TERNAL_PIGEONS_BIN',
+    'TERNAL_TRANSPORT_BIN',
     'TERNALCTL_PACKAGE_DIR',
     'TERNALCTL_ARCHIVE',
     'TERNAL_API_URL',
@@ -145,7 +145,7 @@ try {
     Copy-Item -LiteralPath $PigeonsBin -Destination $mismatchedPigeons
     $wrongMachine = if ($platform -eq 'amd64') { [uint16] 0xAA64 } else { [uint16] 0x8664 }
     Set-PeMachine $mismatchedPigeons $wrongMachine
-    $env:TERNAL_PIGEONS_BIN = $mismatchedPigeons
+    $env:TERNAL_TRANSPORT_BIN = $mismatchedPigeons
     $mismatchRejected = $false
     try {
         & (Join-Path $scriptDirectory 'package-windows.ps1') | Out-Null
@@ -159,7 +159,7 @@ try {
         throw 'package accepted a pigeons.exe for the wrong Windows architecture'
     }
 
-    $env:TERNAL_PIGEONS_BIN = $PigeonsBin
+    $env:TERNAL_TRANSPORT_BIN = $PigeonsBin
     & (Join-Path $scriptDirectory 'package-windows.ps1')
 
     foreach ($name in @('ternalctl.exe', 'pigeons.exe', 'LICENSE.pigeons', 'README.txt')) {
@@ -172,7 +172,7 @@ try {
         throw "package archive was not created: $archive"
     }
     $readme = [System.IO.File]::ReadAllText((Join-Path $packageDirectory 'README.txt'))
-    foreach ($text in @('OpenSSH Client', 'ssh.exe', 'ssh-keygen.exe', 'TERNAL_PIGEONS_BIN')) {
+    foreach ($text in @('OpenSSH Client', 'ssh.exe', 'ssh-keygen.exe', 'TERNAL_TRANSPORT_BIN')) {
         if (-not $readme.Contains($text)) {
             throw "README is missing required text: $text"
         }
@@ -212,7 +212,7 @@ try {
     New-Item -ItemType Directory -Path $isolatedLocalAppData | Out-Null
     New-Item -ItemType Directory -Path $isolatedAppData | Out-Null
     New-Item -ItemType Directory -Path $emptyPath | Out-Null
-    Remove-Item Env:TERNAL_PIGEONS_BIN -ErrorAction SilentlyContinue
+    Remove-Item Env:TERNAL_TRANSPORT_BIN -ErrorAction SilentlyContinue
     Remove-Item Env:TERNAL_CLAIMS -ErrorAction SilentlyContinue
     Remove-Item Env:TERNAL_CSRF_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:TERNAL_SESSION_COOKIE -ErrorAction SilentlyContinue

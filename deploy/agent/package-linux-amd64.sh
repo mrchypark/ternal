@@ -7,13 +7,13 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 agent_bin=${TERNAL_AGENT_BIN:-dist/bin/ternal-agent}
 package_dir=${TERNAL_AGENT_PACKAGE_DIR:-dist/ternal-agent-linux-amd64}
 archive=${TERNAL_AGENT_ARCHIVE:-dist/ternal-agent-linux-amd64.tar.gz}
-pigeons_bin=${TERNAL_PIGEONS_BIN:-}
+pigeons_bin=${TERNAL_TRANSPORT_BIN:-}
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command: $1" >&2; exit 127; }; }
 case "$package_dir" in "" | /) echo "refusing unsafe package dir: $package_dir" >&2; exit 1 ;; esac
 test -x "$agent_bin" || { echo "missing executable ternal-agent: $agent_bin" >&2; exit 1; }
 need gzip
 need tar
-if [ -z "$pigeons_bin" ]; then pigeons_bin=dist/pigeons-linux-amd64; TERNAL_PIGEONS_OUTPUT="$pigeons_bin" sh "$script_dir/build-pigeons-linux-amd64.sh"; fi
+if [ -z "$pigeons_bin" ]; then pigeons_bin=dist/pigeons-linux-amd64; TERNAL_TRANSPORT_OUTPUT="$pigeons_bin" sh "$script_dir/build-pigeons-linux-amd64.sh"; fi
 test -x "$pigeons_bin" || { echo "missing executable patched pigeons: $pigeons_bin" >&2; exit 1; }
 tar_tmp=$archive.tmp
 rm -rf "$package_dir" "$archive" "$tar_tmp"

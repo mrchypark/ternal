@@ -1,4 +1,4 @@
-{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- $managedRelay := default dict .Values.transport.managedRelay -}}
 {{- $pdb := default dict $managedRelay.pdb -}}
 {{- if and ($managedRelay.enabled | default false) ($pdb.enabled | default false) }}
 apiVersion: policy/v1

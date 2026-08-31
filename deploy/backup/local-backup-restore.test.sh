@@ -49,10 +49,10 @@ start_api() {
 	: >"$api_log"
 	TERNAL_BIND="127.0.0.1:$http_port" \
 	TERNAL_DEV_HEADERS=1 \
-	RHIZA_DATA_DIR="$data_dir" \
-	RHIZA_ADMIN_TOKEN=ternal-backup-test-rhiza-admin-token-minimum-32-chars \
-	TERNAL_REQUIRE_RHIZA_ADMIN_TOKEN=1 \
-	TERNAL_PIGEONS_RELAY_ACCESS_TOKEN=ternal-backup-test-relay-token-minimum-32-chars \
+	TERNAL_DATA_DIR="$data_dir" \
+	TERNAL_DATA_ADMIN_TOKEN=ternal-backup-test-data-admin-token-minimum-32-chars \
+	TERNAL_REQUIRE_DATA_ADMIN_TOKEN=1 \
+	TERNAL_RELAY_ACCESS_TOKEN=ternal-backup-test-relay-token-minimum-32-chars \
 	TERNAL_SESSION_KEY=ternal-backup-test-session-key-minimum-32-chars \
 	"$work/ternal-api" >"$api_log" 2>&1 &
 	api_pid=$!
@@ -113,5 +113,5 @@ start_api "$restore_dir"
 admin_request GET "/hosts/$host_id" | jq -e --arg name "$host_name" '.name == $name and .tags.ops == "backup-restore"' >/dev/null
 stop_api
 
-printf 'real Rhiza backup restore/readback passed\n'
+printf 'real data backup restore/readback passed\n'
 printf 'host_id=%s\n' "$host_id"

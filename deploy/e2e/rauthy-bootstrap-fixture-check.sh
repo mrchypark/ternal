@@ -10,7 +10,7 @@ need() {
 
 need jq
 
-dir=${TERNAL_RAUTHY_BOOTSTRAP_DIR:-deploy/rauthy-local/bootstrap}
+dir=${TERNAL_OIDC_FIXTURE_DIR:-deploy/rauthy-local/bootstrap}
 
 jq -e '
 	.[0].id == "ternal"

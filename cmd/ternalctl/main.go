@@ -608,7 +608,7 @@ func validateProxyInvocation(hostRef, endpointPort string, routeArgs []string) e
 }
 
 func findPigeons() string {
-	if bin := os.Getenv("TERNAL_PIGEONS_BIN"); bin != "" {
+	if bin := os.Getenv("TERNAL_TRANSPORT_BIN"); bin != "" {
 		if _, err := os.Stat(bin); err == nil {
 			return bin
 		}

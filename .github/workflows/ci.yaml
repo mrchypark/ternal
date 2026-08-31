@@ -48,6 +48,7 @@ jobs:
 
       - name: Check source and workflows
         run: |
+          ./scripts/check-public-config.sh
           test -z "$(gofmt -l cmd internal)"
           go vet ./...
           "$(go env GOPATH)/bin/actionlint" -shellcheck '' -pyflakes ''

@@ -41,3 +41,14 @@ func TestEndpointIDRequiresIrohV1HexIdentity(t *testing.T) {
 		t.Fatalf("expected invalid endpoint id, got %v", err)
 	}
 }
+
+func TestPolicyPrincipalAcceptsGroupAndCustomClaim(t *testing.T) {
+	host := &Host{Name: "edge-1", Tags: map[string]string{"site": "west"}}
+	claims := &UserClaims{Groups: []string{"operators"}, CustomClaims: map[string][]string{"role": {"support"}}}
+	for _, principal := range []string{"operators", "groups=operators", "role=support"} {
+		policy := &Policy{Principal: principal, HostSelector: "tag:site=west"}
+		if !PolicyAllows(claims, host, policy) {
+			t.Fatalf("principal %q was not accepted", principal)
+		}
+	}
+}

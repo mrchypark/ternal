@@ -1,18 +1,18 @@
-{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- $managedRelay := default dict .Values.transport.managedRelay -}}
 {{- if ($managedRelay.enabled | default false) }}
 {{- $secretName := .Values.secrets.existingSecret | default .Release.Name -}}
 {{- if ne (int $managedRelay.replicas) 1 -}}
-{{- fail "pigeons.managedRelay.replicas must be 1; process-local client state cannot be load-balanced behind one Service" -}}
+{{- fail "transport.managedRelay.replicas must be 1; process-local client state cannot be load-balanced behind one Service" -}}
 {{- end -}}
 {{- $relayImage := default dict $managedRelay.image -}}
-{{- $repository := required "pigeons.managedRelay.image.repository is required" $relayImage.repository -}}
+{{- $repository := required "transport.managedRelay.image.repository is required" $relayImage.repository -}}
 {{- $tag := default "v0.96.1" $relayImage.tag -}}
 {{- $digest := default "" $relayImage.digest -}}
 {{- if and (not $digest) (eq $tag "latest") -}}
-{{- fail "pigeons.managedRelay.image.tag must not be latest unless a digest is set" -}}
+{{- fail "transport.managedRelay.image.tag must not be latest unless a digest is set" -}}
 {{- end -}}
 {{- if and $digest (not (regexMatch "^sha256:[0-9a-f]{64}$" $digest)) -}}
-{{- fail "pigeons.managedRelay.image.digest must be a sha256 digest" -}}
+{{- fail "transport.managedRelay.image.digest must be a sha256 digest" -}}
 {{- end -}}
 {{- $image := printf "%s:%s" $repository $tag -}}
 {{- if $digest -}}
@@ -23,10 +23,10 @@
 {{- $terminationGracePeriodSeconds := int (default 120 $managedRelay.terminationGracePeriodSeconds) -}}
 {{- $preStopDelaySeconds := int (default 60 $managedRelay.preStopDelaySeconds) -}}
 {{- if lt $terminationGracePeriodSeconds 60 -}}
-{{- fail "pigeons.managedRelay.terminationGracePeriodSeconds must be at least 60" -}}
+{{- fail "transport.managedRelay.terminationGracePeriodSeconds must be at least 60" -}}
 {{- end -}}
 {{- if or (lt $preStopDelaySeconds 15) (ge $preStopDelaySeconds $terminationGracePeriodSeconds) -}}
-{{- fail "pigeons.managedRelay.preStopDelaySeconds must be at least 15 and less than terminationGracePeriodSeconds" -}}
+{{- fail "transport.managedRelay.preStopDelaySeconds must be at least 15 and less than terminationGracePeriodSeconds" -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -84,7 +84,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ $secretName }}
-                  key: TERNAL_PIGEONS_RELAY_ACCESS_TOKEN
+                  key: TERNAL_RELAY_ACCESS_TOKEN
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

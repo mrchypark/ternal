@@ -79,8 +79,8 @@ func TestSessionSigningRequiresStrongKeyAndRejectsTampering(t *testing.T) {
 	}
 }
 
-func TestRauthyConfigRejectsOldOriginEndpointsAndInsecureRemoteIssuer(t *testing.T) {
-	config := RauthyConfig{
+func TestOIDCConfigRejectsOldOriginEndpointsAndInsecureRemoteIssuer(t *testing.T) {
+	config := OIDCConfig{
 		Issuer: "https://auth.ternal.example.invalid/auth/v1/", ClientID: "ternal",
 		ClientSecret: "secret", RedirectURL: "https://ternal.example.invalid/auth/callback",
 		AdminGroup: "ternal-admins", GroupsClaim: "groups",

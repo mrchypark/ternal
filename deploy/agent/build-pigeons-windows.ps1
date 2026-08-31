@@ -29,8 +29,8 @@ $config = Read-PigeonsBuildConfig (Join-Path $PSScriptRoot 'pigeons-build.env')
 $patchFile = Join-Path $PSScriptRoot "pigeons-$($config.PIGEONS_VERSION)-ternal.patch"
 if (-not (Test-Path -LiteralPath $patchFile -PathType Leaf)) { throw "missing Ternal pigeons patch: $patchFile" }
 Require-Command cargo; Require-Command git; Require-Command rustc; Require-Command tar
-$output = AbsolutePath $(if ([string]::IsNullOrWhiteSpace($env:TERNAL_PIGEONS_OUTPUT)) { "dist/pigeons-windows-$platform.exe" } else { $env:TERNAL_PIGEONS_OUTPUT })
-$targetDirectory = AbsolutePath $(if ([string]::IsNullOrWhiteSpace($env:TERNAL_PIGEONS_TARGET_DIR)) { "target/pigeons-windows-$platform" } else { $env:TERNAL_PIGEONS_TARGET_DIR })
+$output = AbsolutePath $(if ([string]::IsNullOrWhiteSpace($env:TERNAL_TRANSPORT_OUTPUT)) { "dist/pigeons-windows-$platform.exe" } else { $env:TERNAL_TRANSPORT_OUTPUT })
+$targetDirectory = AbsolutePath $(if ([string]::IsNullOrWhiteSpace($env:TERNAL_TRANSPORT_TARGET_DIR)) { "target/pigeons-windows-$platform" } else { $env:TERNAL_TRANSPORT_TARGET_DIR })
 if ([System.IO.Path]::GetExtension($output) -cne '.exe') { throw "pigeons Windows output must use .exe: $output" }
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ('ternal pigeons build ' + [guid]::NewGuid().ToString('N'))
 $archive = Join-Path $work 'pigeons.tar.gz'; $sourceDirectory = Join-Path $work "pigeons-$($config.PIGEONS_COMMIT)"

@@ -9,7 +9,7 @@
 /frontend/playwright-report/
 /frontend/test-results/
 /ternal-hiqlite/
-/ternal-rhiza/
+/ternal-data/
 /backups/
 .DS_Store
 *.db

@@ -67,7 +67,7 @@ func TestAuthorizedKeysAreValidatedAndWrittenWithStrictMode(t *testing.T) {
 
 func TestConfigRejectsRemoteCleartextAPI(t *testing.T) {
 	t.Setenv("TERNAL_API_URL", "http://ternal.example")
-	t.Setenv("TERNAL_PIGEONS_BIN", os.Args[0])
+	t.Setenv("TERNAL_TRANSPORT_BIN", os.Args[0])
 	if _, err := loadConfig(); err == nil {
 		t.Fatal("remote HTTP API accepted")
 	}

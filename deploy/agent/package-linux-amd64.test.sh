@@ -16,7 +16,7 @@ printf '#!/bin/sh\necho pigeons fake\n' >"$work/pigeons"
 chmod +x "$work/bin/ternal-agent" "$work/pigeons"
 
 TERNAL_AGENT_BIN="$work/bin/ternal-agent" \
-TERNAL_PIGEONS_BIN="$work/pigeons" \
+TERNAL_TRANSPORT_BIN="$work/pigeons" \
 TERNAL_AGENT_PACKAGE_DIR="$work/dist/ternal-agent-linux-amd64" \
 TERNAL_AGENT_ARCHIVE="$work/dist/ternal-agent-linux-amd64.tar.gz" \
 	sh "$repo_dir/deploy/agent/package-linux-amd64.sh"
@@ -33,7 +33,7 @@ grep 'MIT License' "$work/dist/ternal-agent-linux-amd64/LICENSE.pigeons" >/dev/n
 
 cp "$work/dist/ternal-agent-linux-amd64.tar.gz" "$work/first.tar.gz"
 TERNAL_AGENT_BIN="$work/bin/ternal-agent" \
-TERNAL_PIGEONS_BIN="$work/pigeons" \
+TERNAL_TRANSPORT_BIN="$work/pigeons" \
 TERNAL_AGENT_PACKAGE_DIR="$work/dist/ternal-agent-linux-amd64" \
 TERNAL_AGENT_ARCHIVE="$work/dist/ternal-agent-linux-amd64.tar.gz" \
 	sh "$repo_dir/deploy/agent/package-linux-amd64.sh" >/dev/null

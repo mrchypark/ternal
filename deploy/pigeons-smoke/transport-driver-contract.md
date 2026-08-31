@@ -59,7 +59,7 @@ final `unknown` event fails a connected scenario.
 
 ```sh
 sudo env \
-  TERNAL_PIGEONS_BIN="$PWD/dist/pigeons-linux-amd64" \
+  TERNAL_TRANSPORT_BIN="$PWD/dist/pigeons-linux-amd64" \
   TERNAL_TRANSPORT_DRIVER="$PWD/deploy/pigeons-smoke/drivers/linux-netns-pigeons.sh" \
   sh deploy/pigeons-smoke/transport-matrix.sh
 ```

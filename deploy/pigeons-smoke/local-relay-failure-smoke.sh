@@ -11,7 +11,7 @@ fi
 : "${TERNAL_SMOKE_RELAY_NAME:?missing relay container name}"
 : "${TERNAL_SMOKE_RELAY_URL:?missing relay URL}"
 : "${TERNAL_SMOKE_ENDPOINT:?missing endpoint ID}"
-: "${TERNAL_PIGEONS_BIN:?missing pigeons binary}"
+: "${TERNAL_TRANSPORT_BIN:?missing transport binary}"
 : "${TERNAL_SMOKE_TIMEOUT_BIN:?missing timeout binary}"
 
 outage_timeout=${TERNAL_SMOKE_OUTAGE_TIMEOUT:-15}
@@ -31,7 +31,7 @@ printf 'relay outage observed: container=%s state=stopped\n' "$TERNAL_SMOKE_RELA
 
 outage_status=0
 "$TERNAL_SMOKE_TIMEOUT_BIN" "$outage_timeout" \
-	"$TERNAL_PIGEONS_BIN" fly --stdio "$TERNAL_SMOKE_ENDPOINT" \
+	"$TERNAL_TRANSPORT_BIN" fly --stdio "$TERNAL_SMOKE_ENDPOINT" \
 	--relay-url "$TERNAL_SMOKE_RELAY_URL" \
 	</dev/null >"$outage_out" 2>"$outage_err" || outage_status=$?
 
@@ -57,7 +57,7 @@ while [ "$i" -lt "$recovery_attempts" ]; do
 	: >"$recovery_out"
 	: >"$recovery_err"
 	"$TERNAL_SMOKE_TIMEOUT_BIN" "$recovery_timeout" \
-		"$TERNAL_PIGEONS_BIN" fly --stdio "$TERNAL_SMOKE_ENDPOINT" \
+		"$TERNAL_TRANSPORT_BIN" fly --stdio "$TERNAL_SMOKE_ENDPOINT" \
 		--relay-url "$TERNAL_SMOKE_RELAY_URL" \
 		</dev/null >"$recovery_out" 2>"$recovery_err" || true
 	head -n 1 "$recovery_out" | grep '^SSH-' >/dev/null 2>&1 && break

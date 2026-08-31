@@ -191,46 +191,46 @@ func assignReflect(dest reflect.Value, value any) error {
 }
 
 func rhizaConfigFromEnv(dataDir string) (rhiza.Config, error) {
-	adminToken := os.Getenv("RHIZA_ADMIN_TOKEN")
-	if os.Getenv("TERNAL_REQUIRE_RHIZA_ADMIN_TOKEN") == "1" && len(adminToken) < 32 {
-		return rhiza.Config{}, fmt.Errorf("RHIZA_ADMIN_TOKEN must be at least 32 bytes")
+	adminToken := os.Getenv("TERNAL_DATA_ADMIN_TOKEN")
+	if os.Getenv("TERNAL_REQUIRE_DATA_ADMIN_TOKEN") == "1" && len(adminToken) < 32 {
+		return rhiza.Config{}, fmt.Errorf("TERNAL_DATA_ADMIN_TOKEN must be at least 32 bytes")
 	}
 	var members []rhiza.Member
-	if raw := os.Getenv("RHIZA_CLUSTER_MEMBERS"); raw != "" {
+	if raw := os.Getenv("TERNAL_DATA_CLUSTER_MEMBERS"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &members); err != nil {
-			return rhiza.Config{}, fmt.Errorf("parse RHIZA_CLUSTER_MEMBERS: %w", err)
+			return rhiza.Config{}, fmt.Errorf("parse TERNAL_DATA_CLUSTER_MEMBERS: %w", err)
 		}
 	}
-	if os.Getenv("TERNAL_RHIZA_MULTI_NODE") == "1" && len(members) < 3 {
-		return rhiza.Config{}, fmt.Errorf("multi-node mode requires at least three RHIZA_CLUSTER_MEMBERS")
+	if os.Getenv("TERNAL_DATA_MULTI_NODE") == "1" && len(members) < 3 {
+		return rhiza.Config{}, fmt.Errorf("multi-node mode requires at least three TERNAL_DATA_CLUSTER_MEMBERS")
 	}
-	syncInterval, err := durationEnv("RHIZA_OBJSTORE_SYNC_INTERVAL", time.Minute)
+	syncInterval, err := durationEnv("TERNAL_OBJECT_STORE_SYNC_INTERVAL", time.Minute)
 	if err != nil {
 		return rhiza.Config{}, err
 	}
-	batchDelay, err := durationEnv("RHIZA_OBJSTORE_BATCH_DELAY", 2*time.Millisecond)
+	batchDelay, err := durationEnv("TERNAL_OBJECT_STORE_BATCH_DELAY", 2*time.Millisecond)
 	if err != nil {
 		return rhiza.Config{}, err
 	}
 	return rhiza.Config{
-		ClusterID:            envOr("RHIZA_CLUSTER_ID", envOr("TERNAL_RHIZA_CLUSTER_ID", "ternal")),
-		NodeID:               envOr("RHIZA_NODE_ID", "node-1"),
+		ClusterID:            envOr("TERNAL_DATA_CLUSTER_ID", "ternal"),
+		NodeID:               envOr("TERNAL_DATA_NODE_ID", "node-1"),
 		DataDir:              dataDir,
-		BindAddr:             envOr("RHIZA_BIND_ADDR", "127.0.0.1:0"),
-		PeerAddr:             envOr("RHIZA_PEER_ADDR", "127.0.0.1:0"),
+		BindAddr:             envOr("TERNAL_DATA_BIND_ADDR", "127.0.0.1:0"),
+		PeerAddr:             envOr("TERNAL_DATA_PEER_ADDR", "127.0.0.1:0"),
 		AdminToken:           adminToken,
 		Members:              members,
-		ObjStoreEndpoint:     os.Getenv("RHIZA_OBJSTORE_ENDPOINT"),
-		ObjStoreBucket:       os.Getenv("RHIZA_OBJSTORE_BUCKET"),
-		ObjStoreProvider:     os.Getenv("RHIZA_OBJSTORE_PROVIDER"),
-		ObjStoreDir:          os.Getenv("RHIZA_OBJSTORE_DIR"),
-		ObjStorePrefix:       os.Getenv("RHIZA_OBJSTORE_PREFIX"),
-		ObjStoreRegion:       os.Getenv("RHIZA_OBJSTORE_REGION"),
-		ObjStoreInsecure:     os.Getenv("RHIZA_OBJSTORE_INSECURE") == "true",
-		ObjStoreAccessKey:    os.Getenv("RHIZA_OBJSTORE_ACCESS_KEY"),
-		ObjStoreSecretKey:    os.Getenv("RHIZA_OBJSTORE_SECRET_KEY"),
-		ObjStoreSessionToken: os.Getenv("RHIZA_OBJSTORE_SESSION_TOKEN"),
-		ObjStoreDurability:   rhiza.ObjectStoreDurability(envOr("RHIZA_OBJSTORE_DURABILITY", string(rhiza.ObjectStoreDurabilityAsync))),
+		ObjStoreEndpoint:     os.Getenv("TERNAL_OBJECT_STORE_ENDPOINT"),
+		ObjStoreBucket:       os.Getenv("TERNAL_OBJECT_STORE_BUCKET"),
+		ObjStoreProvider:     os.Getenv("TERNAL_OBJECT_STORE_PROVIDER"),
+		ObjStoreDir:          os.Getenv("TERNAL_OBJECT_STORE_DIR"),
+		ObjStorePrefix:       os.Getenv("TERNAL_OBJECT_STORE_PREFIX"),
+		ObjStoreRegion:       os.Getenv("TERNAL_OBJECT_STORE_REGION"),
+		ObjStoreInsecure:     os.Getenv("TERNAL_OBJECT_STORE_INSECURE") == "true",
+		ObjStoreAccessKey:    os.Getenv("TERNAL_OBJECT_STORE_ACCESS_KEY"),
+		ObjStoreSecretKey:    os.Getenv("TERNAL_OBJECT_STORE_SECRET_KEY"),
+		ObjStoreSessionToken: os.Getenv("TERNAL_OBJECT_STORE_SESSION_TOKEN"),
+		ObjStoreDurability:   rhiza.ObjectStoreDurability(envOr("TERNAL_OBJECT_STORE_DURABILITY", string(rhiza.ObjectStoreDurabilityAsync))),
 		ObjStoreSyncInterval: syncInterval,
 		ObjStoreBatchDelay:   batchDelay,
 	}, nil

@@ -1,4 +1,4 @@
-{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- $managedRelay := default dict .Values.transport.managedRelay -}}
 {{- $policy := default dict $managedRelay.gcpBackendPolicy -}}
 {{- if and ($managedRelay.enabled | default false) ($policy.enabled | default false) }}
 {{- $draining := default dict $policy.connectionDraining -}}
@@ -13,9 +13,9 @@ metadata:
     app.kubernetes.io/part-of: {{ .Chart.Name }}
 spec:
   default:
-    timeoutSec: {{ required "pigeons.managedRelay.gcpBackendPolicy.timeoutSec is required" $policy.timeoutSec }}
+    timeoutSec: {{ required "transport.managedRelay.gcpBackendPolicy.timeoutSec is required" $policy.timeoutSec }}
     connectionDraining:
-    drainingTimeoutSec: {{ required "pigeons.managedRelay.gcpBackendPolicy.connectionDraining.drainingTimeoutSec is required" $draining.drainingTimeoutSec }}
+    drainingTimeoutSec: {{ required "transport.managedRelay.gcpBackendPolicy.connectionDraining.drainingTimeoutSec is required" $draining.drainingTimeoutSec }}
   targetRef:
     group: ""
     kind: Service

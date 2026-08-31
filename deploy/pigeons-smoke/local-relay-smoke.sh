@@ -53,7 +53,7 @@ if [ -n "$api_url" ]; then
 		csrf_token=dev-csrf
 	fi
 fi
-if [ -n "$api_url" ] && [ -n "${TERNAL_PIGEONS_RELAY_ACCESS_TOKEN:-}" ]; then
+if [ -n "$api_url" ] && [ -n "${TERNAL_RELAY_ACCESS_TOKEN:-}" ]; then
 	managed_relay=1
 	need jq
 fi
@@ -70,7 +70,7 @@ grant_callback_verified=0
 banner_file=""
 
 assert_patched_route_guard() {
-	patch=${TERNAL_PIGEONS_PATCH_FILE:-deploy/agent/pigeons-0.1.1-ternal.patch}
+	patch=${TERNAL_TRANSPORT_PATCH_FILE:-deploy/agent/pigeons-0.1.1-ternal.patch}
 	grep -F 'custom relay routes require a remote relay or direct address' "$patch" >/dev/null || {
 		echo "patched pigeons route guard is missing: $patch" >&2
 		exit 1
@@ -149,7 +149,7 @@ EOF
 	docker create --name "$relay_name" \
 		--add-host host.docker.internal:host-gateway \
 		-p "127.0.0.1:${relay_port}:3340" \
-		-e IROH_RELAY_HTTP_BEARER_TOKEN="$TERNAL_PIGEONS_RELAY_ACCESS_TOKEN" \
+		-e IROH_RELAY_HTTP_BEARER_TOKEN="$TERNAL_RELAY_ACCESS_TOKEN" \
 		n0computer/iroh-relay:v0.96.1 --config-path /relay.toml >/dev/null
 	docker cp "$work/relay.toml" "$relay_name:/relay.toml"
 	docker start "$relay_name" >/dev/null
@@ -172,7 +172,7 @@ if ! nc -z 127.0.0.1 "$relay_port" >/dev/null 2>&1; then
 fi
 relay_url="http://127.0.0.1:${relay_port}"
 
-bin=${TERNAL_PIGEONS_BIN:?set TERNAL_PIGEONS_BIN to the patched pigeons binary}
+bin=${TERNAL_TRANSPORT_BIN:?set TERNAL_TRANSPORT_BIN to the patched transport binary}
 test -x "$bin" || { echo "pigeons binary is not executable: $bin" >&2; exit 1; }
 
 ssh_port=${TERNAL_SMOKE_SSH_PORT:-40226}
@@ -262,7 +262,7 @@ if [ "$managed_relay" -eq 0 ] && [ -n "${TERNAL_SMOKE_POST_HEALTHY_HOOK:-}" ]; t
 	TERNAL_SMOKE_RELAY_NAME=$relay_name \
 	TERNAL_SMOKE_RELAY_URL=$relay_url \
 	TERNAL_SMOKE_ENDPOINT=$endpoint \
-	TERNAL_PIGEONS_BIN=$bin \
+	TERNAL_TRANSPORT_BIN=$bin \
 	TERNAL_SMOKE_TIMEOUT_BIN=$timeout_bin \
 		sh "$TERNAL_SMOKE_POST_HEALTHY_HOOK"
 fi
@@ -287,7 +287,7 @@ if [ -n "$api_url" ]; then
 	run_agent() {
 		HOME="$work/home" \
 		TERNAL_API_URL="$api_url" \
-		TERNAL_PIGEONS_BIN="$bin" \
+		TERNAL_TRANSPORT_BIN="$bin" \
 		TERNAL_DEVICE_KEY_FILE="$work/device.key" \
 		TERNAL_DEVICE_IDENTITY_FILE="$work/device-identity.json" \
 		TERNAL_AGENT_SSH_USER="$ssh_user" \
@@ -313,7 +313,7 @@ if [ -n "$api_url" ]; then
 		--arg group "$policy_group" \
 		--arg host_selector "$host_name" \
 		--arg ssh_user "$ssh_user" \
-		'{name:$name, rauthy_group:$group, host_selector:$host_selector, ssh_users:[$ssh_user], expires_at:null}')
+		'{name:$name, principal:$group, host_selector:$host_selector, ssh_users:[$ssh_user], expires_at:null}')
 	policy_response=$(api_request POST /policies "$policy_json")
 	policy_id=$(printf '%s' "$policy_response" | jq -r '.id')
 
@@ -372,7 +372,7 @@ EOF
 		TERNAL_USER="${TERNAL_USER:-local-admin}" \
 		TERNAL_GROUPS="${TERNAL_GROUPS:-ternal-admins}" \
 		TERNAL_CLAIMS="${TERNAL_CLAIMS:-role=ssh-admin}" \
-		TERNAL_PIGEONS_BIN="$work/pigeons-wrapper" \
+		TERNAL_TRANSPORT_BIN="$work/pigeons-wrapper" \
 			"$timeout_bin" 30 "$ternalctl_bin" proxy "$host_id" "$endpoint:$ssh_port" --relay-url "$relay_url" \
 			</dev/null >"$work/ternalctl-proxy.out" 2>"$work/ternalctl-proxy.err"
 		proxy_status=$?
@@ -402,7 +402,7 @@ EOF
 		TERNAL_USER="${TERNAL_USER:-local-admin}" \
 		TERNAL_GROUPS="${TERNAL_GROUPS:-ternal-admins}" \
 		TERNAL_CLAIMS="${TERNAL_CLAIMS:-role=ssh-admin}" \
-		TERNAL_PIGEONS_BIN="$work/pigeons-wrapper" \
+		TERNAL_TRANSPORT_BIN="$work/pigeons-wrapper" \
 			"$timeout_bin" 30 ssh -F /dev/null -p "$ssh_port" \
 			-o BatchMode=yes \
 			-o IdentitiesOnly=yes \
@@ -437,7 +437,7 @@ EOF
 		TERNAL_USER="${TERNAL_USER:-local-admin}" \
 		TERNAL_GROUPS="${TERNAL_GROUPS:-ternal-admins}" \
 		TERNAL_CLAIMS="${TERNAL_CLAIMS:-role=ssh-admin}" \
-		TERNAL_PIGEONS_BIN="$work/pigeons-wrapper" \
+		TERNAL_TRANSPORT_BIN="$work/pigeons-wrapper" \
 			"$timeout_bin" 30 ssh -F /dev/null -p "$ssh_port" \
 			-o BatchMode=yes \
 			-o IdentitiesOnly=yes \
@@ -474,7 +474,7 @@ EOF
 		grant_callback_verified=1
 		printf 'managed relay admission smoke passed: real client grant reached SSH banner and ungranted client was denied\n'
 	else
-		printf 'managed relay admission smoke skipped: set TERNAL_SMOKE_TERNALCTL_BIN and TERNAL_PIGEONS_RELAY_ACCESS_TOKEN\n'
+		printf 'managed relay admission smoke skipped: set TERNAL_SMOKE_TERNALCTL_BIN and TERNAL_RELAY_ACCESS_TOKEN\n'
 	fi
 fi
 
