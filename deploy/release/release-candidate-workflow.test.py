@@ -44,6 +44,8 @@ if not uses or any(
     raise SystemExit("every external release candidate action must use a full commit pin")
 if workflow.count(f"uses: {allowed_local}") != 1:
     raise SystemExit("release candidate must call the local native build exactly once")
+if native.count("-buildvcs=false") != 3:
+    raise SystemExit("every native Go release build must disable ref-dependent VCS stamping")
 
 archives = (
     "ternal-agent-linux-amd64.tar.gz",
