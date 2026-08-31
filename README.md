@@ -1,121 +1,177 @@
 # Ternal
 
-Ternal is a Go-first SSH access control plane for private devices reached over
-the pinned Ternal build of [pigeons](https://github.com/n0-computer/pigeons).
-This branch is a breaking greenfield port: the application, CLI, agent, portal,
-tests, image, and CI are Go-native. There is no parallel Rust application or
-Node frontend runtime.
+[![CI](https://github.com/mrchypark/ternal/actions/workflows/ci.yaml/badge.svg)](https://github.com/mrchypark/ternal/actions/workflows/ci.yaml)
 
-## Architecture
+Ternal is a self-hosted SSH access control plane for private devices. It gives
+users short-lived, policy-checked SSH access without exposing device SSH ports
+to the public internet.
 
-- `cmd/ternal-api`: Go HTTP API, OIDC relying party, and embedded web portal.
-- `cmd/ternalctl`: device-flow login and strict, grant-aware SSH client wrapper.
-- `cmd/ternal-agent`: persistent device identity, enrollment, heartbeat,
-  authorized-key synchronization, and pigeons roost supervision.
-- `internal/store`: embedded [Rhiza](https://github.com/mrchypark/rhiza)
-  persistence with linearizable reads.
-- `internal/web`: server-rendered
-  [gomponents](https://github.com/maragudk/gomponents) views enhanced by pinned
-  htmx 4 and Tailwind CSS 4 assets.
+The server, CLI, device agent, and web UI are written in Go. The web UI is
+server-rendered with [gomponents](https://github.com/maragudk/gomponents), htmx,
+and Tailwind CSS; it has no Node.js runtime or client-side application framework.
 
-The portal intentionally has no JavaScript package manager or client framework.
-`frontend/build.sh` downloads checksum-pinned htmx and the checksum-pinned
-Tailwind standalone CLI, then produces the embedded static assets. HTML remains
-ordinary typed Go code and htmx is progressive enhancement.
+> Ternal is under active development. The current code uses a greenfield data
+> model and do not migrate older Ternal databases.
 
-## Security contract
+## How it works
 
-- one breaking `/pigeons/1` SSH data plane;
-- persistent client and roost identities;
-- explicit relay or direct addressing (endpoint-ID-only connections fail);
-- policy-checked relay grants fixed at 300 seconds and bound to the requesting
-  client endpoint ID;
-- relay callback admission requires the configured bearer and exact
-  `x-iroh-nodeid` grant subject;
-- OpenSSH always uses strict host-key verification against the fingerprint
-  enrolled by the signed device identity;
-- device control requests are Ed25519 signed and freshness checked;
-- authorized-key snapshots have server-side monotonic generations and the agent
-  rejects rollback/equivocation;
-- OIDC discovery, endpoints, issuer, audience, nonce, state, and provider origin
-  are checked; provider access and refresh tokens are not persisted by the CLI.
+1. An administrator enrolls a device and records its SSH host-key fingerprint.
+2. The device agent maintains a persistent transport identity and synchronizes
+   authorized keys.
+3. A user signs in through an OIDC provider and requests a host.
+4. Ternal evaluates identity claims, host policy, device state, and the route.
+5. The CLI receives a 300-second relay grant and opens OpenSSH with strict
+   host-key checking.
 
-Ternal owns policy and grant semantics. The pinned pigeons patch only supplies
-generic transport capabilities that cannot be composed outside pigeons. It does
-not contain Ternal policy, grant logic, or `RelayConfig::with_auth_token`.
+Ternal fails closed when the route is incomplete, a grant is missing or expired,
+the device is revoked, or the host key does not match.
 
-## Build and test
+## Components
 
-Go 1.27 or newer is required.
+| Command | Purpose |
+| --- | --- |
+| `ternal-api` | HTTP API, OIDC relying party, policy engine, and embedded web UI |
+| `ternalctl` | User login, host discovery, and strict SSH invocation |
+| `ternal-agent` | Device enrollment, heartbeat, key synchronization, and transport supervision |
+
+The current storage engine is
+[Rhiza](https://github.com/mrchypark/rhiza), and the current private-device
+transport is a pinned Ternal build of
+[pigeons](https://github.com/n0-computer/pigeons). These are implementation
+dependencies, not names in Ternal's public runtime configuration.
+
+## Try it locally
+
+Requirements:
+
+- Go 1.27 or newer
+- `curl` and `jq`
+
+Run the loopback-only smoke test:
 
 ```sh
 ./frontend/build.sh
-go test ./...
-go build ./cmd/ternal-api ./cmd/ternalctl ./cmd/ternal-agent
+./deploy/e2e/local-go-smoke.sh
 ```
 
-Run the deterministic repository suite with:
+The smoke test starts a temporary server, verifies the embedded web assets, and
+performs authenticated host CRUD. It uses development headers that the server
+rejects on non-loopback addresses.
+
+Run the complete deterministic suite with:
 
 ```sh
 ./scripts/run-all-tests.sh
 ```
 
-The pigeons packaging checks require Rust only to build the separately pinned
-upstream transport source. Rust is not part of the Ternal application or
-frontend architecture.
-
-## Local server
-
-Production-like runs require explicit secrets and a real OIDC provider:
+Or build the Go programs directly:
 
 ```sh
-export TERNAL_BIND=127.0.0.1:3000
-export RHIZA_DATA_DIR=ternal-rhiza
-export RHIZA_ADMIN_TOKEN='<at least 32 random bytes>'
-export TERNAL_REQUIRE_RHIZA_ADMIN_TOKEN=1
+go test ./...
+go build ./cmd/ternal-api ./cmd/ternalctl ./cmd/ternal-agent
+```
+
+## Configuration
+
+All Ternal-owned environment variables use the `TERNAL_` prefix and describe a
+stable role, not a dependency product. For example, use `TERNAL_DATA_DIR`, not a
+storage-engine name, and `TERNAL_OIDC_ISSUER`, not an identity-provider name.
+
+The minimum production configuration is:
+
+```sh
+export TERNAL_BIND='127.0.0.1:3000'
+
+export TERNAL_OIDC_ISSUER='https://identity.example/auth/v1/'
+export TERNAL_OIDC_CLIENT_ID='ternal'
+export TERNAL_OIDC_CLIENT_SECRET='<provider-issued value>'
+export TERNAL_OIDC_REDIRECT_URL='https://ternal.example/auth/callback'
+export TERNAL_OIDC_ADMIN_GROUP='ternal-admins'
+
 export TERNAL_SESSION_KEY='<at least 32 random bytes>'
-export TERNAL_PIGEONS_RELAY_ACCESS_TOKEN='<at least 32 random bytes>'
-export RAUTHY_ISSUER='https://issuer.example/auth/v1/'
-export RAUTHY_CLIENT_ID='ternal'
-export RAUTHY_CLIENT_SECRET='<provider-issued value>'
-export RAUTHY_REDIRECT_URL='https://ternal.example/auth/callback'
+export TERNAL_DATA_DIR='./ternal-data'
+export TERNAL_DATA_ADMIN_TOKEN='<at least 32 random bytes>'
+export TERNAL_REQUIRE_DATA_ADMIN_TOKEN=1
+export TERNAL_RELAY_ACCESS_TOKEN='<at least 32 random bytes>'
+
 go run ./cmd/ternal-api
 ```
 
-For a loopback-only development smoke, use
-`deploy/e2e/local-go-smoke.sh`. Development identity headers are rejected on a
-non-loopback bind.
+Do not commit these secret values. Generate the session, data, and relay tokens
+independently. For Docker Compose, copy `.env.example` to `.env`, replace every
+placeholder, and run `docker compose up --build`.
 
-## CLI and agent
+See [configuration](docs/configuration.md) for the complete naming contract,
+advanced data settings, and the distinction between Ternal variables and
+upstream tool variables.
+
+## CLI and device agent
+
+User access:
 
 ```sh
-go run ./cmd/ternalctl login
-go run ./cmd/ternalctl hosts
-go run ./cmd/ternalctl ssh <host-id>
-
-go run ./cmd/ternal-agent device-keygen
-TERNAL_MANUFACTURING_TOKEN_FILE=/run/secrets/enrollment-token \
-  go run ./cmd/ternal-agent enroll <ssh-host-key-fingerprint>
-go run ./cmd/ternal-agent run
+ternalctl login
+ternalctl hosts
+ternalctl ssh <host-id>
 ```
 
-The manufacturing token is read from a file, never from process arguments.
-Batch enrollment assigns the serial number server-side. A one-device token may
-pass an explicit serial as the final `enroll` argument.
+Device enrollment:
 
-## Deployment
+```sh
+ternal-agent device-keygen /var/lib/ternal/device.key
 
-`Dockerfile` builds the Go server and embedded frontend assets. The Helm chart
-supports disposable `emptyDir` storage and an optional PVC. Runtime secrets are
-provided by a pre-created Secret; Helm does not need plaintext secret values in
-release history.
+TERNAL_API_URL='https://ternal.example' \
+TERNAL_DEVICE_KEY_FILE=/var/lib/ternal/device.key \
+TERNAL_DEVICE_IDENTITY_FILE=/var/lib/ternal/device.json \
+TERNAL_MANUFACTURING_TOKEN_FILE=/run/secrets/ternal-enrollment \
+  ternal-agent enroll 'SHA256:<ssh-host-key-fingerprint>'
 
-CI and image publication use GitHub Actions. Cloud Build is not supported.
-Version tags publish the image, packaged Helm chart, platform-native CLI
-bundles, Linux agent bundle, checksums, SBOMs, and provenance in one verified
-GitHub Release. The release workflow does not deploy them.
-Release assets must be rebuilt from the exact reviewed Go commit and qualified
-before any deployment.
+TERNAL_API_URL='https://ternal.example' \
+TERNAL_DEVICE_KEY_FILE=/var/lib/ternal/device.key \
+TERNAL_DEVICE_IDENTITY_FILE=/var/lib/ternal/device.json \
+TERNAL_AGENT_AUTHORIZED_KEYS_PATH=/home/ops/.ssh/authorized_keys \
+TERNAL_AGENT_SSH_USER=ops \
+TERNAL_AGENT_RELAY_URLS='https://relay.example' \
+  ternal-agent run
+```
 
-See [verification](docs/verification.md), [user scenarios](docs/user-scenarios.md),
-and [pigeons provenance](docs/agent-embedded-pigeons.md).
+The manufacturing token is read from a file and never passed as a process
+argument. Enrollment binds the device key, transport endpoint, serial, and SSH
+host-key fingerprint in one operation.
+
+## Deployment and releases
+
+- `Dockerfile` builds the API and embedded frontend.
+- `deploy/helm/ternal` contains the Helm chart.
+- Runtime secrets can come from one pre-created Kubernetes Secret, keeping
+  plaintext values out of Helm release history.
+- GitHub Actions builds the image, chart, native CLI bundles, Linux agent bundle,
+  checksums, SBOMs, and provenance for version tags.
+- Release workflows publish artifacts only; they do not deploy them.
+
+Cloud Build is not supported.
+
+## Security properties
+
+- one `/pigeons/1` data plane with persistent client and device identities;
+- explicit relay or direct routes; endpoint-ID-only connections are rejected;
+- policy-checked 300-second relay grants bound to the client endpoint ID;
+- callback admission bound to both the configured bearer and endpoint subject;
+- strict OpenSSH host-key verification with no permissive fallback;
+- signed device requests with freshness checks;
+- monotonic authorized-key generations with rollback and equivocation rejection;
+- pinned OIDC issuer, endpoint origin, audience, nonce, and state validation;
+- no CLI persistence of provider access or refresh tokens.
+
+Ternal owns policy and grant behavior. Its pinned pigeons patch contains only
+generic transport capabilities required to supply identity and full route data.
+
+## Documentation
+
+- [Configuration](docs/configuration.md)
+- [User scenarios](docs/user-scenarios.md)
+- [Verification](docs/verification.md)
+- [Device enrollment and access](docs/device-manufacturing-access.md)
+- [Identity and Ternal data boundary](docs/data-boundary.md)
+- [Release process](docs/releasing.md)
+- [Pinned transport provenance](docs/agent-embedded-pigeons.md)

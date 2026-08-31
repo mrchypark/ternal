@@ -232,7 +232,7 @@ func heartbeat(ctx context.Context, cfg config, status string) error {
 	if err != nil {
 		return err
 	}
-	discovery := &deviceauth.Discovery{DirectAddresses: parseList(os.Getenv("TERNAL_PIGEONS_DIRECT_ADDRESSES")), RelayURLs: append(append([]string{}, cfg.RelayURLs...), cfg.ExtraRelayURLs...)}
+	discovery := &deviceauth.Discovery{DirectAddresses: parseList(os.Getenv("TERNAL_DIRECT_ADDRESSES")), RelayURLs: append(append([]string{}, cfg.RelayURLs...), cfg.ExtraRelayURLs...)}
 	timestamp := time.Now().Unix()
 	payload := deviceauth.HeartbeatPayload(identity.Serial, endpointID, identity.HostKeyFingerprint, timestamp, status, discovery)
 	body := map[string]any{
@@ -537,7 +537,7 @@ func writeStatus(path string, status runtimeStatus) error {
 }
 
 func findPigeons() (string, error) {
-	if configured := os.Getenv("TERNAL_PIGEONS_BIN"); configured != "" {
+	if configured := os.Getenv("TERNAL_TRANSPORT_BIN"); configured != "" {
 		if filepath.IsAbs(configured) {
 			if info, err := os.Stat(configured); err == nil && info.Mode().IsRegular() && info.Mode()&0111 != 0 {
 				return configured, nil

@@ -1,5 +1,5 @@
 {{- $gateway := default dict .Values.gateway -}}
-{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- $managedRelay := default dict .Values.transport.managedRelay -}}
 {{- if ($gateway.enabled | default false) }}
 {{- $host := required "gateway.host is required when gateway is enabled" $gateway.host -}}
 apiVersion: gateway.networking.k8s.io/v1

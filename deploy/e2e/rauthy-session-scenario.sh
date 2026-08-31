@@ -78,7 +78,7 @@ sh deploy/e2e/local-user-scenario.sh
 sh deploy/e2e/local-cli-scenario.sh
 sh deploy/e2e/local-agent-scenario.sh
 
-if [ "${TERNAL_E2E_PIGEONS_SMOKE:-0}" = "1" ]; then
+if [ "${TERNAL_E2E_TRANSPORT_SMOKE:-0}" = "1" ]; then
 	TERNAL_API_URL="$api_url" \
 	TERNAL_SESSION_COOKIE="$TERNAL_ADMIN_SESSION_COOKIE" \
 	TERNAL_CSRF_TOKEN="$TERNAL_ADMIN_CSRF_TOKEN" \

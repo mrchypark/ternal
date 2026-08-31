@@ -22,7 +22,7 @@ gateway:
     port: null
     sectionName: ""
 
-rauthy:
+oidc:
   issuer: http://host.docker.internal:8080/auth/v1/
   clientId: ternal
   redirectUrl: http://127.0.0.1:3000/auth/callback
@@ -32,7 +32,7 @@ rauthy:
 session:
   ttlSeconds: 3600
 
-pigeons:
+transport:
   relayUrls: ""
   extraRelayUrls: ""
   managedRelay:
@@ -76,7 +76,7 @@ secrets:
   # Set this to a pre-created Secret containing the four environment-variable
   # keys below. This keeps plaintext values out of Helm release history.
   existingSecret: ""
-  rauthyClientSecret: ""
+  oidcClientSecret: ""
   sessionKey: ""
-  rhizaAdminToken: ""
-  pigeonsRelayAccessToken: ""
+  dataAdminToken: ""
+  relayAccessToken: ""

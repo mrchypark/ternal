@@ -24,7 +24,7 @@ fi
 
 here=$(cd "$(dirname "$0")" && pwd)
 compose_file=$here/compose.yaml
-project=${TERNAL_RAUTHY_SMOKE_PROJECT:-ternal-rauthy-smoke}
+project=${TERNAL_OIDC_SMOKE_PROJECT:-ternal-oidc-smoke}
 api_url=http://127.0.0.1:3000
 issuer=http://rauthy.localhost:18080/auth/v1/
 issuer_base=${issuer%/}
@@ -114,9 +114,9 @@ curl -fsS --connect-timeout 2 --max-time 10 -D "$work/logo.headers" \
 grep -i '^content-type:[[:space:]]*image/webp' "$work/logo.headers" >/dev/null
 test -s "$work/logo.png"
 
-RAUTHY_ISSUER=$issuer \
-RAUTHY_CLIENT_ID=ternal \
-RAUTHY_CLIENT_SECRET=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+TERNAL_OIDC_ISSUER=$issuer \
+TERNAL_OIDC_CLIENT_ID=ternal \
+TERNAL_OIDC_CLIENT_SECRET=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
 	sh "$here/../e2e/rauthy-device-grant-preflight.sh"
 
 repo=$(cd "$here/../.." && pwd)
@@ -128,16 +128,16 @@ fi
 
 env \
 	TERNAL_BIND=127.0.0.1:3000 \
-	RHIZA_DATA_DIR="$work/rhiza" \
-	RHIZA_ADMIN_TOKEN=ternal-local-rhiza-admin-token-minimum-32-characters \
-	TERNAL_REQUIRE_RHIZA_ADMIN_TOKEN=1 \
-	TERNAL_PIGEONS_RELAY_ACCESS_TOKEN=ternal-local-relay-access-token-minimum-32-characters \
-	RAUTHY_ISSUER="$issuer" \
-	RAUTHY_CLIENT_ID=ternal \
-	RAUTHY_CLIENT_SECRET=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-	RAUTHY_REDIRECT_URL=http://127.0.0.1:3000/auth/callback \
-	RAUTHY_ADMIN_GROUP=ternal-admins \
-	RAUTHY_GROUPS_CLAIM=groups \
+	TERNAL_DATA_DIR="$work/data" \
+	TERNAL_DATA_ADMIN_TOKEN=ternal-local-data-admin-token-minimum-32-characters \
+	TERNAL_REQUIRE_DATA_ADMIN_TOKEN=1 \
+	TERNAL_RELAY_ACCESS_TOKEN=ternal-local-relay-access-token-minimum-32-characters \
+	TERNAL_OIDC_ISSUER="$issuer" \
+	TERNAL_OIDC_CLIENT_ID=ternal \
+	TERNAL_OIDC_CLIENT_SECRET=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+	TERNAL_OIDC_REDIRECT_URL=http://127.0.0.1:3000/auth/callback \
+	TERNAL_OIDC_ADMIN_GROUP=ternal-admins \
+	TERNAL_OIDC_GROUPS_CLAIM=groups \
 	TERNAL_SESSION_KEY=ternal-local-session-key-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
 	TERNAL_SESSION_TTL_SECONDS=60 \
 	TERNAL_DEV_HEADERS=0 \

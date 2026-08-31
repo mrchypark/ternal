@@ -1,4 +1,4 @@
-{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- $managedRelay := default dict .Values.transport.managedRelay -}}
 {{- if ($managedRelay.enabled | default false) }}
 {{- $metrics := default dict $managedRelay.metrics -}}
 {{- $relayService := default dict $managedRelay.service -}}

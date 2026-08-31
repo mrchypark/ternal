@@ -28,7 +28,7 @@ import (
 
 type Server struct {
 	store      *store.Store
-	auth       auth.RauthyConfig
+	auth       auth.OIDCConfig
 	oidc       *auth.OIDCClient
 	oidcErr    error
 	sessionKey string
@@ -39,7 +39,7 @@ type Server struct {
 }
 
 func NewServer(s *store.Store) *Server {
-	config := auth.RauthyConfigFromEnv()
+	config := auth.OIDCConfigFromEnv()
 	oidcClient, oidcErr := auth.NewOIDCClient(config)
 	sessionKey := os.Getenv("TERNAL_SESSION_KEY")
 	var configErr error
@@ -64,7 +64,7 @@ func NewServer(s *store.Store) *Server {
 		oidc:       oidcClient,
 		oidcErr:    oidcErr,
 		sessionKey: sessionKey,
-		relayToken: os.Getenv("TERNAL_PIGEONS_RELAY_ACCESS_TOKEN"),
+		relayToken: os.Getenv("TERNAL_RELAY_ACCESS_TOKEN"),
 		sessionTTL: sessionTTL,
 		devHeaders: devHeaders,
 		configErr:  configErr,
@@ -92,7 +92,7 @@ func (s *Server) ValidateRuntime(bind string) error {
 		}
 	}
 	if len(s.relayToken) < 32 {
-		return fmt.Errorf("TERNAL_PIGEONS_RELAY_ACCESS_TOKEN must be at least 32 bytes")
+		return fmt.Errorf("TERNAL_RELAY_ACCESS_TOKEN must be at least 32 bytes")
 	}
 	return nil
 }

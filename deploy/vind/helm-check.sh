@@ -44,14 +44,14 @@ vcluster connect "$name" --driver docker -- helm upgrade --install ternal deploy
 	--set gateway.enabled=false \
 	--set image.repository=ternal \
 	--set image.tag=local-check \
-	--set-string rauthy.issuer=https://auth.ternal.example.invalid/auth/v1/ \
-	--set-string rauthy.clientId=ternal \
-	--set-string rauthy.redirectUrl=https://ternal.example.invalid/auth/callback \
-	--set-string rauthy.adminGroup=ternal-admins \
-	--set-string rauthy.groupsClaim=groups \
-	--set-string secrets.rauthyClientSecret=test-rauthy-secret \
+	--set-string oidc.issuer=https://auth.ternal.example.invalid/auth/v1/ \
+	--set-string oidc.clientId=ternal \
+	--set-string oidc.redirectUrl=https://ternal.example.invalid/auth/callback \
+	--set-string oidc.adminGroup=ternal-admins \
+	--set-string oidc.groupsClaim=groups \
+	--set-string secrets.oidcClientSecret=test-oidc-secret \
 	--set-string secrets.sessionKey=0123456789abcdef0123456789abcdef \
-	--set-string secrets.rhizaAdminToken=0123456789abcdef0123456789abcdef \
-	--set-string secrets.pigeonsRelayAccessToken=0123456789abcdef0123456789abcdef
+	--set-string secrets.dataAdminToken=0123456789abcdef0123456789abcdef \
+	--set-string secrets.relayAccessToken=0123456789abcdef0123456789abcdef
 
 echo "vind helm server dry-run check passed: $name"

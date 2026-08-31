@@ -96,16 +96,16 @@ jobs:
         run: |
           set -euo pipefail
           sh deploy/agent/build-pigeons-native.sh "${{ matrix.platform }}"
-          TERNAL_PIGEONS_BIN="dist/pigeons-${{ matrix.platform }}" \
+          TERNAL_TRANSPORT_BIN="dist/pigeons-${{ matrix.platform }}" \
             sh deploy/cli/package-unix.sh "${{ matrix.platform }}"
           cp "dist/${{ matrix.archive }}" "$RUNNER_TEMP/first-${{ matrix.archive }}"
-          TERNAL_PIGEONS_BIN="dist/pigeons-${{ matrix.platform }}" \
+          TERNAL_TRANSPORT_BIN="dist/pigeons-${{ matrix.platform }}" \
             sh deploy/cli/package-unix.sh "${{ matrix.platform }}" >/dev/null
           cmp "$RUNNER_TEMP/first-${{ matrix.archive }}" "dist/${{ matrix.archive }}"
           if [ "${{ matrix.platform }}" = linux-amd64 ]; then
-            TERNAL_PIGEONS_BIN=dist/pigeons-linux-amd64 sh deploy/agent/package-linux-amd64.sh
+            TERNAL_TRANSPORT_BIN=dist/pigeons-linux-amd64 sh deploy/agent/package-linux-amd64.sh
             cp dist/ternal-agent-linux-amd64.tar.gz "$RUNNER_TEMP/first-ternal-agent-linux-amd64.tar.gz"
-            TERNAL_PIGEONS_BIN=dist/pigeons-linux-amd64 sh deploy/agent/package-linux-amd64.sh >/dev/null
+            TERNAL_TRANSPORT_BIN=dist/pigeons-linux-amd64 sh deploy/agent/package-linux-amd64.sh >/dev/null
             cmp "$RUNNER_TEMP/first-ternal-agent-linux-amd64.tar.gz" dist/ternal-agent-linux-amd64.tar.gz
           fi
 
@@ -114,7 +114,7 @@ jobs:
         shell: pwsh
         run: |
           ./deploy/agent/build-pigeons-windows.ps1
-          $env:TERNAL_PIGEONS_BIN = "dist/pigeons-${{ matrix.platform }}.exe"
+          $env:TERNAL_TRANSPORT_BIN = "dist/pigeons-${{ matrix.platform }}.exe"
           ./deploy/cli/package-windows.ps1
           $first = Join-Path $env:RUNNER_TEMP "first-${{ matrix.archive }}"
           Copy-Item -LiteralPath "dist/${{ matrix.archive }}" -Destination $first

@@ -5,7 +5,7 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH='' cd -- "$script_dir/../.." && pwd)
 work=$(mktemp -d)
 cli_bin=${TERNALCTL_TEST_BIN:-$repo_dir/dist/bin/ternalctl}
-pigeons_test_bin=${TERNAL_PIGEONS_TEST_BIN:-}
+pigeons_test_bin=${TERNAL_TRANSPORT_TEST_BIN:-}
 
 cleanup() {
 	rm -rf "$work"
@@ -42,7 +42,7 @@ if [ -z "$pigeons_test_bin" ]; then
 	printf '%s\n' \
 		'#!/bin/sh' \
 		'set -eu' \
-		'printf "%s\\n" "$*" >> "${TERNALCTL_TEST_PIGEONS_LOG:?}"' \
+		'printf "%s\\n" "$*" >> "${TERNALCTL_TEST_TRANSPORT_LOG:?}"' \
 		'if [ "$1" = endpoint-id ]; then' \
 		'  printf "%s\\n" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
 		'fi' \
@@ -57,7 +57,7 @@ else
 fi
 
 TERNALCTL_BIN="$cli_bin" \
-TERNAL_PIGEONS_BIN="$pigeons_test_bin" \
+TERNAL_TRANSPORT_BIN="$pigeons_test_bin" \
 TERNALCTL_PACKAGE_DIR="$work/dist/$bundle" \
 TERNALCTL_ARCHIVE="$work/dist/$bundle.tar.gz" \
 	sh "$package_script" "$platform"
@@ -71,7 +71,7 @@ tar -tzf "$work/dist/$bundle.tar.gz" | grep "^$bundle/pigeons$" >/dev/null
 tar -tzf "$work/dist/$bundle.tar.gz" | grep "^$bundle/LICENSE.pigeons$" >/dev/null
 tar -tzf "$work/dist/$bundle.tar.gz" | grep "^$bundle/README.txt$" >/dev/null
 grep "Supported platform:" "$work/dist/$bundle/README.txt" >/dev/null
-grep 'TERNAL_PIGEONS_BIN' "$work/dist/$bundle/README.txt" >/dev/null
+grep 'TERNAL_TRANSPORT_BIN' "$work/dist/$bundle/README.txt" >/dev/null
 grep 'ssh-keygen' "$work/dist/$bundle/README.txt" >/dev/null
 case "$platform" in
 	linux-*)
@@ -90,7 +90,7 @@ esac
 
 cp "$work/dist/$bundle.tar.gz" "$work/first.tar.gz"
 TERNALCTL_BIN="$cli_bin" \
-TERNAL_PIGEONS_BIN="$pigeons_test_bin" \
+TERNAL_TRANSPORT_BIN="$pigeons_test_bin" \
 TERNALCTL_PACKAGE_DIR="$work/dist/$bundle" \
 TERNALCTL_ARCHIVE="$work/dist/$bundle.tar.gz" \
 	sh "$package_script" "$platform" >/dev/null
@@ -99,9 +99,9 @@ cmp "$work/first.tar.gz" "$work/dist/$bundle.tar.gz"
 mkdir -p "$work/extracted"
 tar -xzf "$work/dist/$bundle.tar.gz" -C "$work/extracted"
 if (
-	unset TERNAL_PIGEONS_BIN
+	unset TERNAL_TRANSPORT_BIN
 	HOME="$work/home" \
-	TERNALCTL_TEST_PIGEONS_LOG="$work/pigeons.log" \
+	TERNALCTL_TEST_TRANSPORT_LOG="$work/pigeons.log" \
 	TERNAL_API_URL=http://127.0.0.1:1 \
 	TERNAL_USER=package-test \
 	TERNAL_GROUPS=package-test \
@@ -121,7 +121,7 @@ case "$platform" in
 	linux-amd64) mismatch=linux-arm64 ;;
 	*) mismatch=linux-amd64 ;;
 esac
-if TERNALCTL_BIN="$cli_bin" TERNAL_PIGEONS_BIN="$pigeons_test_bin" \
+if TERNALCTL_BIN="$cli_bin" TERNAL_TRANSPORT_BIN="$pigeons_test_bin" \
 	sh "$repo_dir/deploy/cli/package-unix.sh" "$mismatch" >"$work/mismatch.out" 2>&1; then
 	echo 'expected mismatched native package request to fail' >&2
 	exit 1
@@ -138,7 +138,7 @@ expect_safety_rejection() {
 	if (
 		cd "$run_dir"
 		TERNALCTL_BIN="$unsafe_cli_bin" \
-		TERNAL_PIGEONS_BIN="$unsafe_pigeons_bin" \
+		TERNAL_TRANSPORT_BIN="$unsafe_pigeons_bin" \
 		TERNALCTL_PACKAGE_DIR="$unsafe_package_dir" \
 		TERNALCTL_ARCHIVE="$unsafe_archive" \
 			sh "$repo_dir/deploy/cli/package-unix.sh" "$platform"

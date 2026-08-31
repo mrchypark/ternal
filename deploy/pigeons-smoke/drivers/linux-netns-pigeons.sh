@@ -4,7 +4,7 @@ set -eu
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 parser="$script_dir/../parse-transport-jsonl.sh"
 work=${TERNAL_TRANSPORT_MATRIX_WORK:-}
-bin=${TERNAL_PIGEONS_BIN:-dist/pigeons-linux-amd64}
+bin=${TERNAL_TRANSPORT_BIN:-dist/pigeons-linux-amd64}
 
 capability_skip() {
 	if [ -n "${TERNAL_RELAY_URL:-}" ]; then

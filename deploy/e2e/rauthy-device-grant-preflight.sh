@@ -47,26 +47,26 @@ for command in curl jq python3 sleep; do
 	command -v "$command" >/dev/null 2>&1 || fail "missing required command: $command"
 done
 
-issuer=${RAUTHY_ISSUER:-}
-client_id=${RAUTHY_CLIENT_ID:-ternal}
-client_secret=${RAUTHY_CLIENT_SECRET:-}
+issuer=${TERNAL_OIDC_ISSUER:-}
+client_id=${TERNAL_OIDC_CLIENT_ID:-ternal}
+client_secret=${TERNAL_OIDC_CLIENT_SECRET:-}
 
-[ -n "$issuer" ] || fail 'RAUTHY_ISSUER is required'
-[ -n "$client_secret" ] || fail 'RAUTHY_CLIENT_SECRET is required'
+[ -n "$issuer" ] || fail 'TERNAL_OIDC_ISSUER is required'
+[ -n "$client_secret" ] || fail 'TERNAL_OIDC_CLIENT_SECRET is required'
 case $issuer in
 	https://?*) issuer_scheme=https ;;
 	http://?*)
 		issuer_scheme=http
 		is_local_http_url "$issuer" ||
-			fail 'an http RAUTHY_ISSUER must use loopback or a *.localhost host'
+			fail 'an http TERNAL_OIDC_ISSUER must use loopback or a *.localhost host'
 		;;
-	*) fail 'RAUTHY_ISSUER must use http or https' ;;
+	*) fail 'TERNAL_OIDC_ISSUER must use http or https' ;;
 esac
 issuer_authority=${issuer#*://}
 issuer_authority=${issuer_authority%%/*}
-case $issuer_authority in *'@'*) fail 'RAUTHY_ISSUER must not contain userinfo' ;; esac
-case $client_id in '' | *[!a-zA-Z0-9._~-]*) fail 'RAUTHY_CLIENT_ID contains unsupported form characters' ;; esac
-case $client_secret in '' | *[!a-zA-Z0-9]*) fail 'RAUTHY_CLIENT_SECRET must be alphanumeric for Rauthy' ;; esac
+case $issuer_authority in *'@'*) fail 'TERNAL_OIDC_ISSUER must not contain userinfo' ;; esac
+case $client_id in '' | *[!a-zA-Z0-9._~-]*) fail 'TERNAL_OIDC_CLIENT_ID contains unsupported form characters' ;; esac
+case $client_secret in '' | *[!a-zA-Z0-9]*) fail 'TERNAL_OIDC_CLIENT_SECRET must be alphanumeric for this provider check' ;; esac
 
 umask 077
 work=$(mktemp -d)
@@ -87,7 +87,7 @@ from urllib.parse import urlsplit
 expected_issuer = sys.argv[1]
 issuer = urlsplit(expected_issuer)
 if issuer.username or issuer.password:
-    raise SystemExit("RAUTHY_ISSUER must not contain userinfo")
+    raise SystemExit("TERNAL_OIDC_ISSUER must not contain userinfo")
 def origin(url):
     port = url.port
     if port is None:
@@ -97,11 +97,11 @@ issuer_origin = origin(issuer)
 with open(sys.argv[2], encoding="utf-8") as handle:
     discovery = json.load(handle)
 if discovery.get("issuer") != expected_issuer:
-    raise SystemExit("OIDC discovery issuer does not match RAUTHY_ISSUER")
+    raise SystemExit("OIDC discovery issuer does not match TERNAL_OIDC_ISSUER")
 for key in ("device_authorization_endpoint", "token_endpoint"):
     endpoint = urlsplit(discovery.get(key, ""))
     if endpoint.username or endpoint.password or origin(endpoint) != issuer_origin:
-        raise SystemExit(f"OIDC discovery {key} origin does not match RAUTHY_ISSUER")
+        raise SystemExit(f"OIDC discovery {key} origin does not match TERNAL_OIDC_ISSUER")
 PY
 
 if ! jq -e '

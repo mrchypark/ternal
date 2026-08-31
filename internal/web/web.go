@@ -258,7 +258,7 @@ func keysTable(items []store.SshKey) g.Node {
 
 func policiesTable(items []core.Policy) g.Node {
 	rows := g.Map(items, func(item core.Policy) g.Node {
-		return tr(td(item.Name, "font-semibold text-ink-900"), td(item.RauthyGroup, ""), td(item.HostSelector, "font-mono text-xs"), td(strings.Join(item.SSHUsers, ", "), ""), td(formatUnix(item.ExpiresAt), "tabular-nums"))
+		return tr(td(item.Name, "font-semibold text-ink-900"), td(item.Principal, ""), td(item.HostSelector, "font-mono text-xs"), td(strings.Join(item.SSHUsers, ", "), ""), td(formatUnix(item.ExpiresAt), "tabular-nums"))
 	})
 	return dataTable("Organization access policies", []string{"Name", "Principal", "Host selector", "SSH users", "Expires"}, rows, "No policies configured yet.")
 }

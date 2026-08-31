@@ -74,19 +74,19 @@ services:
         condition: service_completed_successfully
     environment:
       TERNAL_BIND: 0.0.0.0:3000
-      RHIZA_DATA_DIR: /data/rhiza
-      RHIZA_ADMIN_TOKEN: ternal-local-rhiza-admin-token-minimum-32-characters
-      TERNAL_REQUIRE_RHIZA_ADMIN_TOKEN: "1"
-      RAUTHY_ISSUER: http://rauthy.localhost:18080/auth/v1/
-      RAUTHY_CLIENT_ID: ternal
-      RAUTHY_CLIENT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-      RAUTHY_REDIRECT_URL: http://127.0.0.1:3000/auth/callback
-      RAUTHY_ADMIN_GROUP: ternal-admins
-      RAUTHY_GROUPS_CLAIM: groups
+      TERNAL_DATA_DIR: /data/ternal
+      TERNAL_DATA_ADMIN_TOKEN: ternal-local-data-admin-token-minimum-32-characters
+      TERNAL_REQUIRE_DATA_ADMIN_TOKEN: "1"
+      TERNAL_OIDC_ISSUER: http://rauthy.localhost:18080/auth/v1/
+      TERNAL_OIDC_CLIENT_ID: ternal
+      TERNAL_OIDC_CLIENT_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      TERNAL_OIDC_REDIRECT_URL: http://127.0.0.1:3000/auth/callback
+      TERNAL_OIDC_ADMIN_GROUP: ternal-admins
+      TERNAL_OIDC_GROUPS_CLAIM: groups
       TERNAL_SESSION_KEY: ternal-local-session-key-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       TERNAL_SESSION_TTL_SECONDS: 3600
       TERNAL_DEV_HEADERS: "0"
-      TERNAL_PIGEONS_RELAY_ACCESS_TOKEN: ternal-local-relay-access-token-minimum-32-characters
+      TERNAL_RELAY_ACCESS_TOKEN: ternal-local-relay-access-token-minimum-32-characters
       TERNAL_AGENT_RELAY_URLS: ""
       TERNAL_AGENT_EXTRA_RELAY_URLS: ""
     volumes:

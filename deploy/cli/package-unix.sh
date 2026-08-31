@@ -60,7 +60,7 @@ expected_package_name=ternalctl-$platform
 cli_bin=${TERNALCTL_BIN:-dist/bin/ternalctl}
 package_dir=${TERNALCTL_PACKAGE_DIR-dist/ternalctl-$platform}
 archive=${TERNALCTL_ARCHIVE-dist/ternalctl-$platform.tar.gz}
-pigeons_bin=${TERNAL_PIGEONS_BIN:-}
+pigeons_bin=${TERNAL_TRANSPORT_BIN:-}
 
 need() {
 	if ! command -v "$1" >/dev/null 2>&1; then
@@ -193,7 +193,7 @@ need gzip
 need tar
 
 if [ "$build_pigeons" = true ]; then
-	TERNAL_PIGEONS_OUTPUT="$pigeons_bin" sh "$script_dir/../agent/build-pigeons-native.sh" "$platform"
+	TERNAL_TRANSPORT_OUTPUT="$pigeons_bin" sh "$script_dir/../agent/build-pigeons-native.sh" "$platform"
 fi
 
 test -x "$pigeons_bin" || {
@@ -228,10 +228,10 @@ printf '%s\n' \
 	"$install_command" \
 	'' \
 	'pigeons lookup order:' \
-	'1. TERNAL_PIGEONS_BIN' \
+	'1. TERNAL_TRANSPORT_BIN' \
 	'2. executable pigeons beside the resolved ternalctl executable target' \
 	'3. pigeons on PATH' \
-	'Symlink installs must keep both files beside the symlink target, or use TERNAL_PIGEONS_BIN/PATH.' \
+	'Symlink installs must keep both files beside the symlink target, or use TERNAL_TRANSPORT_BIN/PATH.' \
 	'' \
 	'Run:' \
 	'  TERNAL_API_URL=https://<ternal-host> ./ternalctl login' \

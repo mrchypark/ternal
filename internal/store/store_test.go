@@ -47,6 +47,27 @@ func TestReadyPerformsLinearizableRead(t *testing.T) {
 	}
 }
 
+func TestPolicyPrincipalPersists(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	created, err := s.CreatePolicy(ctx, NewPolicy{Name: "support", Principal: "role=support", HostSelector: "*", SSHUsers: []string{"ops"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policies, err := s.ListPolicies(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policies) != 1 || policies[0].ID != created.ID || policies[0].Principal != "role=support" {
+		t.Fatalf("policies = %#v", policies)
+	}
+}
+
 func TestOpenRejectsUnmarkedLegacySchema(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

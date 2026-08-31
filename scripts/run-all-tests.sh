@@ -13,6 +13,7 @@ done
 
 ./frontend/build.sh
 git diff --exit-code -- internal/web/static
+./scripts/check-public-config.sh
 test -z "$(gofmt -l cmd internal)"
 go test -race -count=1 -timeout=10m ./...
 go vet ./...

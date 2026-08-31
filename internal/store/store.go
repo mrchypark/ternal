@@ -38,7 +38,7 @@ type NewHost struct {
 
 type NewPolicy struct {
 	Name         string   `json:"name"`
-	RauthyGroup  string   `json:"rauthy_group"`
+	Principal    string   `json:"principal"`
 	HostSelector string   `json:"host_selector"`
 	SSHUsers     []string `json:"ssh_users"`
 	ExpiresAt    *int64   `json:"expires_at,omitempty"`
@@ -154,7 +154,7 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 }
 
 func OpenFromEnv(ctx context.Context) (*Store, error) {
-	return Open(ctx, envOr("RHIZA_DATA_DIR", envOr("TERNAL_RHIZA_DIR", "ternal-rhiza")))
+	return Open(ctx, envOr("TERNAL_DATA_DIR", "ternal-data"))
 }
 
 func (s *Store) Close() error {
@@ -162,7 +162,7 @@ func (s *Store) Close() error {
 }
 
 // Ready verifies that the store can serve a linearizable read. This is stricter
-// than process liveness and fails when the embedded Rhiza node cannot reach the
+// than process liveness and fails when the embedded data node cannot reach the
 // consistency level required by API reads.
 func (s *Store) Ready(ctx context.Context) error {
 	row := s.db.QueryRowContext(ctx, `SELECT 1`)
@@ -212,7 +212,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS policies (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
-			rauthy_group TEXT NOT NULL,
+			principal TEXT NOT NULL,
 			host_selector TEXT NOT NULL,
 			ssh_users TEXT NOT NULL DEFAULT '[]',
 			expires_at INTEGER,
@@ -427,15 +427,15 @@ func (s *Store) CreatePolicy(ctx context.Context, p NewPolicy) (*core.Policy, er
 	now := nowUnix()
 	sshUsersJSON, _ := json.Marshal(p.SSHUsers)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO policies (id, name, rauthy_group, host_selector, ssh_users, expires_at, created_at, updated_at)
+		`INSERT INTO policies (id, name, principal, host_selector, ssh_users, expires_at, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, p.Name, p.RauthyGroup, p.HostSelector, string(sshUsersJSON), p.ExpiresAt, now, now,
+		id, p.Name, p.Principal, p.HostSelector, string(sshUsersJSON), p.ExpiresAt, now, now,
 	)
 	if err != nil {
 		return nil, err
 	}
 	return &core.Policy{
-		ID: id, Name: p.Name, RauthyGroup: p.RauthyGroup, HostSelector: p.HostSelector,
+		ID: id, Name: p.Name, Principal: p.Principal, HostSelector: p.HostSelector,
 		SSHUsers: p.SSHUsers, ExpiresAt: p.ExpiresAt,
 	}, nil
 }
@@ -443,7 +443,7 @@ func (s *Store) CreatePolicy(ctx context.Context, p NewPolicy) (*core.Policy, er
 func (s *Store) ListPolicies(ctx context.Context) ([]core.Policy, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, rauthy_group, host_selector, ssh_users, expires_at FROM policies ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, principal, host_selector, ssh_users, expires_at FROM policies ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -452,7 +452,7 @@ func (s *Store) ListPolicies(ctx context.Context) ([]core.Policy, error) {
 	for rows.Next() {
 		var p core.Policy
 		var sshUsersJSON string
-		if err := rows.Scan(&p.ID, &p.Name, &p.RauthyGroup, &p.HostSelector, &sshUsersJSON, &p.ExpiresAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Principal, &p.HostSelector, &sshUsersJSON, &p.ExpiresAt); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(sshUsersJSON), &p.SSHUsers)
@@ -466,8 +466,8 @@ func (s *Store) UpdatePolicy(ctx context.Context, id string, p NewPolicy) error 
 	defer s.mu.Unlock()
 	sshUsersJSON, _ := json.Marshal(p.SSHUsers)
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE policies SET name=?, rauthy_group=?, host_selector=?, ssh_users=?, expires_at=?, updated_at=? WHERE id=?`,
-		p.Name, p.RauthyGroup, p.HostSelector, string(sshUsersJSON), p.ExpiresAt, nowUnix(), id,
+		`UPDATE policies SET name=?, principal=?, host_selector=?, ssh_users=?, expires_at=?, updated_at=? WHERE id=?`,
+		p.Name, p.Principal, p.HostSelector, string(sshUsersJSON), p.ExpiresAt, nowUnix(), id,
 	)
 	return err
 }
@@ -632,7 +632,7 @@ func (s *Store) CreateAccessGrant(ctx context.Context, requestID, userID, hostID
 }
 
 // IssueSSHAccess records the approved request, short-lived key grant, and audit
-// event in one replicated Rhiza transaction. An access grant is never visible
+// event in one replicated data transaction. An access grant is never visible
 // without its corresponding decision record.
 func (s *Store) IssueSSHAccess(ctx context.Context, userID, hostID, sshUser string, expiresAt int64) error {
 	s.mu.Lock()

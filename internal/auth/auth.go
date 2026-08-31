@@ -20,7 +20,7 @@ const (
 	CSRFHeader      = "X-CSRF-Token"
 )
 
-type RauthyConfig struct {
+type OIDCConfig struct {
 	Issuer       string
 	ClientID     string
 	ClientSecret string
@@ -29,31 +29,31 @@ type RauthyConfig struct {
 	GroupsClaim  string
 }
 
-func (c RauthyConfig) Validate() error {
+func (c OIDCConfig) Validate() error {
 	issuer, err := url.Parse(c.Issuer)
 	if err != nil || issuer.Scheme == "" || issuer.Host == "" || issuer.RawQuery != "" || issuer.Fragment != "" {
-		return fmt.Errorf("invalid Rauthy issuer")
+		return fmt.Errorf("invalid OIDC issuer")
 	}
 	if issuer.Scheme != "https" && !(issuer.Scheme == "http" && isLoopbackHost(issuer.Hostname())) {
-		return fmt.Errorf("Rauthy issuer must use HTTPS outside loopback development")
+		return fmt.Errorf("OIDC issuer must use HTTPS outside loopback development")
 	}
 	if c.ClientID == "" || len(c.ClientID) > 256 || c.ClientSecret == "" || len(c.ClientSecret) > 4096 {
-		return fmt.Errorf("Rauthy client credentials are required")
+		return fmt.Errorf("OIDC client credentials are required")
 	}
 	redirect, err := url.Parse(c.RedirectURL)
 	if err != nil || redirect.Scheme == "" || redirect.Host == "" || redirect.RawQuery != "" || redirect.Fragment != "" {
-		return fmt.Errorf("invalid Rauthy redirect URL")
+		return fmt.Errorf("invalid OIDC redirect URL")
 	}
 	if redirect.Scheme != "https" && !(redirect.Scheme == "http" && isLoopbackHost(redirect.Hostname())) {
-		return fmt.Errorf("Rauthy redirect URL must use HTTPS outside loopback development")
+		return fmt.Errorf("OIDC redirect URL must use HTTPS outside loopback development")
 	}
 	if c.AdminGroup == "" || c.GroupsClaim == "" {
-		return fmt.Errorf("Rauthy group configuration is required")
+		return fmt.Errorf("OIDC group configuration is required")
 	}
 	return nil
 }
 
-func (c RauthyConfig) validateProviderEndpoint(raw string) error {
+func (c OIDCConfig) validateProviderEndpoint(raw string) error {
 	issuer, _ := url.Parse(c.Issuer)
 	endpoint, err := url.Parse(raw)
 	if err != nil || endpoint.Scheme != issuer.Scheme || endpoint.Host != issuer.Host || endpoint.User != nil || endpoint.Fragment != "" {
@@ -62,7 +62,7 @@ func (c RauthyConfig) validateProviderEndpoint(raw string) error {
 	return nil
 }
 
-func (c RauthyConfig) SecureCookies() bool {
+func (c OIDCConfig) SecureCookies() bool {
 	redirect, err := url.Parse(c.RedirectURL)
 	return err == nil && redirect.Scheme == "https"
 }
@@ -89,14 +89,14 @@ type AuthContext struct {
 	CSRFToken string
 }
 
-func RauthyConfigFromEnv() RauthyConfig {
-	return RauthyConfig{
-		Issuer:       getEnv("RAUTHY_ISSUER", "http://localhost:8080/auth/v1/"),
-		ClientID:     getEnv("RAUTHY_CLIENT_ID", "ternal"),
-		ClientSecret: os.Getenv("RAUTHY_CLIENT_SECRET"),
-		RedirectURL:  getEnv("RAUTHY_REDIRECT_URL", "http://127.0.0.1:3000/auth/callback"),
-		AdminGroup:   getEnv("RAUTHY_ADMIN_GROUP", "ternal-admins"),
-		GroupsClaim:  getEnv("RAUTHY_GROUPS_CLAIM", "groups"),
+func OIDCConfigFromEnv() OIDCConfig {
+	return OIDCConfig{
+		Issuer:       getEnv("TERNAL_OIDC_ISSUER", "http://localhost:8080/auth/v1/"),
+		ClientID:     getEnv("TERNAL_OIDC_CLIENT_ID", "ternal"),
+		ClientSecret: os.Getenv("TERNAL_OIDC_CLIENT_SECRET"),
+		RedirectURL:  getEnv("TERNAL_OIDC_REDIRECT_URL", "http://127.0.0.1:3000/auth/callback"),
+		AdminGroup:   getEnv("TERNAL_OIDC_ADMIN_GROUP", "ternal-admins"),
+		GroupsClaim:  getEnv("TERNAL_OIDC_GROUPS_CLAIM", "groups"),
 	}
 }
 

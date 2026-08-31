@@ -21,8 +21,8 @@ platform=${1:-${TERNAL_PLATFORM:-$host_platform}}
 case "$platform" in linux-amd64 | linux-arm64 | macos-amd64 | macos-arm64) ;; *) echo "unsupported native build platform: $platform" >&2; exit 1 ;; esac
 if [ "$platform" != "$host_platform" ]; then echo "native build platform mismatch: requested $platform, host is $host_platform" >&2; exit 1; fi
 
-output=${TERNAL_PIGEONS_OUTPUT:-dist/pigeons-$platform}
-target_dir=${TERNAL_PIGEONS_TARGET_DIR:-target/pigeons-$platform}
+output=${TERNAL_TRANSPORT_OUTPUT:-dist/pigeons-$platform}
+target_dir=${TERNAL_TRANSPORT_TARGET_DIR:-target/pigeons-$platform}
 source_url="https://codeload.github.com/n0-computer/pigeons/tar.gz/$PIGEONS_COMMIT"
 patch_file="$script_dir/pigeons-$PIGEONS_VERSION-ternal.patch"
 work=$(mktemp -d)

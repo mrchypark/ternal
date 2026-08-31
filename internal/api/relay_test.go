@@ -12,7 +12,7 @@ import (
 
 func TestRelayAdmissionRequiresBearerAndActiveGrant(t *testing.T) {
 	relaySecret := "relay-secret-for-test-minimum-32-bytes"
-	t.Setenv("TERNAL_PIGEONS_RELAY_ACCESS_TOKEN", relaySecret)
+	t.Setenv("TERNAL_RELAY_ACCESS_TOKEN", relaySecret)
 	s, err := store.Open(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)

@@ -140,10 +140,10 @@ $archive = if ([string]::IsNullOrWhiteSpace($env:TERNALCTL_ARCHIVE)) {
 } else {
     $env:TERNALCTL_ARCHIVE
 }
-$pigeonsBinary = if ([string]::IsNullOrWhiteSpace($env:TERNAL_PIGEONS_BIN)) {
+$pigeonsBinary = if ([string]::IsNullOrWhiteSpace($env:TERNAL_TRANSPORT_BIN)) {
     $null
 } else {
-    $env:TERNAL_PIGEONS_BIN
+    $env:TERNAL_TRANSPORT_BIN
 }
 
 $cliBinary = Get-AbsolutePath $cliBinary
@@ -173,13 +173,13 @@ if (-not (Test-Path -LiteralPath $cliBinary -PathType Leaf)) {
 
 if ($null -eq $pigeonsBinary) {
     $pigeonsBinary = Get-AbsolutePath "dist/pigeons-windows-$platform.exe"
-    $hadBuildOutput = Test-Path Env:TERNAL_PIGEONS_OUTPUT
-    $previousBuildOutput = $env:TERNAL_PIGEONS_OUTPUT
+    $hadBuildOutput = Test-Path Env:TERNAL_TRANSPORT_OUTPUT
+    $previousBuildOutput = $env:TERNAL_TRANSPORT_OUTPUT
     try {
-        $env:TERNAL_PIGEONS_OUTPUT = $pigeonsBinary
+        $env:TERNAL_TRANSPORT_OUTPUT = $pigeonsBinary
         & (Join-Path $agentScriptDirectory 'build-pigeons-windows.ps1')
     } finally {
-        Set-EnvironmentValue 'TERNAL_PIGEONS_OUTPUT' $(if ($hadBuildOutput) { $previousBuildOutput } else { $null })
+        Set-EnvironmentValue 'TERNAL_TRANSPORT_OUTPUT' $(if ($hadBuildOutput) { $previousBuildOutput } else { $null })
     }
 }
 if (-not (Test-Path -LiteralPath $pigeonsBinary -PathType Leaf)) {
@@ -218,7 +218,7 @@ Bundled pigeons: upstream $($config.PIGEONS_VERSION) ($($config.PIGEONS_COMMIT))
 Keep both executables in the same directory.
 
 pigeons lookup order:
-1. TERNAL_PIGEONS_BIN
+1. TERNAL_TRANSPORT_BIN
 2. pigeons.exe beside the resolved ternalctl.exe executable target
 3. pigeons.exe on PATH
 

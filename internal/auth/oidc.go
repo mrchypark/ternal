@@ -20,7 +20,7 @@ import (
 const oidcScope = "openid groups"
 
 type OIDCClient struct {
-	config RauthyConfig
+	config OIDCConfig
 	client *http.Client
 }
 
@@ -43,7 +43,7 @@ type providerMetadata struct {
 	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint"`
 }
 
-func NewOIDCClient(config RauthyConfig) (*OIDCClient, error) {
+func NewOIDCClient(config OIDCConfig) (*OIDCClient, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}

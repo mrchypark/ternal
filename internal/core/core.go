@@ -23,7 +23,7 @@ type Host struct {
 type Policy struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
-	RauthyGroup  string   `json:"rauthy_group"`
+	Principal    string   `json:"principal"`
 	HostSelector string   `json:"host_selector"`
 	SSHUsers     []string `json:"ssh_users"`
 	ExpiresAt    *int64   `json:"expires_at,omitempty"`
@@ -90,7 +90,7 @@ func FilterVisibleHosts(claims *UserClaims, hosts []Host, policies []Policy) []H
 }
 
 func PolicyAllows(claims *UserClaims, host *Host, policy *Policy) bool {
-	return policyPrincipalMatches(claims, policy.RauthyGroup) &&
+	return policyPrincipalMatches(claims, policy.Principal) &&
 		hostSelectorMatches(policy.HostSelector, host) &&
 		(policy.ExpiresAt == nil || *policy.ExpiresAt > now())
 }

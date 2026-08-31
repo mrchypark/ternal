@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-src=${1:-${RHIZA_DATA_DIR:-ternal-rhiza}}
+src=${1:-${TERNAL_DATA_DIR:-ternal-data}}
 out=${2:-backups}
 
 if [ ! -d "$src" ]; then
@@ -11,7 +11,7 @@ fi
 
 mkdir -p "$out"
 base=$(basename "$src")
-test -n "$base" || base=rhiza
+test -n "$base" || base=data
 archive="$out/ternal-$base-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
 tmp="$archive.$$"
 

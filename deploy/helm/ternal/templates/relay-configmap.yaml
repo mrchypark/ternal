@@ -1,13 +1,13 @@
-{{- $managedRelay := default dict .Values.pigeons.managedRelay -}}
+{{- $managedRelay := default dict .Values.transport.managedRelay -}}
 {{- if ($managedRelay.enabled | default false) }}
 {{- $metrics := default dict $managedRelay.metrics -}}
 {{- $access := default dict $managedRelay.access -}}
 {{- if not ($access.enabled | default false) -}}
-{{- fail "pigeons.managedRelay.access.enabled must be true; public access=everyone relay deployment is forbidden" -}}
+{{- fail "transport.managedRelay.access.enabled must be true; public access=everyone relay deployment is forbidden" -}}
 {{- end -}}
-{{- $accessPath := required "pigeons.managedRelay.access.path is required" $access.path -}}
+{{- $accessPath := required "transport.managedRelay.access.path is required" $access.path -}}
 {{- if not (hasPrefix "/internal/" $accessPath) -}}
-{{- fail "pigeons.managedRelay.access.path must stay under /internal/" -}}
+{{- fail "transport.managedRelay.access.path must stay under /internal/" -}}
 {{- end -}}
 apiVersion: v1
 kind: ConfigMap

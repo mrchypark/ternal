@@ -33,9 +33,9 @@ trap cleanup EXIT INT TERM HUP
 
 helm template ternal "$repo_dir/deploy/helm/ternal" \
 	--set image.tag=ops-data-lifecycle-check \
-	--set-string secrets.rauthyClientSecret=test-rauthy-secret \
+	--set-string secrets.oidcClientSecret=test-oidc-secret \
 	--set-string secrets.sessionKey=0123456789abcdef0123456789abcdef \
-	--set-string secrets.rhizaAdminToken=0123456789abcdef0123456789abcdef >"$rendered"
+	--set-string secrets.dataAdminToken=0123456789abcdef0123456789abcdef >"$rendered"
 
 data_volume=$(yq ea '
   select(.kind == "StatefulSet")
