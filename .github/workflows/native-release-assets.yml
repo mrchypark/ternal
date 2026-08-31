@@ -78,9 +78,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/bin
-          go build -trimpath -ldflags='-s -w -buildid=' -o dist/bin/ternalctl ./cmd/ternalctl
+          go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o dist/bin/ternalctl ./cmd/ternalctl
           if [ "${{ matrix.platform }}" = linux-amd64 ]; then
-            go build -trimpath -ldflags='-s -w -buildid=' -o dist/bin/ternal-agent ./cmd/ternal-agent
+            go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o dist/bin/ternal-agent ./cmd/ternal-agent
           fi
 
       - name: Build Go CLI
@@ -88,7 +88,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path dist/bin -Force | Out-Null
-          go build -trimpath '-ldflags=-s -w -buildid=' -o dist/bin/ternalctl.exe ./cmd/ternalctl
+          go build -trimpath -buildvcs=false '-ldflags=-s -w -buildid=' -o dist/bin/ternalctl.exe ./cmd/ternalctl
 
       - name: Build and package patched pigeons bundle
         if: matrix.family == 'unix'
