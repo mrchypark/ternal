@@ -114,7 +114,8 @@ func (c *OIDCClient) StartDevice(ctx context.Context) (*oauth2.DeviceAuthRespons
 		return nil, errors.New("provider does not advertise device authorization")
 	}
 	config := c.oauthConfig(provider, metadata)
-	return config.DeviceAuth(ctx)
+	// DeviceAuth omits client authentication unless it is supplied explicitly.
+	return config.DeviceAuth(ctx, oauth2.SetAuthURLParam("client_secret", c.config.ClientSecret))
 }
 
 func (c *OIDCClient) PollDevice(ctx context.Context, deviceCode string) (*UserClaims, time.Time, error) {

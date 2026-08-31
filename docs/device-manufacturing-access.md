@@ -57,5 +57,7 @@ installed generation.
 6. A missing route, mismatched host key, expired grant, revoked device, or
    unapproved user fails closed.
 
-Deleting a device revokes both device and host state; it does not silently erase
-the security record or recreate trust.
+Deleting a device atomically revokes device and host state, expires SSH access,
+removes relay admission, and blocks new discovery and grants. The agent stops
+its transport when the control plane rejects the revoked identity; the security
+record is retained and trust is never recreated silently.

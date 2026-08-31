@@ -1,10 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mrchypark/ternal/internal/deviceauth"
 )
 
 func TestRoostArgsPreserveManagedAndCustomRoutes(t *testing.T) {
@@ -70,5 +77,59 @@ func TestConfigRejectsRemoteCleartextAPI(t *testing.T) {
 	t.Setenv("TERNAL_TRANSPORT_BIN", os.Args[0])
 	if _, err := loadConfig(); err == nil {
 		t.Fatal("remote HTTP API accepted")
+	}
+}
+
+func TestUnauthorizedControlPlaneResponseIsFatal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := request(context.Background(), server.URL, http.MethodPost, "/agents/heartbeat", nil, nil)
+	if !isUnauthorized(err) {
+		t.Fatalf("unauthorized response was not classified as fatal: %v", err)
+	}
+}
+
+func TestSupervisorStopsTransportWhenDeviceIsRevoked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agents/heartbeat":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case "/agents/authorized-keys":
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	pigeons := filepath.Join(dir, "pigeons")
+	script := "#!/bin/sh\nif [ \"$1\" = endpoint-id ]; then printf '%s\\n' '" + strings.Repeat("a", 64) + "'; exit 0; fi\nexec sleep 60\n"
+	if err := os.WriteFile(pigeons, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "device.key")
+	if _, err := deviceauth.GenerateKey(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	identityPath := filepath.Join(dir, "device.json")
+	if err := deviceauth.WriteIdentity(identityPath, deviceauth.Identity{Serial: "TEST-REVOKED", HostKeyFingerprint: "SHA256:" + strings.Repeat("A", 43)}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config{
+		APIURL: server.URL, Pigeons: pigeons, DeviceKey: keyPath, IdentityFile: identityPath,
+		SSHUser: "ops", SSHPort: 22, HeartbeatEvery: time.Hour, RestartBackoff: time.Millisecond,
+		StatusFile: filepath.Join(dir, "status.json"), AuthorizedKeysPath: filepath.Join(dir, "authorized_keys"),
+	}
+	if err := supervise(context.Background(), cfg); !isUnauthorized(err) {
+		t.Fatalf("supervisor did not stop on revocation: %v", err)
+	}
+	var status runtimeStatus
+	data, err := os.ReadFile(cfg.StatusFile)
+	if err != nil || json.Unmarshal(data, &status) != nil || status.Service != "revoked" || status.Child != "stopped" {
+		t.Fatalf("revoked status=%#v read error=%v", status, err)
 	}
 }

@@ -518,8 +518,11 @@ func (s *Store) AuthorizedKeysForHost(ctx context.Context, hostID, sshUser strin
 	defer s.mu.RUnlock()
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT DISTINCT k.public_key
-		 FROM access_grants g JOIN ssh_keys k ON k.user_id = g.user_id
-		 WHERE g.host_id = ? AND g.ssh_user = ? AND g.expires_at > ?
+		 FROM access_grants g
+		 JOIN ssh_keys k ON k.user_id = g.user_id
+		 JOIN hosts h ON h.id = g.host_id
+		 JOIN devices d ON d.host_id = h.id
+		 WHERE g.host_id = ? AND g.ssh_user = ? AND g.expires_at > ? AND h.status != 'revoked' AND d.state != 'revoked'
 		 ORDER BY k.public_key`,
 		hostID, sshUser, nowUnix(),
 	)
@@ -617,13 +620,17 @@ func (s *Store) CreateAccessGrant(ctx context.Context, requestID, userID, hostID
 	defer s.mu.Unlock()
 	id := newID()
 	now := nowUnix()
-	_, err := s.db.ExecContext(ctx,
+	response, err := s.db.ExecContext(ctx,
 		`INSERT INTO access_grants (id, request_id, user_id, host_id, ssh_user, expires_at, ephemeral_key, key_installed, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-		id, requestID, userID, hostID, sshUser, expiresAt, ephemeralKey, now,
+		 SELECT ?, ?, ?, ?, ?, ?, ?, 0, ?
+		 WHERE EXISTS (SELECT 1 FROM hosts h JOIN devices d ON d.host_id = h.id WHERE h.id = ? AND h.status != 'revoked' AND d.state != 'revoked')`,
+		id, requestID, userID, hostID, sshUser, expiresAt, ephemeralKey, now, hostID,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if response.RowsAffected != 1 {
+		return nil, fmt.Errorf("host unavailable")
 	}
 	return &AccessGrant{
 		ID: id, RequestID: requestID, UserID: userID, HostID: hostID,
@@ -642,11 +649,18 @@ func (s *Store) IssueSSHAccess(ctx context.Context, userID, hostID, sshUser stri
 	auditID := newID()
 	now := nowUnix()
 	after, _ := json.Marshal(map[string]any{"request_id": requestID, "grant_id": grantID, "expires_at": expiresAt})
-	return s.db.ExecTransaction(ctx,
-		rhiza.SQLStatement{SQL: `INSERT INTO access_requests (id, user_id, host_id, ssh_user, status, created_at) VALUES (?, ?, ?, ?, 'approved', ?)`, Args: []any{requestID, userID, hostID, sshUser, now}},
-		rhiza.SQLStatement{SQL: `INSERT INTO access_grants (id, request_id, user_id, host_id, ssh_user, expires_at, ephemeral_key, key_installed, created_at) VALUES (?, ?, ?, ?, ?, ?, '', 0, ?)`, Args: []any{grantID, requestID, userID, hostID, sshUser, expiresAt, now}},
-		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, before_json, after_json, created_at) VALUES (?, 'access.approved', 'host', ?, ?, NULL, ?, ?)`, Args: []any{auditID, hostID, userID, string(after), now}},
+	response, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `INSERT INTO access_requests (id, user_id, host_id, ssh_user, status, created_at) SELECT ?, ?, ?, ?, 'approved', ? WHERE EXISTS (SELECT 1 FROM hosts h JOIN devices d ON d.host_id = h.id WHERE h.id = ? AND h.status != 'revoked' AND d.state != 'revoked')`, Args: []any{requestID, userID, hostID, sshUser, now, hostID}},
+		rhiza.SQLStatement{SQL: `INSERT INTO access_grants (id, request_id, user_id, host_id, ssh_user, expires_at, ephemeral_key, key_installed, created_at) SELECT ?, ?, ?, ?, ?, ?, '', 0, ? WHERE EXISTS (SELECT 1 FROM access_requests WHERE id = ?)`, Args: []any{grantID, requestID, userID, hostID, sshUser, expiresAt, now, requestID}},
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, before_json, after_json, created_at) SELECT ?, 'access.approved', 'host', ?, ?, NULL, ?, ? WHERE EXISTS (SELECT 1 FROM access_grants WHERE id = ?)`, Args: []any{auditID, hostID, userID, string(after), now, grantID}},
 	)
+	if err != nil {
+		return err
+	}
+	if response.RowsAffected != 3 {
+		return fmt.Errorf("host unavailable")
+	}
+	return nil
 }
 
 func (s *Store) GetAccessGrant(ctx context.Context, id string) (*AccessGrant, error) {
@@ -772,7 +786,11 @@ func (s *Store) GetEndpointDiscovery(ctx context.Context, hostID string) (*Endpo
 	var d EndpointDiscovery
 	var addrsJSON, relaysJSON string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT host_id, direct_addresses, relay_urls, updated_at FROM endpoint_discovery WHERE host_id = ?`, hostID,
+		`SELECT d.host_id, d.direct_addresses, d.relay_urls, d.updated_at
+		 FROM endpoint_discovery d
+		 JOIN hosts h ON h.id = d.host_id
+		 JOIN devices device ON device.host_id = h.id
+		 WHERE d.host_id = ? AND h.status != 'revoked' AND device.state != 'revoked'`, hostID,
 	).Scan(&d.HostID, &addrsJSON, &relaysJSON, &d.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -792,12 +810,15 @@ func (s *Store) CreateRelayAccessGrant(ctx context.Context, hostID, clientEndpoi
 	auditID := newID()
 	now := nowUnix()
 	after, _ := json.Marshal(map[string]any{"grant_id": id, "expires_at": now + ttlSeconds})
-	err := s.db.ExecTransaction(ctx,
-		rhiza.SQLStatement{SQL: `INSERT INTO relay_access_grants (id, host_id, client_endpoint_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`, Args: []any{id, hostID, clientEndpointID, now + ttlSeconds, now}},
-		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, before_json, after_json, created_at) VALUES (?, 'relay.grant.created', 'host', ?, ?, NULL, ?, ?)`, Args: []any{auditID, hostID, userID, string(after), now}},
+	response, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `INSERT INTO relay_access_grants (id, host_id, client_endpoint_id, expires_at, created_at) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM hosts h JOIN devices d ON d.host_id = h.id WHERE h.id = ? AND h.status != 'revoked' AND d.state != 'revoked')`, Args: []any{id, hostID, clientEndpointID, now + ttlSeconds, now, hostID}},
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, before_json, after_json, created_at) SELECT ?, 'relay.grant.created', 'host', ?, ?, NULL, ?, ? WHERE EXISTS (SELECT 1 FROM relay_access_grants WHERE id = ?)`, Args: []any{auditID, hostID, userID, string(after), now, id}},
 	)
 	if err != nil {
 		return nil, err
+	}
+	if response.RowsAffected != 2 {
+		return nil, fmt.Errorf("host unavailable")
 	}
 	return &RelayAccessGrant{ID: id, HostID: hostID, ClientEndpointID: clientEndpointID, ExpiresAt: now + ttlSeconds, CreatedAt: now}, nil
 }
@@ -809,13 +830,16 @@ func (s *Store) RenewRelayAccessGrant(ctx context.Context, hostID, endpointID, a
 	auditID := newID()
 	now := nowUnix()
 	after, _ := json.Marshal(map[string]any{"grant_id": id, "expires_at": now + ttlSeconds})
-	err := s.db.ExecTransaction(ctx,
-		rhiza.SQLStatement{SQL: `DELETE FROM relay_access_grants WHERE host_id = ? AND client_endpoint_id = ?`, Args: []any{hostID, endpointID}},
-		rhiza.SQLStatement{SQL: `INSERT INTO relay_access_grants (id, host_id, client_endpoint_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`, Args: []any{id, hostID, endpointID, now + ttlSeconds, now}},
-		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, before_json, after_json, created_at) VALUES (?, 'relay.grant.renewed', 'host', ?, ?, NULL, ?, ?)`, Args: []any{auditID, hostID, actorID, string(after), now}},
+	response, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `DELETE FROM relay_access_grants WHERE host_id = ? AND client_endpoint_id = ? AND EXISTS (SELECT 1 FROM hosts h JOIN devices d ON d.host_id = h.id WHERE h.id = ? AND h.status != 'revoked' AND d.state != 'revoked')`, Args: []any{hostID, endpointID, hostID}},
+		rhiza.SQLStatement{SQL: `INSERT INTO relay_access_grants (id, host_id, client_endpoint_id, expires_at, created_at) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM hosts h JOIN devices d ON d.host_id = h.id WHERE h.id = ? AND h.status != 'revoked' AND d.state != 'revoked')`, Args: []any{id, hostID, endpointID, now + ttlSeconds, now, hostID}},
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, before_json, after_json, created_at) SELECT ?, 'relay.grant.renewed', 'host', ?, ?, NULL, ?, ? WHERE EXISTS (SELECT 1 FROM relay_access_grants WHERE id = ?)`, Args: []any{auditID, hostID, actorID, string(after), now, id}},
 	)
 	if err != nil {
 		return nil, err
+	}
+	if response.RowsAffected < 2 {
+		return nil, fmt.Errorf("host unavailable")
 	}
 	return &RelayAccessGrant{ID: id, HostID: hostID, ClientEndpointID: endpointID, ExpiresAt: now + ttlSeconds, CreatedAt: now}, nil
 }
@@ -825,7 +849,11 @@ func (s *Store) RelayEndpointAllowed(ctx context.Context, endpointID string) (bo
 	defer s.mu.RUnlock()
 	var count int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM relay_access_grants WHERE client_endpoint_id = ? AND expires_at > ?`,
+		`SELECT COUNT(*)
+		 FROM relay_access_grants g
+		 JOIN hosts h ON h.id = g.host_id
+		 JOIN devices d ON d.host_id = h.id
+		 WHERE g.client_endpoint_id = ? AND g.expires_at > ? AND h.status != 'revoked' AND d.state != 'revoked'`,
 		endpointID, nowUnix(),
 	).Scan(&count)
 	if err != nil {
@@ -1106,26 +1134,20 @@ func (s *Store) TouchDevice(ctx context.Context, id, hostID, endpointID, fingerp
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := nowUnix()
-	response, err := s.db.ExecContext(ctx,
-		`UPDATE devices SET last_seen_at = ? WHERE id = ? AND endpoint_id = ? AND ssh_host_key_fingerprint = ? AND state != 'revoked'`,
-		now, id, endpointID, fingerprint,
+	addrsJSON, _ := json.Marshal(directAddresses)
+	relaysJSON, _ := json.Marshal(relayURLs)
+	response, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `UPDATE devices SET last_seen_at = ? WHERE id = ? AND host_id = ? AND endpoint_id = ? AND ssh_host_key_fingerprint = ? AND state != 'revoked'`, Args: []any{now, id, hostID, endpointID, fingerprint}},
+		rhiza.SQLStatement{SQL: `UPDATE hosts SET status = ?, last_seen = ?, updated_at = ? WHERE id = ? AND EXISTS (SELECT 1 FROM devices WHERE id = ? AND host_id = ? AND state != 'revoked')`, Args: []any{status, now, now, hostID, id, hostID}},
+		rhiza.SQLStatement{SQL: `INSERT INTO endpoint_discovery (host_id, direct_addresses, relay_urls, updated_at) SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM devices WHERE id = ? AND host_id = ? AND state != 'revoked') ON CONFLICT(host_id) DO UPDATE SET direct_addresses=excluded.direct_addresses, relay_urls=excluded.relay_urls, updated_at=excluded.updated_at`, Args: []any{hostID, string(addrsJSON), string(relaysJSON), now, id, hostID}},
 	)
 	if err != nil {
 		return err
 	}
-	if response.RowsAffected != 1 {
+	if response.RowsAffected != 3 {
 		return fmt.Errorf("device identity mismatch or device revoked")
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE hosts SET status = ?, last_seen = ?, updated_at = ? WHERE id = ?`, status, now, now, hostID); err != nil {
-		return err
-	}
-	addrsJSON, _ := json.Marshal(directAddresses)
-	relaysJSON, _ := json.Marshal(relayURLs)
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO endpoint_discovery (host_id, direct_addresses, relay_urls, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(host_id) DO UPDATE SET direct_addresses=excluded.direct_addresses, relay_urls=excluded.relay_urls, updated_at=excluded.updated_at`,
-		hostID, string(addrsJSON), string(relaysJSON), now,
-	)
-	return err
+	return nil
 }
 
 func (s *Store) DeleteDevice(ctx context.Context, id string) error {
@@ -1136,9 +1158,10 @@ func (s *Store) DeleteDevice(ctx context.Context, id string) error {
 		return err
 	}
 	now := nowUnix()
-	if _, err := s.db.ExecContext(ctx, `UPDATE devices SET state = 'revoked', last_seen_at = ? WHERE id = ?`, now, id); err != nil {
-		return err
-	}
-	_, err := s.db.ExecContext(ctx, `UPDATE hosts SET status = 'revoked', last_seen = ?, updated_at = ? WHERE id = ?`, now, now, hostID)
-	return err
+	return s.db.ExecTransaction(ctx,
+		rhiza.SQLStatement{SQL: `UPDATE devices SET state = 'revoked', last_seen_at = ? WHERE id = ?`, Args: []any{now, id}},
+		rhiza.SQLStatement{SQL: `UPDATE hosts SET status = 'revoked', last_seen = ?, updated_at = ? WHERE id = ?`, Args: []any{now, now, hostID}},
+		rhiza.SQLStatement{SQL: `UPDATE access_grants SET expires_at = ? WHERE host_id = ? AND expires_at > ?`, Args: []any{now, hostID, now}},
+		rhiza.SQLStatement{SQL: `DELETE FROM relay_access_grants WHERE host_id = ?`, Args: []any{hostID}},
+	)
 }

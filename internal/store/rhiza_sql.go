@@ -42,11 +42,15 @@ func (d *rhizaSQL) ExecContext(ctx context.Context, statement string, args ...an
 }
 
 func (d *rhizaSQL) ExecTransaction(ctx context.Context, statements ...rhiza.SQLStatement) error {
+	_, err := d.ExecTransactionResult(ctx, statements...)
+	return err
+}
+
+func (d *rhizaSQL) ExecTransactionResult(ctx context.Context, statements ...rhiza.SQLStatement) (rhiza.ExecuteResponse, error) {
 	for i := range statements {
 		statements[i].Args = normalizeArgs(statements[i].Args)
 	}
-	_, err := d.db.Execute(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), Statements: statements})
-	return err
+	return d.db.Execute(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), Statements: statements})
 }
 
 func (d *rhizaSQL) QueryContext(ctx context.Context, statement string, args ...any) (*rhizaRows, error) {

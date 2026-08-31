@@ -66,8 +66,9 @@ material and uses strict OpenSSH verification. Trust-on-first-use and
 The agent reports selected binary mode and child state, but not tokens, private
 keys, endpoint IDs, authorization headers, direct addresses, or relay URLs in
 unbounded logs. A missing binary or failed child is a visible unhealthy state;
-a revoked agent token stops heartbeats. A changed device endpoint ID or SSH
-host-key fingerprint quarantines the device rather than rotating trust.
+a revoked device identity stops the supervised transport after the control
+plane rejects it. A changed device endpoint ID or SSH host-key fingerprint
+quarantines the device rather than rotating trust.
 
 For the machine-readable output and diagnostics contract, see
 [pigeons-transport-diagnostics.md](pigeons-transport-diagnostics.md).

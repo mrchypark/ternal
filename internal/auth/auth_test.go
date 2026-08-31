@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -94,5 +95,59 @@ func TestOIDCConfigRejectsOldOriginEndpointsAndInsecureRemoteIssuer(t *testing.T
 	config.Issuer = "http://rauthy.example/auth/v1/"
 	if err := config.Validate(); err == nil {
 		t.Fatal("remote cleartext issuer accepted")
+	}
+}
+
+func TestStartDeviceUsesConfidentialClientPostAuthentication(t *testing.T) {
+	const clientSecret = "confidential-device-client-secret"
+	var received url.Values
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			writeTestJSON(t, w, map[string]any{
+				"issuer": server.URL, "authorization_endpoint": server.URL + "/authorize",
+				"token_endpoint": server.URL + "/token", "jwks_uri": server.URL + "/jwks",
+				"device_authorization_endpoint": server.URL + "/device",
+			})
+		case "/device":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			received = r.PostForm
+			writeTestJSON(t, w, map[string]any{
+				"device_code": "device-code", "user_code": "ABCD-EFGH",
+				"verification_uri": server.URL + "/verify", "expires_in": 300, "interval": 5,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewOIDCClient(OIDCConfig{
+		Issuer: server.URL, ClientID: "ternal", ClientSecret: clientSecret,
+		RedirectURL: server.URL + "/callback", AdminGroup: "admins", GroupsClaim: "groups",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.StartDevice(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.DeviceCode != "device-code" || received.Get("client_id") != "ternal" || received.Get("scope") != oidcScope {
+		t.Fatalf("unexpected device response or public request fields")
+	}
+	if received.Get("client_secret") != clientSecret {
+		t.Fatal("confidential client authentication was omitted or changed")
+	}
+}
+
+func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Fatal(err)
 	}
 }

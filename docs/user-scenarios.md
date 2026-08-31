@@ -11,7 +11,7 @@
 | Client joins relay | A policy grant lasts exactly 300 seconds and binds one client endpoint | relay tests | real callback capture |
 | Wrong host key appears | SSH stops; no permissive known-host fallback exists | core/CLI tests | real wrong-key server |
 | Agent syncs keys | Content digest is checked, generations increase, rollback/equivocation is rejected | store/agent tests | repeated running sync |
-| Device is revoked | Signed heartbeat and key synchronization fail; host is not silently recreated | store/API tests | live revoked device |
+| Device is revoked | SSH and relay grants, discovery, and callback admission fail; the agent stops transport and trust is not recreated | store/API/agent tests | live revoked device |
 | Portal is used | HTML works server-side; htmx fragments enhance navigation; untrusted text is escaped | web tests/local smoke | browser accessibility pass |
 | Server restarts | Ternal data remains on the configured volume | persistence/backup tests | container/PVC restart |
 | Old provider is presented | Old issuer and endpoint origin are rejected with no fallback | auth tests | negative provider probes |

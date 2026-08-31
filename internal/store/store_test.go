@@ -98,9 +98,10 @@ func TestIssueSSHAccessWritesDecisionGrantAndAuditAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	hostID := createActiveTestHost(t, s)
 
 	expiresAt := time.Now().Add(5 * time.Minute).Unix()
-	if err := s.IssueSSHAccess(ctx, "user-1", "host-1", "ops", expiresAt); err != nil {
+	if err := s.IssueSSHAccess(ctx, "user-1", hostID, "ops", expiresAt); err != nil {
 		t.Fatal(err)
 	}
 	requests, err := s.ListAccessRequests(ctx)
@@ -121,7 +122,7 @@ func TestIssueSSHAccessWritesDecisionGrantAndAuditAtomically(t *testing.T) {
 	if len(grants) != 1 || grants[0].RequestID != requests[0].ID || grants[0].ExpiresAt != expiresAt {
 		t.Fatalf("grants = %#v", grants)
 	}
-	if len(events) != 1 || events[0].Action != "access.approved" || events[0].ResourceID != "host-1" || events[0].UserID != "user-1" {
+	if len(events) != 1 || events[0].Action != "access.approved" || events[0].ResourceID != hostID || events[0].UserID != "user-1" {
 		t.Fatalf("events = %#v", events)
 	}
 }
@@ -133,9 +134,10 @@ func TestCreateRelayAccessGrantWritesGrantAndAuditAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	hostID := createActiveTestHost(t, s)
 
 	endpointID := strings.Repeat("a", 64)
-	grant, err := s.CreateRelayAccessGrant(ctx, "host-1", endpointID, "user-1", 300)
+	grant, err := s.CreateRelayAccessGrant(ctx, hostID, endpointID, "user-1", 300)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +152,7 @@ func TestCreateRelayAccessGrantWritesGrantAndAuditAtomically(t *testing.T) {
 	if !allowed || grant.ExpiresAt-grant.CreatedAt != 300 {
 		t.Fatalf("grant = %#v, allowed = %v", grant, allowed)
 	}
-	if len(events) != 1 || events[0].Action != "relay.grant.created" || events[0].ResourceID != "host-1" || events[0].UserID != "user-1" {
+	if len(events) != 1 || events[0].Action != "relay.grant.created" || events[0].ResourceID != hostID || events[0].UserID != "user-1" {
 		t.Fatalf("events = %#v", events)
 	}
 }
@@ -162,23 +164,42 @@ func TestRenewRelayAccessGrantReplacesPriorEndpointGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	hostID := createActiveTestHost(t, s)
 
 	endpointID := strings.Repeat("c", 64)
-	first, err := s.RenewRelayAccessGrant(ctx, "host-1", endpointID, "device:TEST-1", 300)
+	first, err := s.RenewRelayAccessGrant(ctx, hostID, endpointID, "device:TEST-1", 300)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := s.RenewRelayAccessGrant(ctx, "host-1", endpointID, "device:TEST-1", 300)
+	second, err := s.RenewRelayAccessGrant(ctx, hostID, endpointID, "device:TEST-1", 300)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM relay_access_grants WHERE host_id = ? AND client_endpoint_id = ?`, "host-1", endpointID).Scan(&count); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM relay_access_grants WHERE host_id = ? AND client_endpoint_id = ?`, hostID, endpointID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 || first.ID == second.ID || second.ExpiresAt-second.CreatedAt != 300 {
 		t.Fatalf("first=%#v second=%#v count=%d", first, second, count)
 	}
+}
+
+func createActiveTestHost(t *testing.T, s *Store) string {
+	t.Helper()
+	expires := time.Now().Add(time.Hour).Unix()
+	token, err := s.CreateManufacturingToken(t.Context(), "", &expires)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := s.EnrollDevice(t.Context(), token.Token, strings.Repeat("9", 64), "TEST-ACTIVE", "test", "SHA256:"+strings.Repeat("A", 43), base64.StdEncoding.EncodeToString(public), "ops", 22, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return device.HostID
 }
 
 func TestEnrollmentCreatesBoundHostAndDevice(t *testing.T) {
@@ -204,6 +225,79 @@ func TestEnrollmentCreatesBoundHostAndDevice(t *testing.T) {
 	host, err := s.GetHost(ctx, device.HostID)
 	if err != nil || host == nil || host.EndpointID != device.EndpointID || host.Name != device.SerialNumber {
 		t.Fatalf("bound host = %#v, err=%v", host, err)
+	}
+}
+
+func TestDeleteDeviceAtomicallyRevokesAccessAndRelayGrants(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	expires := time.Now().Add(time.Hour).Unix()
+	token, err := s.CreateManufacturingToken(ctx, "", &expires)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := s.EnrollDevice(ctx, token.Token, strings.Repeat("e", 64), "TEST-REVOKE", "test", "SHA256:"+strings.Repeat("D", 43), base64.StdEncoding.EncodeToString(public), "ops", 22, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateEndpointDiscovery(ctx, device.HostID, []string{"127.0.0.1:1234"}, []string{"https://relay.example"}); err != nil {
+		t.Fatal(err)
+	}
+	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D test"
+	if _, err := s.CreateSSHKey(ctx, "user-1", key, "SHA256:test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.IssueSSHAccess(ctx, "user-1", device.HostID, "ops", time.Now().Add(5*time.Minute).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	clientEndpointID := strings.Repeat("f", 64)
+	if _, err := s.CreateRelayAccessGrant(ctx, device.HostID, clientEndpointID, "user-1", 300); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteDevice(ctx, device.ID); err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := s.GetDeviceByHostID(ctx, device.HostID)
+	if err != nil || revoked == nil || revoked.State != "revoked" {
+		t.Fatalf("revoked device = %#v, err=%v", revoked, err)
+	}
+	host, err := s.GetHost(ctx, device.HostID)
+	if err != nil || host == nil || host.Status != "revoked" {
+		t.Fatalf("revoked host = %#v, err=%v", host, err)
+	}
+	if discovery, err := s.GetEndpointDiscovery(ctx, device.HostID); err != nil || discovery != nil {
+		t.Fatalf("revoked discovery = %#v, err=%v", discovery, err)
+	}
+	if allowed, err := s.RelayEndpointAllowed(ctx, clientEndpointID); err != nil || allowed {
+		t.Fatalf("revoked relay admission = %v, err=%v", allowed, err)
+	}
+	if keys, err := s.AuthorizedKeysForHost(ctx, device.HostID, "ops"); err != nil || len(keys) != 0 {
+		t.Fatalf("revoked authorized keys = %#v, err=%v", keys, err)
+	}
+	if err := s.IssueSSHAccess(ctx, "user-1", device.HostID, "ops", time.Now().Add(5*time.Minute).Unix()); err == nil {
+		t.Fatal("revoked host received a new SSH grant")
+	}
+	if _, err := s.CreateRelayAccessGrant(ctx, device.HostID, clientEndpointID, "user-1", 300); err == nil {
+		t.Fatal("revoked host received a new relay grant")
+	}
+	if _, err := s.RenewRelayAccessGrant(ctx, device.HostID, clientEndpointID, "device:"+device.SerialNumber, 300); err == nil {
+		t.Fatal("revoked host renewed a relay grant")
+	}
+	if err := s.TouchDevice(ctx, device.ID, device.HostID, device.EndpointID, device.SSHHostKeyFingerprint, "healthy", []string{"127.0.0.1:1234"}, []string{"https://relay.example"}); err == nil {
+		t.Fatal("revoked device heartbeat was accepted")
+	}
+	host, err = s.GetHost(ctx, device.HostID)
+	if err != nil || host == nil || host.Status != "revoked" {
+		t.Fatalf("revoked heartbeat changed host = %#v, err=%v", host, err)
 	}
 }
 
