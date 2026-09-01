@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -610,14 +611,18 @@ func (s *Store) authorizedKeysSnapshotForHost(ctx context.Context, hostID, sshUs
 func (s *Store) AuthorizedKeysGeneration(ctx context.Context, hostID, sshUser, digest string, grants []string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snapshotMarker := "snapshot:" + hashSecret(strings.Join(grants, "\n"))
 	statements := []rhiza.SQLStatement{{SQL: `INSERT INTO authorized_keys_snapshots (host_id, ssh_user, generation, digest)
 		 VALUES (?, ?, 1, ?)
 		 ON CONFLICT(host_id, ssh_user) DO UPDATE SET
-		 generation = CASE WHEN digest <> excluded.digest THEN generation + 1 ELSE generation END,
-		 digest = excluded.digest`, Args: []any{hostID, sshUser, digest}}, {
+		 generation = CASE WHEN digest <> excluded.digest OR NOT EXISTS (
+			 SELECT 1 FROM authorized_keys_snapshot_grants
+			 WHERE host_id = ? AND ssh_user = ? AND grant_id = ?
+		 ) THEN generation + 1 ELSE generation END,
+		 digest = excluded.digest`, Args: []any{hostID, sshUser, digest, hostID, sshUser, snapshotMarker}}, {
 		SQL: `DELETE FROM authorized_keys_snapshot_grants WHERE host_id = ? AND ssh_user = ?`, Args: []any{hostID, sshUser},
 	}, {
-		SQL: `INSERT INTO authorized_keys_snapshot_grants (host_id, ssh_user, grant_id) VALUES (?, ?, '')`, Args: []any{hostID, sshUser},
+		SQL: `INSERT INTO authorized_keys_snapshot_grants (host_id, ssh_user, grant_id) VALUES (?, ?, ?)`, Args: []any{hostID, sshUser, snapshotMarker},
 	}}
 	for _, grant := range grants {
 		statements = append(statements, rhiza.SQLStatement{
@@ -650,7 +655,7 @@ func (s *Store) AcknowledgeAuthorizedKeys(ctx context.Context, hostID, sshUser s
 			WHERE host_id = ? AND ssh_user = ? AND generation = ? AND digest = ?
 			AND EXISTS (
 				SELECT 1 FROM authorized_keys_snapshot_grants
-				WHERE host_id = ? AND ssh_user = ? AND grant_id = ''
+				WHERE host_id = ? AND ssh_user = ? AND grant_id LIKE 'snapshot:%'
 			)`, Args: []any{hostID, sshUser, generation, digest, hostID, sshUser}},
 		rhiza.SQLStatement{SQL: `UPDATE access_grants SET key_installed = 1
 			WHERE id IN (

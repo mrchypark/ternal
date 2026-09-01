@@ -413,11 +413,7 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	if err := s.AcknowledgeAuthorizedKeys(ctx, hostID, "ops", generation, strings.Repeat("b", 64)); err == nil {
 		t.Fatal("mismatched authorized_keys acknowledgement was accepted")
 	}
-	secondKey := key + " second"
-	if _, err := s.CreateSSHKey(ctx, "user-2", secondKey, "SHA256:second"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CreateAccessGrant(ctx, "request-2", "user-2", hostID, "ops", time.Now().Add(time.Minute).Unix(), ""); err != nil {
+	if _, err := s.CreateAccessGrant(ctx, "request-same-key", "user-1", hostID, "ops", time.Now().Add(time.Minute).Unix(), ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AcknowledgeAuthorizedKeys(ctx, hostID, "ops", generation, digest); err != nil {
@@ -428,7 +424,41 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	for _, grant := range grants {
 		installed[grant.RequestID] = grant.KeyInstalled
 	}
-	if err != nil || !installed["request-1"] || installed["request-2"] {
+	if err != nil || !installed["request-1"] || installed["request-same-key"] {
+		t.Fatalf("old snapshot acknowledgement over-marked identical-key grant = %#v, err=%v", grants, err)
+	}
+	keys, snapshotGrants, err = s.AuthorizedKeysSnapshotForHost(ctx, hostID, "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameDigest := hashSecret(strings.Join(keys, "\n") + "\n")
+	sameGeneration, err := s.AuthorizedKeysGeneration(ctx, hostID, "ops", sameDigest, snapshotGrants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameDigest != digest || sameGeneration <= generation {
+		t.Fatalf("identical-key grant snapshot digest/generation = %s/%d, want %s/>%d", sameDigest, sameGeneration, digest, generation)
+	}
+	if err := s.AcknowledgeAuthorizedKeys(ctx, hostID, "ops", generation, digest); err == nil {
+		t.Fatal("snapshot acknowledgement with stale grant set was accepted")
+	}
+	generation = sameGeneration
+	secondKey := key + " second"
+	if _, err := s.CreateSSHKey(ctx, "user-2", secondKey, "SHA256:second"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateAccessGrant(ctx, "request-2", "user-2", hostID, "ops", time.Now().Add(time.Minute).Unix(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AcknowledgeAuthorizedKeys(ctx, hostID, "ops", generation, digest); err != nil {
+		t.Fatal(err)
+	}
+	grants, err = s.ListAccessGrants(ctx)
+	installed = map[string]bool{}
+	for _, grant := range grants {
+		installed[grant.RequestID] = grant.KeyInstalled
+	}
+	if err != nil || !installed["request-1"] || !installed["request-same-key"] || installed["request-2"] {
 		t.Fatalf("old snapshot acknowledgement over-marked grants = %#v, err=%v", grants, err)
 	}
 	keys, snapshotGrants, err = s.AuthorizedKeysSnapshotForHost(ctx, hostID, "ops")
@@ -454,7 +484,7 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	for _, grant := range grants {
 		installed[grant.RequestID] = grant.KeyInstalled
 	}
-	if err != nil || len(grants) != 3 || !installed["request-1"] || !installed["request-2"] || installed["request-3"] {
+	if err != nil || len(grants) != 4 || !installed["request-1"] || !installed["request-same-key"] || !installed["request-2"] || installed["request-3"] {
 		t.Fatalf("acknowledged grants = %#v, err=%v", grants, err)
 	}
 }
