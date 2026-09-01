@@ -1,12 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mrchypark/ternal/internal/store"
 )
 
@@ -55,5 +58,29 @@ func TestRouterSetsBrowserSecurityHeaders(t *testing.T) {
 		if got := w.Header().Get(name); !strings.Contains(got, expected) {
 			t.Errorf("%s = %q, want substring %q", name, got, expected)
 		}
+	}
+}
+
+func TestRouterDoesNotLogOIDCCallbackSecrets(t *testing.T) {
+	var logs bytes.Buffer
+	original := middleware.DefaultLogger
+	middleware.DefaultLogger = middleware.RequestLogger(&middleware.DefaultLogFormatter{
+		Logger:  log.New(&logs, "", 0),
+		NoColor: true,
+	})
+	t.Cleanup(func() { middleware.DefaultLogger = original })
+
+	w := httptest.NewRecorder()
+	NewServer(nil).Router().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/callback?code=do-not-log&state=do-not-log", nil))
+	if strings.Contains(logs.String(), "do-not-log") {
+		t.Fatalf("OIDC callback secret appeared in request logs: %q", logs.String())
+	}
+}
+
+func TestPublicRouterDoesNotExposeRelayCallback(t *testing.T) {
+	w := httptest.NewRecorder()
+	NewServer(nil).Router().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/internal/iroh-relay/access", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("public relay callback status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 }

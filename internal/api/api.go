@@ -106,7 +106,6 @@ func getEnv(key, def string) string {
 
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(func(next http.Handler) http.Handler {
@@ -211,8 +210,14 @@ func (s *Server) Router() http.Handler {
 		r.Post("/authorized-keys/ack", s.handleAgentAuthorizedKeysAck)
 	})
 
-	r.Post("/internal/iroh-relay/access", s.handleRelayAccess)
+	return r
+}
 
+func (s *Server) RelayRouter() http.Handler {
+	r := chi.NewRouter()
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.RequestID)
+	r.Post("/internal/iroh-relay/access", s.handleRelayAccess)
 	return r
 }
 

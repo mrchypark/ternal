@@ -134,7 +134,7 @@ if nc -z 127.0.0.1 "$relay_port" >/dev/null 2>&1; then
 	relay_port=$((relay_port + 1))
 fi
 if [ "$managed_relay" -eq 1 ]; then
-	relay_access_url=${TERNAL_SMOKE_RELAY_ACCESS_URL:-$api_url/internal/iroh-relay/access}
+	relay_access_url=${TERNAL_SMOKE_RELAY_ACCESS_URL:-http://127.0.0.1:3001/internal/iroh-relay/access}
 	case "$relay_access_url" in
 		http://127.0.0.1:*|http://localhost:*)
 			relay_access_url=$(printf '%s' "$relay_access_url" | sed -e 's#127.0.0.1#host.docker.internal#' -e 's#localhost#host.docker.internal#')

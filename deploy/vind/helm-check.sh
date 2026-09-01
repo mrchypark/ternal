@@ -22,9 +22,6 @@ docker info >/dev/null
 created=0
 cleanup() {
 	code=$?
-	if [ "$created" -eq 1 ]; then
-		vcluster disconnect >/dev/null 2>&1 || true
-	fi
 	if [ "$created" -eq 1 ] && [ -z "${VIND_KEEP_CLUSTER:-}" ]; then
 		vcluster delete "$name" --driver docker --ignore-not-found >/dev/null 2>&1 || true
 	elif [ "$created" -eq 1 ]; then
@@ -34,9 +31,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-vcluster use driver docker
-vcluster create "$name" --driver docker
 created=1
+vcluster create "$name" --driver docker --connect=false
 vcluster connect "$name" --driver docker -- kubectl wait --for=condition=Ready node --all --timeout=180s
 vcluster connect "$name" --driver docker -- helm upgrade --install ternal deploy/helm/ternal \
 	--dry-run=server \

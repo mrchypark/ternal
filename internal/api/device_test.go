@@ -158,7 +158,7 @@ func TestSignedDeviceHeartbeatAndAuthorizedKeys(t *testing.T) {
 	relayReq.Header.Set("Authorization", "Bearer "+relaySecret)
 	relayReq.Header.Set("X-Iroh-Nodeid", clientEndpointID)
 	relayRes := httptest.NewRecorder()
-	router.ServeHTTP(relayRes, relayReq)
+	NewServer(s).RelayRouter().ServeHTTP(relayRes, relayReq)
 	if relayRes.Code != http.StatusForbidden || relayRes.Body.String() != "false" {
 		t.Fatalf("revoked relay callback status/body=%d %q", relayRes.Code, relayRes.Body.String())
 	}

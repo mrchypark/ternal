@@ -16,6 +16,9 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 data:
   TERNAL_BIND: 0.0.0.0:3000
+{{ if ($managedRelay.enabled | default false) }}
+  TERNAL_RELAY_BIND: 0.0.0.0:3001
+{{ end }}
   TERNAL_DATA_DIR: /data/ternal
   TERNAL_REQUIRE_DATA_ADMIN_TOKEN: "1"
   TERNAL_OIDC_ISSUER: {{ required "oidc.issuer is required" .Values.oidc.issuer | quote }}

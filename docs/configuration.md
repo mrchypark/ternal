@@ -28,6 +28,7 @@ binary; it is not read as Ternal application configuration.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `TERNAL_BIND` | `127.0.0.1:3000` | HTTP listen address |
+| `TERNAL_RELAY_BIND` | disabled | Separate relay-callback listen address; keep it private |
 | `TERNAL_SESSION_KEY` | generated only for loopback development | Signs local sessions; production requires at least 32 bytes |
 | `TERNAL_SESSION_TTL_SECONDS` | `3600` | Session lifetime, from 60 through 3600 seconds |
 | `TERNAL_DEV_HEADERS` | `0` | Enables development identity headers; accepted only on a loopback bind |
