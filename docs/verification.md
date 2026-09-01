@@ -9,10 +9,12 @@ Run `./scripts/run-all-tests.sh`. It verifies:
 - data-store reopen persistence and offline archive readback (not trust-state reactivation);
 - gomponents rendering, escaping, htmx fragments, and embedded asset hash;
 - OIDC state/session integrity and old-origin rejection;
+- persistent logout revocation and captured-cookie replay rejection;
 - strict host-key acceptance/rejection and endpoint-ID-only route rejection;
 - 300-second relay grant admission and ungranted denial;
 - signed device requests, batch enrollment, authorized-key monotonic generation,
-  and agent rollback/equivocation state;
+  exact current-snapshot acknowledgement, and agent rollback/equivocation state;
+- live-scenario entrypoint syntax, executability, and parent orchestration;
 - pinned pigeons source/patch checks, packaging, and transport result parsing;
 - Helm lint/render checks when Helm is installed.
 
