@@ -1,0 +1,19 @@
+{{- $managedRelay := default dict .Values.transport.managedRelay -}}
+{{- if ($managedRelay.enabled | default false) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-internal
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: relay-access
+      port: 3001
+      targetPort: relay-access
+{{- end }}

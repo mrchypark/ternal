@@ -1,5 +1,6 @@
 {{- $imageTag := required "image.tag is required" .Values.image.tag -}}
 {{- $secretName := .Values.secrets.existingSecret | default .Release.Name -}}
+{{- $managedRelay := default dict .Values.transport.managedRelay -}}
 {{- if eq $imageTag "latest" -}}
 {{- fail "image.tag must not be latest; use an immutable build tag" -}}
 {{- end -}}
@@ -48,6 +49,10 @@ spec:
           ports:
             - name: http
               containerPort: 3000
+{{ if ($managedRelay.enabled | default false) }}
+            - name: relay-access
+              containerPort: 3001
+{{ end }}
           readinessProbe:
             httpGet:
               path: /ready

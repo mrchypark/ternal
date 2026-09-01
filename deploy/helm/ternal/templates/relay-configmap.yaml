@@ -25,5 +25,5 @@ data:
     enable_quic_addr_discovery = false
     enable_metrics = {{ $metrics.enabled | default false }}
     metrics_bind_addr = "[::]:{{ default 9090 $metrics.port }}"
-    access.http.url = "http://{{ .Release.Name }}:{{ .Values.service.port }}{{ $accessPath }}"
+    access.http.url = "http://{{ .Release.Name }}-internal:3001{{ $accessPath }}"
 {{- end }}

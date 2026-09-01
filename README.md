@@ -81,6 +81,8 @@ The minimum production configuration is:
 
 ```sh
 export TERNAL_BIND='127.0.0.1:3000'
+# Set a separate private listener only when running a managed relay.
+export TERNAL_RELAY_BIND='127.0.0.1:3001'
 
 export TERNAL_OIDC_ISSUER='https://identity.example/auth/v1/'
 export TERNAL_OIDC_CLIENT_ID='ternal'

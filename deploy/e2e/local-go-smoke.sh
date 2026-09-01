@@ -11,7 +11,9 @@ done
 repo=$(CDPATH='' cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
 port=${TERNAL_LOCAL_SMOKE_PORT:-$((23000 + ($$ % 1000)))}
+relay_port=$((port + 1000))
 base="http://127.0.0.1:$port"
+relay_base="http://127.0.0.1:$relay_port"
 pid=""
 
 cleanup() {
@@ -32,6 +34,7 @@ trap cleanup EXIT HUP INT TERM
 cd "$repo"
 go build -trimpath -o "$work/ternal-api" ./cmd/ternal-api
 TERNAL_BIND="127.0.0.1:$port" \
+	TERNAL_RELAY_BIND="127.0.0.1:$relay_port" \
 	TERNAL_DEV_HEADERS=1 \
 	TERNAL_SESSION_KEY=local-smoke-session-key-at-least-32-bytes \
 	TERNAL_RELAY_ACCESS_TOKEN=local-smoke-relay-token-at-least-32-bytes \
@@ -45,6 +48,9 @@ until curl -fsS "$base/health" >/dev/null 2>&1; do
 	[ "$i" -lt 80 ] || { echo 'API did not become healthy' >&2; exit 1; }
 	sleep 0.1
 done
+
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$base/internal/iroh-relay/access")" = 404 ]
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$relay_base/internal/iroh-relay/access")" = 401 ]
 
 headers="-H X-Ternal-User:smoke-admin -H X-Ternal-Groups:ternal-admins"
 curl -fsS "$base/" | grep -q '/assets/htmx.min.js'

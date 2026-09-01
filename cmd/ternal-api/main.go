@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -42,19 +43,49 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+	listener, err := net.Listen("tcp", bind)
+	if err != nil {
+		return err
+	}
+	servers := []*http.Server{server}
+	listeners := []net.Listener{listener}
+	if relayBind := os.Getenv("TERNAL_RELAY_BIND"); relayBind != "" {
+		relayListener, err := net.Listen("tcp", relayBind)
+		if err != nil {
+			_ = listener.Close()
+			return err
+		}
+		servers = append(servers, &http.Server{
+			Addr:              relayBind,
+			Handler:           apiServer.RelayRouter(),
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		})
+		listeners = append(listeners, relayListener)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-	}()
-
-	fmt.Printf("ternal-api listening on http://%s\n", bind)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	errCh := make(chan error, len(servers))
+	for i := range servers {
+		fmt.Printf("ternal-api listening on http://%s\n", servers[i].Addr)
+		go func(server *http.Server, listener net.Listener) {
+			errCh <- server.Serve(listener)
+		}(servers[i], listeners[i])
 	}
-	return nil
+
+	var serveErr error
+	select {
+	case <-ctx.Done():
+	case serveErr = <-errCh:
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, server := range servers {
+		_ = server.Shutdown(shutdownCtx)
+	}
+	if errors.Is(serveErr, http.ErrServerClosed) {
+		return nil
+	}
+	return serveErr
 }
