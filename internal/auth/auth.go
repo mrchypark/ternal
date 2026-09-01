@@ -239,7 +239,8 @@ func authMiddleware(sessionKey string, devHeaders bool, adminGroup string, revok
 			if claims == nil {
 				cookie, cookieErr := r.Cookie(SessionCookie)
 				if cookieErr == nil {
-					if revoked != nil {
+					session, err := VerifySession(cookie.Value, sessionKey)
+					if err == nil && revoked != nil {
 						blocked, err := revoked(r.Context(), cookie.Value)
 						if err != nil {
 							http.Error(w, "Session validation unavailable.", http.StatusServiceUnavailable)
@@ -250,7 +251,6 @@ func authMiddleware(sessionKey string, devHeaders bool, adminGroup string, revok
 							return
 						}
 					}
-					session, err := VerifySession(cookie.Value, sessionKey)
 					if err == nil {
 						claims = &session.User
 						csrfToken = session.CSRFToken

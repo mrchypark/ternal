@@ -71,6 +71,35 @@ func TestSessionRevocationPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestSessionRevocationCleanupIsBounded(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if _, err := s.db.ExecContext(ctx, `
+		WITH RECURSIVE expired(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM expired WHERE n < 101)
+		INSERT INTO revoked_sessions (cookie_hash, expires_at) SELECT printf('expired-%d', n), 0 FROM expired
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeSession(ctx, "current-session", time.Now().Add(time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	var expired int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM revoked_sessions WHERE expires_at = 0`).Scan(&expired); err != nil {
+		t.Fatal(err)
+	}
+	if expired != 1 {
+		t.Fatalf("expired revocations remaining = %d, want 1", expired)
+	}
+	revoked, err := s.SessionRevoked(ctx, "current-session")
+	if err != nil || !revoked {
+		t.Fatalf("current session revoked = %v, err = %v", revoked, err)
+	}
+}
+
 func TestPolicyPrincipalPersists(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(ctx, t.TempDir())
@@ -332,15 +361,15 @@ func TestAuthorizedKeysGenerationIsStableAndMonotonic(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	first, err := s.AuthorizedKeysGeneration(ctx, "host-1", "ops", strings.Repeat("a", 64))
+	first, err := s.AuthorizedKeysGeneration(ctx, "host-1", "ops", strings.Repeat("a", 64), nil)
 	if err != nil || first != 1 {
 		t.Fatalf("first generation = %d, err=%v", first, err)
 	}
-	same, err := s.AuthorizedKeysGeneration(ctx, "host-1", "ops", strings.Repeat("a", 64))
+	same, err := s.AuthorizedKeysGeneration(ctx, "host-1", "ops", strings.Repeat("a", 64), nil)
 	if err != nil || same != first {
 		t.Fatalf("stable generation = %d, err=%v", same, err)
 	}
-	next, err := s.AuthorizedKeysGeneration(ctx, "host-1", "ops", strings.Repeat("b", 64))
+	next, err := s.AuthorizedKeysGeneration(ctx, "host-1", "ops", strings.Repeat("b", 64), nil)
 	if err != nil || next != first+1 {
 		t.Fatalf("next generation = %d, err=%v", next, err)
 	}
@@ -361,8 +390,12 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	if _, err := s.CreateAccessGrant(ctx, "request-1", "user-1", hostID, "ops", time.Now().Add(time.Minute).Unix(), ""); err != nil {
 		t.Fatal(err)
 	}
-	digest := hashSecret(key + "\n")
-	generation, err := s.AuthorizedKeysGeneration(ctx, hostID, "ops", digest)
+	keys, snapshotGrants, err := s.AuthorizedKeysSnapshotForHost(ctx, hostID, "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := hashSecret(strings.Join(keys, "\n") + "\n")
+	generation, err := s.AuthorizedKeysGeneration(ctx, hostID, "ops", digest, snapshotGrants)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,11 +409,23 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	if _, err := s.CreateAccessGrant(ctx, "request-2", "user-2", hostID, "ops", time.Now().Add(time.Minute).Unix(), ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AcknowledgeAuthorizedKeys(ctx, hostID, "ops", generation, digest); err == nil {
-		t.Fatal("changed authorized_keys were accepted before a new snapshot")
+	if err := s.AcknowledgeAuthorizedKeys(ctx, hostID, "ops", generation, digest); err != nil {
+		t.Fatal(err)
 	}
-	nextDigest := hashSecret(key + "\n" + secondKey + "\n")
-	if _, err := s.AuthorizedKeysGeneration(ctx, hostID, "ops", nextDigest); err != nil {
+	grants, err := s.ListAccessGrants(ctx)
+	installed := map[string]bool{}
+	for _, grant := range grants {
+		installed[grant.RequestID] = grant.KeyInstalled
+	}
+	if err != nil || !installed["request-1"] || installed["request-2"] {
+		t.Fatalf("old snapshot acknowledgement over-marked grants = %#v, err=%v", grants, err)
+	}
+	keys, snapshotGrants, err = s.AuthorizedKeysSnapshotForHost(ctx, hostID, "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextDigest := hashSecret(strings.Join(keys, "\n") + "\n")
+	if _, err := s.AuthorizedKeysGeneration(ctx, hostID, "ops", nextDigest, snapshotGrants); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AcknowledgeAuthorizedKeys(ctx, hostID, "ops", generation, digest); err == nil {
@@ -393,8 +438,8 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	if err := s.AcknowledgeAuthorizedKeys(ctx, hostID, "ops", generation, digest); err != nil {
 		t.Fatal(err)
 	}
-	grants, err := s.ListAccessGrants(ctx)
-	installed := map[string]bool{}
+	grants, err = s.ListAccessGrants(ctx)
+	installed = map[string]bool{}
 	for _, grant := range grants {
 		installed[grant.RequestID] = grant.KeyInstalled
 	}

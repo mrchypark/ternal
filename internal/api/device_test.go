@@ -130,6 +130,13 @@ func TestSignedDeviceHeartbeatAndAuthorizedKeys(t *testing.T) {
 	if ackRes.Code != http.StatusNoContent {
 		t.Fatalf("keys acknowledgement status=%d body=%q", ackRes.Code, ackRes.Body.String())
 	}
+	replayed := httptest.NewRequest(http.MethodPost, "/agents/authorized-keys/ack", strings.NewReader(`{"ssh_user":"root","generation":`+generation+`,"sha256":"`+digest+`"}`))
+	replayed.Header = ackReq.Header.Clone()
+	replayedRes := httptest.NewRecorder()
+	router.ServeHTTP(replayedRes, replayed)
+	if replayedRes.Code != http.StatusUnauthorized {
+		t.Fatalf("cross-user acknowledgement replay status=%d body=%q", replayedRes.Code, replayedRes.Body.String())
+	}
 	grants, err := s.ListAccessGrants(ctx)
 	if err != nil || len(grants) != 1 || !grants[0].KeyInstalled {
 		t.Fatalf("acknowledged grants = %#v, err=%v", grants, err)

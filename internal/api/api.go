@@ -1091,7 +1091,7 @@ func (s *Server) handleAgentAuthorizedKeys(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusUnauthorized, "device authentication failed")
 		return
 	}
-	keys, err := s.store.AuthorizedKeysForHost(r.Context(), device.HostID, sshUser)
+	keys, grants, err := s.store.AuthorizedKeysSnapshotForHost(r.Context(), device.HostID, sshUser)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -1102,7 +1102,7 @@ func (s *Server) handleAgentAuthorizedKeys(w http.ResponseWriter, r *http.Reques
 	}
 	digest := sha256.Sum256([]byte(body))
 	digestHex := hex.EncodeToString(digest[:])
-	generation, err := s.store.AuthorizedKeysGeneration(r.Context(), device.HostID, sshUser, digestHex)
+	generation, err := s.store.AuthorizedKeysGeneration(r.Context(), device.HostID, sshUser, digestHex, grants)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return

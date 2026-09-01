@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -250,6 +249,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			cookie_hash TEXT PRIMARY KEY,
 			expires_at INTEGER NOT NULL
 		)`,
+		`CREATE INDEX IF NOT EXISTS revoked_sessions_expires_at ON revoked_sessions (expires_at)`,
 		`CREATE TABLE IF NOT EXISTS audit_events (
 			id TEXT PRIMARY KEY,
 			action TEXT NOT NULL,
@@ -311,6 +311,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			digest TEXT NOT NULL,
 			PRIMARY KEY (host_id, ssh_user)
 		)`,
+		`CREATE TABLE IF NOT EXISTS authorized_keys_snapshot_grants (
+			host_id TEXT NOT NULL,
+			ssh_user TEXT NOT NULL,
+			grant_id TEXT NOT NULL,
+			PRIMARY KEY (host_id, ssh_user, grant_id)
+		)`,
 	}
 	for _, m := range migrations {
 		if _, err := s.db.ExecContext(ctx, m); err != nil {
@@ -337,11 +343,14 @@ func (s *Store) RevokeSession(ctx context.Context, cookie string, expiresAt int6
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecTransactionResult(ctx,
-		rhiza.SQLStatement{SQL: `DELETE FROM revoked_sessions WHERE expires_at <= ?`, Args: []any{nowUnix()}},
-		rhiza.SQLStatement{SQL: `INSERT OR REPLACE INTO revoked_sessions (cookie_hash, expires_at) VALUES (?, ?)`, Args: []any{hashSecret(cookie), expiresAt}},
-	)
-	return err
+	if _, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO revoked_sessions (cookie_hash, expires_at) VALUES (?, ?)`, hashSecret(cookie), expiresAt); err != nil {
+		return err
+	}
+	_, _ = s.db.ExecContext(ctx,
+		`DELETE FROM revoked_sessions WHERE cookie_hash IN (
+			SELECT cookie_hash FROM revoked_sessions WHERE expires_at <= ? ORDER BY expires_at LIMIT 100
+		)`, nowUnix())
+	return nil
 }
 
 func (s *Store) SessionRevoked(ctx context.Context, cookie string) (bool, error) {
@@ -548,49 +557,73 @@ func (s *Store) ListSSHKeys(ctx context.Context, userID string) ([]SshKey, error
 func (s *Store) AuthorizedKeysForHost(ctx context.Context, hostID, sshUser string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.authorizedKeysForHost(ctx, hostID, sshUser)
+	keys, _, err := s.authorizedKeysSnapshotForHost(ctx, hostID, sshUser)
+	return keys, err
 }
 
-func (s *Store) authorizedKeysForHost(ctx context.Context, hostID, sshUser string) ([]string, error) {
+func (s *Store) AuthorizedKeysSnapshotForHost(ctx context.Context, hostID, sshUser string) ([]string, []string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.authorizedKeysSnapshotForHost(ctx, hostID, sshUser)
+}
+
+func (s *Store) authorizedKeysSnapshotForHost(ctx context.Context, hostID, sshUser string) ([]string, []string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT k.public_key
+		`SELECT DISTINCT k.public_key, g.id
 		 FROM access_grants g
 		 JOIN ssh_keys k ON k.user_id = g.user_id
 		 JOIN hosts h ON h.id = g.host_id
 		 JOIN devices d ON d.host_id = h.id
 		 WHERE g.host_id = ? AND g.ssh_user = ? AND g.expires_at > ? AND h.status != 'revoked' AND d.state != 'revoked'
-		 ORDER BY k.public_key`,
+		 ORDER BY k.public_key, g.id`,
 		hostID, sshUser, nowUnix(),
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	var keys []string
+	var grants []string
+	seenKeys := map[string]bool{}
+	seenGrants := map[string]bool{}
 	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, err
+		var key, grant string
+		if err := rows.Scan(&key, &grant); err != nil {
+			return nil, nil, err
 		}
-		keys = append(keys, key)
+		if !seenKeys[key] {
+			seenKeys[key] = true
+			keys = append(keys, key)
+		}
+		if !seenGrants[grant] {
+			seenGrants[grant] = true
+			grants = append(grants, grant)
+		}
 	}
-	return keys, rows.Err()
+	return keys, grants, rows.Err()
 }
 
-// AuthorizedKeysGeneration returns a monotonic generation for an exact
-// authorized_keys digest. The upsert is one replicated SQL statement, so
-// concurrent API replicas cannot assign different generations to a change.
-func (s *Store) AuthorizedKeysGeneration(ctx context.Context, hostID, sshUser, digest string) (int64, error) {
+// AuthorizedKeysGeneration stores one replicated snapshot containing the
+// digest, monotonic generation, and exact grants represented by the body.
+func (s *Store) AuthorizedKeysGeneration(ctx context.Context, hostID, sshUser, digest string, grants []string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO authorized_keys_snapshots (host_id, ssh_user, generation, digest)
+	statements := []rhiza.SQLStatement{{SQL: `INSERT INTO authorized_keys_snapshots (host_id, ssh_user, generation, digest)
 		 VALUES (?, ?, 1, ?)
 		 ON CONFLICT(host_id, ssh_user) DO UPDATE SET
 		 generation = CASE WHEN digest <> excluded.digest THEN generation + 1 ELSE generation END,
-		 digest = excluded.digest`,
-		hostID, sshUser, digest,
-	)
+		 digest = excluded.digest`, Args: []any{hostID, sshUser, digest}}, {
+		SQL: `DELETE FROM authorized_keys_snapshot_grants WHERE host_id = ? AND ssh_user = ?`, Args: []any{hostID, sshUser},
+	}, {
+		SQL: `INSERT INTO authorized_keys_snapshot_grants (host_id, ssh_user, grant_id) VALUES (?, ?, '')`, Args: []any{hostID, sshUser},
+	}}
+	for _, grant := range grants {
+		statements = append(statements, rhiza.SQLStatement{
+			SQL:  `INSERT INTO authorized_keys_snapshot_grants (host_id, ssh_user, grant_id) VALUES (?, ?, ?)`,
+			Args: []any{hostID, sshUser, grant},
+		})
+	}
+	_, err := s.db.ExecTransactionResult(ctx, statements...)
 	if err != nil {
 		return 0, err
 	}
@@ -610,36 +643,32 @@ func (s *Store) AcknowledgeAuthorizedKeys(ctx context.Context, hostID, sshUser s
 	if generation < 1 || len(digest) != 64 {
 		return fmt.Errorf("invalid authorized_keys acknowledgement")
 	}
-	var exists int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM authorized_keys_snapshots
-		 WHERE host_id = ? AND ssh_user = ? AND generation = ? AND digest = ?
-		   AND generation = (SELECT MAX(generation) FROM authorized_keys_snapshots WHERE host_id = ? AND ssh_user = ?)`,
-		hostID, sshUser, generation, digest, hostID, sshUser,
-	).Scan(&exists); err != nil {
-		return err
-	}
-	if exists != 1 {
-		return fmt.Errorf("authorized_keys acknowledgement does not match current snapshot")
-	}
-	keys, err := s.authorizedKeysForHost(ctx, hostID, sshUser)
+	response, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `UPDATE authorized_keys_snapshots SET digest = digest
+			WHERE host_id = ? AND ssh_user = ? AND generation = ? AND digest = ?
+			AND EXISTS (
+				SELECT 1 FROM authorized_keys_snapshot_grants
+				WHERE host_id = ? AND ssh_user = ? AND grant_id = ''
+			)`, Args: []any{hostID, sshUser, generation, digest, hostID, sshUser}},
+		rhiza.SQLStatement{SQL: `UPDATE access_grants SET key_installed = 1
+			WHERE id IN (
+				SELECT grant_id FROM authorized_keys_snapshot_grants
+				WHERE host_id = ? AND ssh_user = ?
+			)
+			AND host_id = ? AND ssh_user = ? AND expires_at > ?
+			AND EXISTS (SELECT 1 FROM ssh_keys WHERE ssh_keys.user_id = access_grants.user_id)
+			AND EXISTS (
+				SELECT 1 FROM authorized_keys_snapshots
+				WHERE host_id = ? AND ssh_user = ? AND generation = ? AND digest = ?
+			)`, Args: []any{hostID, sshUser, hostID, sshUser, nowUnix(), hostID, sshUser, generation, digest}},
+	)
 	if err != nil {
 		return err
 	}
-	body := strings.Join(keys, "\n")
-	if body != "" {
-		body += "\n"
+	if response.RowsAffected < 1 {
+		return fmt.Errorf("authorized_keys acknowledgement does not match current snapshot")
 	}
-	if hashSecret(body) != digest {
-		return fmt.Errorf("authorized_keys changed before acknowledgement")
-	}
-	_, err = s.db.ExecContext(ctx,
-		`UPDATE access_grants SET key_installed = 1
-		 WHERE host_id = ? AND ssh_user = ? AND expires_at > ?
-		   AND EXISTS (SELECT 1 FROM ssh_keys WHERE ssh_keys.user_id = access_grants.user_id)`,
-		hostID, sshUser, nowUnix(),
-	)
-	return err
+	return nil
 }
 
 func (s *Store) DeleteSSHKey(ctx context.Context, id string) error {
