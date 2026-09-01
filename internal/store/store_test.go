@@ -84,10 +84,6 @@ func TestSessionRevocationCleanupIsBounded(t *testing.T) {
 	`); err != nil {
 		t.Fatal(err)
 	}
-	recentlyExpired := nowUnix() - int64((sessionRevocationRetention/2)/time.Second)
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO revoked_sessions (cookie_hash, expires_at) VALUES ('recently-expired', ?)`, recentlyExpired); err != nil {
-		t.Fatal(err)
-	}
 	if err := s.RevokeSession(ctx, "current-session", time.Now().Add(time.Hour).Unix()); err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +94,26 @@ func TestSessionRevocationCleanupIsBounded(t *testing.T) {
 	if expired != 1 {
 		t.Fatalf("expired revocations remaining = %d, want 1", expired)
 	}
+	revoked, err := s.SessionRevoked(ctx, "current-session")
+	if err != nil || !revoked {
+		t.Fatalf("current session revoked = %v, err = %v", revoked, err)
+	}
+}
+
+func TestSessionRevocationCleanupRetainsRecentlyExpired(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	recentlyExpired := nowUnix() - int64((sessionRevocationRetention/2)/time.Second)
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO revoked_sessions (cookie_hash, expires_at) VALUES ('recently-expired', ?)`, recentlyExpired); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeSession(ctx, "current-session", time.Now().Add(time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
 	var retained int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM revoked_sessions WHERE cookie_hash = 'recently-expired'`).Scan(&retained); err != nil {
 		t.Fatal(err)
@@ -105,9 +121,8 @@ func TestSessionRevocationCleanupIsBounded(t *testing.T) {
 	if retained != 1 {
 		t.Fatal("recently expired revocation was removed before the clock-skew grace elapsed")
 	}
-	revoked, err := s.SessionRevoked(ctx, "current-session")
-	if err != nil || !revoked {
-		t.Fatalf("current session revoked = %v, err = %v", revoked, err)
+	if got := sessionRevocationCleanupCutoff(1000); got != 1000-int64(sessionRevocationRetention/time.Second) {
+		t.Fatalf("cleanup cutoff = %d", got)
 	}
 }
 

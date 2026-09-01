@@ -128,11 +128,15 @@ func signValue(data any, key string) (string, error) {
 }
 
 func VerifySession(cookie, key string) (*SessionData, error) {
+	return verifySessionAt(cookie, key, time.Now())
+}
+
+func verifySessionAt(cookie, key string, now time.Time) (*SessionData, error) {
 	var data SessionData
 	if err := verifyValue(cookie, key, &data); err != nil {
 		return nil, err
 	}
-	if data.ExpiresAt <= time.Now().Unix() {
+	if data.ExpiresAt <= now.Unix() {
 		return nil, fmt.Errorf("session expired")
 	}
 	return &data, nil
@@ -224,6 +228,10 @@ func AuthMiddlewareWithRevocation(sessionKey string, devHeaders bool, adminGroup
 }
 
 func authMiddleware(sessionKey string, devHeaders bool, adminGroup string, revoked func(context.Context, string) (bool, error)) func(http.Handler) http.Handler {
+	return authMiddlewareWithClock(sessionKey, devHeaders, adminGroup, revoked, time.Now)
+}
+
+func authMiddlewareWithClock(sessionKey string, devHeaders bool, adminGroup string, revoked func(context.Context, string) (bool, error), now func() time.Time) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var claims *UserClaims
@@ -240,7 +248,7 @@ func authMiddleware(sessionKey string, devHeaders bool, adminGroup string, revok
 			if claims == nil {
 				cookie, cookieErr := r.Cookie(SessionCookie)
 				if cookieErr == nil {
-					session, err := VerifySession(cookie.Value, sessionKey)
+					session, err := verifySessionAt(cookie.Value, sessionKey, now())
 					if err == nil && revoked != nil {
 						ctx, cancel := context.WithTimeout(r.Context(), revocationCheckTimeout)
 						blocked, err := revoked(ctx, cookie.Value)
@@ -254,7 +262,7 @@ func authMiddleware(sessionKey string, devHeaders bool, adminGroup string, revok
 							return
 						}
 					}
-					if err == nil && session.ExpiresAt <= time.Now().Unix() {
+					if err == nil && session.ExpiresAt <= now().Unix() {
 						err = fmt.Errorf("session expired during validation")
 					}
 					if err == nil {
