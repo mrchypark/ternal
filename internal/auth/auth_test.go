@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,28 @@ import (
 	"testing"
 	"time"
 )
+
+func TestAuthMiddlewareRejectsRevokedSession(t *testing.T) {
+	key := strings.Repeat("k", 32)
+	cookie, err := SignSession(SessionData{
+		User: UserClaims{Subject: "user@example.com"}, CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := AuthMiddlewareWithRevocation(key, false, "ternal-admins", func(context.Context, string) (bool, error) {
+		return true, nil
+	})(RequireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("revoked session reached protected handler")
+	})))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookie, Value: cookie})
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked session status = %d", res.Code)
+	}
+}
 
 func TestCSRFBrowserOriginMustMatchRequestHost(t *testing.T) {
 	handler := AuthMiddleware(strings.Repeat("k", 32), true)(RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

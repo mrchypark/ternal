@@ -113,6 +113,27 @@ func TestSignedDeviceHeartbeatAndAuthorizedKeys(t *testing.T) {
 	if keysRes.Code != http.StatusOK || keysRes.Body.String() != key+"\n" {
 		t.Fatalf("keys status=%d body=%q", keysRes.Code, keysRes.Body.String())
 	}
+	generation := keysRes.Header().Get("X-Ternal-Authorized-Keys-Generation")
+	digest := keysRes.Header().Get("X-Ternal-Authorized-Keys-Sha256")
+	ackTime := time.Now().Unix()
+	ackBody := `{"ssh_user":"ops","generation":` + generation + `,"sha256":"` + digest + `"}`
+	ackPayload := deviceauth.AuthorizedKeysAckPayload(device.SerialNumber, endpointID, fingerprint, ackTime, "ops", 1, digest)
+	ackReq := httptest.NewRequest(http.MethodPost, "/agents/authorized-keys/ack", strings.NewReader(ackBody))
+	ackReq.Header.Set("Content-Type", "application/json")
+	ackReq.Header.Set("X-Ternal-Device-Serial", device.SerialNumber)
+	ackReq.Header.Set("X-Ternal-Device-Endpoint-Id", endpointID)
+	ackReq.Header.Set("X-Ternal-Device-Ssh-Host-Key-Fingerprint", fingerprint)
+	ackReq.Header.Set("X-Ternal-Device-Timestamp", strconv.FormatInt(ackTime, 10))
+	ackReq.Header.Set("X-Ternal-Device-Signature", deviceauth.Sign(private, ackPayload))
+	ackRes := httptest.NewRecorder()
+	router.ServeHTTP(ackRes, ackReq)
+	if ackRes.Code != http.StatusNoContent {
+		t.Fatalf("keys acknowledgement status=%d body=%q", ackRes.Code, ackRes.Body.String())
+	}
+	grants, err := s.ListAccessGrants(ctx)
+	if err != nil || len(grants) != 1 || !grants[0].KeyInstalled {
+		t.Fatalf("acknowledged grants = %#v, err=%v", grants, err)
+	}
 	clientEndpointID := strings.Repeat("b", 64)
 	if _, err := s.CreateRelayAccessGrant(ctx, device.HostID, clientEndpointID, "user-1", 300); err != nil {
 		t.Fatal(err)

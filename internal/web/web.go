@@ -46,6 +46,10 @@ func (s *Server) Index(w http.ResponseWriter, r *http.Request) {
 	if identity == nil {
 		node = landing()
 	} else {
+		if !identity.IsAdmin && (view == "policies" || view == "audit") {
+			http.Error(w, "Administrator access required.", http.StatusForbidden)
+			return
+		}
 		workspace, err := s.workspace(r, identity, view)
 		if err != nil {
 			http.Error(w, "Unable to load the workspace.", http.StatusInternalServerError)

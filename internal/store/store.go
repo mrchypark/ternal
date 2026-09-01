@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -245,6 +246,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			key_installed INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS revoked_sessions (
+			cookie_hash TEXT PRIMARY KEY,
+			expires_at INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS audit_events (
 			id TEXT PRIMARY KEY,
 			action TEXT NOT NULL,
@@ -324,6 +329,33 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("unsupported Ternal schema version")
 	}
 	return nil
+}
+
+func (s *Store) RevokeSession(ctx context.Context, cookie string, expiresAt int64) error {
+	if cookie == "" || expiresAt <= nowUnix() {
+		return fmt.Errorf("invalid session revocation")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `DELETE FROM revoked_sessions WHERE expires_at <= ?`, Args: []any{nowUnix()}},
+		rhiza.SQLStatement{SQL: `INSERT OR REPLACE INTO revoked_sessions (cookie_hash, expires_at) VALUES (?, ?)`, Args: []any{hashSecret(cookie), expiresAt}},
+	)
+	return err
+}
+
+func (s *Store) SessionRevoked(ctx context.Context, cookie string) (bool, error) {
+	if cookie == "" {
+		return false, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM revoked_sessions WHERE cookie_hash = ? AND expires_at > ?`,
+		hashSecret(cookie), nowUnix(),
+	).Scan(&count)
+	return count == 1, err
 }
 
 func newID() string {
@@ -516,6 +548,10 @@ func (s *Store) ListSSHKeys(ctx context.Context, userID string) ([]SshKey, error
 func (s *Store) AuthorizedKeysForHost(ctx context.Context, hostID, sshUser string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.authorizedKeysForHost(ctx, hostID, sshUser)
+}
+
+func (s *Store) authorizedKeysForHost(ctx context.Context, hostID, sshUser string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT DISTINCT k.public_key
 		 FROM access_grants g
@@ -566,6 +602,44 @@ func (s *Store) AuthorizedKeysGeneration(ctx context.Context, hostID, sshUser, d
 		return 0, err
 	}
 	return generation, nil
+}
+
+func (s *Store) AcknowledgeAuthorizedKeys(ctx context.Context, hostID, sshUser string, generation int64, digest string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation < 1 || len(digest) != 64 {
+		return fmt.Errorf("invalid authorized_keys acknowledgement")
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM authorized_keys_snapshots
+		 WHERE host_id = ? AND ssh_user = ? AND generation = ? AND digest = ?
+		   AND generation = (SELECT MAX(generation) FROM authorized_keys_snapshots WHERE host_id = ? AND ssh_user = ?)`,
+		hostID, sshUser, generation, digest, hostID, sshUser,
+	).Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 1 {
+		return fmt.Errorf("authorized_keys acknowledgement does not match current snapshot")
+	}
+	keys, err := s.authorizedKeysForHost(ctx, hostID, sshUser)
+	if err != nil {
+		return err
+	}
+	body := strings.Join(keys, "\n")
+	if body != "" {
+		body += "\n"
+	}
+	if hashSecret(body) != digest {
+		return fmt.Errorf("authorized_keys changed before acknowledgement")
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE access_grants SET key_installed = 1
+		 WHERE host_id = ? AND ssh_user = ? AND expires_at > ?
+		   AND EXISTS (SELECT 1 FROM ssh_keys WHERE ssh_keys.user_id = access_grants.user_id)`,
+		hostID, sshUser, nowUnix(),
+	)
+	return err
 }
 
 func (s *Store) DeleteSSHKey(ctx context.Context, id string) error {

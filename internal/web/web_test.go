@@ -83,6 +83,25 @@ func TestHTMXRequestReturnsWorkspaceFragment(t *testing.T) {
 	}
 }
 
+func TestPortalRejectsAdminViewsForRegularUsers(t *testing.T) {
+	s, err := store.Open(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	handler := auth.AuthMiddleware(strings.Repeat("s", 32), true)(http.HandlerFunc(New(s).Index))
+	for _, view := range []string{"policies", "audit"} {
+		req := httptest.NewRequest(http.MethodGet, "/?view="+view, nil)
+		req.Header.Set("X-Ternal-User", "user@example.com")
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusForbidden {
+			t.Errorf("view %s status = %d, want %d", view, res.Code, http.StatusForbidden)
+		}
+	}
+}
+
 func TestPinnedAssetsAndHTMXV4Attributes(t *testing.T) {
 	javascript, err := assets.ReadFile("static/htmx.min.js")
 	if err != nil {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -131,7 +132,12 @@ func (s *Server) Router() http.Handler {
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
-	r.Use(auth.AuthMiddleware(s.sessionKey, s.devHeaders, s.auth.AdminGroup))
+	r.Use(auth.AuthMiddlewareWithRevocation(s.sessionKey, s.devHeaders, s.auth.AdminGroup, func(ctx context.Context, cookie string) (bool, error) {
+		if s.store == nil {
+			return false, nil
+		}
+		return s.store.SessionRevoked(ctx, cookie)
+	}))
 
 	portal := web.New(s.store)
 	r.Handle("/assets/*", web.Assets())
@@ -246,12 +252,13 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOIDCConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"issuer":       s.auth.Issuer,
 		"client_id":    s.auth.ClientID,
 		"redirect_url": s.auth.RedirectURL,
 		"admin_group":  s.auth.AdminGroup,
 		"groups_claim": s.auth.GroupsClaim,
+		"dev_headers":  s.devHeaders,
 	})
 }
 
@@ -341,6 +348,20 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(auth.SessionCookie)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	session, err := auth.VerifySession(cookie.Value, s.sessionKey)
+	if err != nil || s.store == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err := s.store.RevokeSession(r.Context(), cookie.Value, session.ExpiresAt); err != nil {
+		writeError(w, http.StatusInternalServerError, "session revocation failed")
+		return
+	}
 	auth.ClearSessionCookie(w, s.auth.SecureCookies())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -386,7 +407,7 @@ func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request) {
 	}
 	identity := auth.GetAuth(r)
 	if identity.IsAdmin {
-		writeJSON(w, http.StatusOK, hosts)
+		writeJSON(w, http.StatusOK, publicHosts(hosts))
 		return
 	}
 	policies, err := s.store.ListPolicies(r.Context())
@@ -394,7 +415,29 @@ func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	writeJSON(w, http.StatusOK, core.FilterVisibleHosts(authClaims(identity), hosts, policies))
+	writeJSON(w, http.StatusOK, publicHosts(core.FilterVisibleHosts(authClaims(identity), hosts, policies)))
+}
+
+type publicHost struct {
+	ID       string            `json:"id"`
+	Name     string            `json:"name"`
+	SSHUser  string            `json:"ssh_user"`
+	Tags     map[string]string `json:"tags"`
+	SSHPort  uint16            `json:"ssh_port"`
+	Status   string            `json:"status"`
+	Owner    string            `json:"owner"`
+	LastSeen *int64            `json:"last_seen,omitempty"`
+}
+
+func publicHosts(hosts []core.Host) []publicHost {
+	result := make([]publicHost, 0, len(hosts))
+	for _, host := range hosts {
+		result = append(result, publicHost{
+			ID: host.ID, Name: host.Name, SSHUser: host.SSHUser, Tags: host.Tags,
+			SSHPort: host.SSHPort, Status: host.Status, Owner: host.Owner, LastSeen: host.LastSeen,
+		})
+	}
+	return result
 }
 
 func (s *Server) handleCreateHost(w http.ResponseWriter, r *http.Request) {
@@ -1091,8 +1134,13 @@ func (s *Server) handleAgentAuthorizedKeysAck(w http.ResponseWriter, r *http.Req
 	}
 	signature := r.Header.Get("X-Ternal-Device-Signature")
 	payload := deviceauth.AuthorizedKeysAckPayload(serial, endpointID, fingerprint, timestamp, req.SSHUser, req.Generation, req.SHA256)
-	if _, err := s.verifyDevice(r, serial, endpointID, fingerprint, timestamp, signature, payload); err != nil {
+	device, err := s.verifyDevice(r, serial, endpointID, fingerprint, timestamp, signature, payload)
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, "device authentication failed")
+		return
+	}
+	if err := s.store.AcknowledgeAuthorizedKeys(r.Context(), device.HostID, req.SSHUser, req.Generation, req.SHA256); err != nil {
+		writeError(w, http.StatusConflict, "authorized_keys acknowledgement rejected")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
