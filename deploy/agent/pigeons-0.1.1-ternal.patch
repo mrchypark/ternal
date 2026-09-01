@@ -34,7 +34,7 @@ index b85e558..cca934b 100644
 +    }
  }
 diff --git a/src/lib.rs b/src/lib.rs
-index a40810c..98f7d49 100644
+index a40810c..751e215 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
 @@ -11,6 +11,6 @@ pub use service::{
@@ -47,7 +47,7 @@ index a40810c..98f7d49 100644
 -pub use tunnel::{RoostConfig, Tunnel, TunnelBuilder};
 +pub use tunnel::{RoostConfig, TransportDiagnostics, Tunnel, TunnelBuilder};
 diff --git a/src/main.rs b/src/main.rs
-index cda5b46..dae85a1 100644
+index cda5b46..27b3f8c 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -1,10 +1,11 @@
@@ -118,7 +118,7 @@ index cda5b46..dae85a1 100644
  }
  
  #[derive(Args, Clone, Debug)]
-@@ -131,6 +159,12 @@ async fn main() -> anyhow::Result<()> {
+@@ -131,6 +163,12 @@ async fn main() -> anyhow::Result<()> {
                          .map_err(|e| anyhow::anyhow!("invalid relay URL '{url}': {e}"))?,
                  );
              }
@@ -131,7 +131,7 @@ index cda5b46..dae85a1 100644
              let tunnel = builder.build().await?;
              tunnel
                  .clone()
-@@ -161,23 +195,36 @@ async fn main() -> anyhow::Result<()> {
+@@ -161,23 +199,36 @@ async fn main() -> anyhow::Result<()> {
                  .await
          }
          Cmd::Fly(args) => {
@@ -177,7 +177,7 @@ index cda5b46..dae85a1 100644
                          tokio::select! {
                              res = fut => {
                                  if let Err(err) = res {
-@@ -252,6 +299,16 @@ async fn main() -> anyhow::Result<()> {
+@@ -252,6 +303,16 @@ async fn main() -> anyhow::Result<()> {
              println!("ssh private key: {priv_key:?}");
              Ok(())
          }
@@ -194,7 +194,7 @@ index cda5b46..dae85a1 100644
          Cmd::Service { op } => {
              match op {
                  ServiceCmd::Install {
-@@ -320,3 +372,82 @@ async fn main() -> anyhow::Result<()> {
+@@ -320,3 +381,82 @@ async fn main() -> anyhow::Result<()> {
          }
      }
  }
@@ -278,7 +278,7 @@ index cda5b46..dae85a1 100644
 +    }
 +}
 diff --git a/src/protocol.rs b/src/protocol.rs
-index c7f9f93..9e18271 100644
+index c7f9f93..c16d6fd 100644
 --- a/src/protocol.rs
 +++ b/src/protocol.rs
 @@ -1,7 +1,10 @@
@@ -315,7 +315,7 @@ index c7f9f93..9e18271 100644
  
                  match TcpStream::connect(format!("127.0.0.1:{}", self.ssh_port)).await {
                      Ok(ssh_stream) => {
-@@ -33,19 +41,17 @@ impl ProtocolHandler for PigeonsProtocol {
+@@ -33,19 +41,22 @@ impl ProtocolHandler for PigeonsProtocol {
  
                          let (mut local_read, mut local_write) = ssh_stream.into_split();
  
@@ -342,11 +342,16 @@ index c7f9f93..9e18271 100644
 +                        {
 +                            tracing::error!("pigeon from {endpoint_id} failed in transit: {error}");
 +                        }
++                        if let Err(error) = iroh_send.stopped().await {
++                            tracing::debug!(
++                                "pigeon from {endpoint_id} closed before delivery acknowledgement: {error}"
++                            );
++                        }
 +                        tracing::info!("pigeon from {endpoint_id} returned home");
                      }
                      Err(e) => {
                          tracing::error!("pigeon couldn't reach sshd: {e}");
-@@ -60,3 +66,45 @@ impl ProtocolHandler for PigeonsProtocol {
+@@ -60,3 +71,109 @@ impl ProtocolHandler for PigeonsProtocol {
          Ok(())
      }
  }
@@ -369,7 +374,10 @@ index c7f9f93..9e18271 100644
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
++    use crate::tunnel::{RoostConfig, Tunnel};
++    use iroh::RelayUrl;
 +    use tokio::io::AsyncWriteExt;
++    use tokio::net::TcpListener;
 +
 +    #[tokio::test]
 +    async fn stream_preface_is_required_and_consumed() {
@@ -391,9 +399,70 @@ index c7f9f93..9e18271 100644
 +            std::io::ErrorKind::InvalidData
 +        );
 +    }
++
++    #[tokio::test]
++    async fn clean_remote_close_is_observed_as_stream_eof() {
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let ssh_port = listener.local_addr().unwrap().port();
++        let service = tokio::spawn(async move {
++            loop {
++                let (mut socket, _) = listener.accept().await.unwrap();
++                if socket.write_all(b"SSH-2.0-pigeons-test\r\n").await.is_err() {
++                    continue;
++                }
++                let mut request = Vec::new();
++                if socket.read_to_end(&mut request).await.is_err() {
++                    continue;
++                }
++                if request == b"half-close-payload" {
++                    socket.write_all(b"DRAINED").await.unwrap();
++                    socket.shutdown().await.unwrap();
++                    break;
++                }
++            }
++        });
++
++        let relay: RelayUrl = "http://127.0.0.1:9".parse().unwrap();
++        let mut server_builder = Tunnel::builder_ephemeral().await.unwrap();
++        server_builder.roost = Some(RoostConfig { ssh_port });
++        server_builder.relay_urls = vec![relay.clone()];
++        let server = server_builder.build().await.unwrap();
++        let server_addr = server.endpoint().addr();
++        assert!(server_addr.ip_addrs().next().is_some());
++
++        let mut client_builder = Tunnel::builder_ephemeral().await.unwrap();
++        client_builder.relay_urls = vec![relay];
++        let client = client_builder.build().await.unwrap();
++        let connection = tokio::time::timeout(
++            std::time::Duration::from_secs(10),
++            client
++                .endpoint()
++                .connect(server_addr, PigeonsProtocol::ALPN),
++        )
++        .await
++        .unwrap()
++        .unwrap();
++        let (mut send, mut receive) = connection.open_bi().await.unwrap();
++        send.write_all(&PigeonsProtocol::STREAM_PREFACE)
++            .await
++            .unwrap();
++        send.write_all(b"half-close-payload").await.unwrap();
++        send.shutdown().await.unwrap();
++
++        let response =
++            tokio::time::timeout(std::time::Duration::from_secs(10), receive.read_to_end(128))
++                .await
++                .expect("remote response should finish")
++                .expect("clean peer close must be stream EOF");
++        assert_eq!(response, b"SSH-2.0-pigeons-test\r\nDRAINED");
++
++        service.await.unwrap();
++        client.close().await.unwrap();
++        server.close().await.unwrap();
++    }
 +}
 diff --git a/src/ssh.rs b/src/ssh.rs
-index 38882f8..1b51b56 100644
+index 38882f8..ba378c1 100644
 --- a/src/ssh.rs
 +++ b/src/ssh.rs
 @@ -15,16 +15,29 @@ pub fn home_ssh_dir() -> anyhow::Result<PathBuf> {
@@ -464,7 +533,7 @@ index 38882f8..1b51b56 100644
  fn ssh_config_path() -> anyhow::Result<PathBuf> {
      let home = my_home()?.ok_or_else(|| anyhow::anyhow!("home directory not found"))?;
      Ok(home.join(".ssh").join("config"))
-@@ -250,3 +283,46 @@ pub(crate) async fn ensure_local_ssh_server_exists(ssh_port: u16) -> anyhow::Res
+@@ -250,3 +287,46 @@ pub(crate) async fn ensure_local_ssh_server_exists(ssh_port: u16) -> anyhow::Res
          ))),
      }
  }
