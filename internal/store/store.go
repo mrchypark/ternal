@@ -19,6 +19,8 @@ import (
 	"github.com/mrchypark/ternal/internal/core"
 )
 
+const sessionRevocationRetention = 10 * time.Minute
+
 type Store struct {
 	db   *rhizaSQL
 	mu   sync.RWMutex
@@ -349,7 +351,7 @@ func (s *Store) RevokeSession(ctx context.Context, cookie string, expiresAt int6
 	_, _ = s.db.ExecContext(ctx,
 		`DELETE FROM revoked_sessions WHERE cookie_hash IN (
 			SELECT cookie_hash FROM revoked_sessions WHERE expires_at <= ? ORDER BY expires_at LIMIT 100
-		)`, nowUnix())
+		)`, nowUnix()-int64(sessionRevocationRetention/time.Second))
 	return nil
 }
 

@@ -71,6 +71,32 @@ func TestAuthMiddlewareFailsClosedWhenRevocationCheckFails(t *testing.T) {
 	}
 }
 
+func TestAuthMiddlewareRechecksExpiryAfterRevocationLookup(t *testing.T) {
+	key := strings.Repeat("k", 32)
+	expiresAt := time.Now().Unix() + 1
+	cookie, err := SignSession(SessionData{
+		User: UserClaims{Subject: "user@example.com"}, CSRFToken: "csrf", ExpiresAt: expiresAt,
+	}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := AuthMiddlewareWithRevocation(key, false, "ternal-admins", func(context.Context, string) (bool, error) {
+		for time.Now().Unix() < expiresAt {
+			time.Sleep(10 * time.Millisecond)
+		}
+		return false, nil
+	})(RequireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("session expired during revocation lookup reached protected handler")
+	})))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookie, Value: cookie})
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("expired session status = %d", res.Code)
+	}
+}
+
 func TestCSRFBrowserOriginMustMatchRequestHost(t *testing.T) {
 	handler := AuthMiddleware(strings.Repeat("k", 32), true)(RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	SessionCookie   = "ternal_session"
-	OIDCStateCookie = "ternal_oidc_state"
-	CSRFHeader      = "X-CSRF-Token"
+	SessionCookie          = "ternal_session"
+	OIDCStateCookie        = "ternal_oidc_state"
+	CSRFHeader             = "X-CSRF-Token"
+	revocationCheckTimeout = 5 * time.Second
 )
 
 type OIDCConfig struct {
@@ -241,7 +242,9 @@ func authMiddleware(sessionKey string, devHeaders bool, adminGroup string, revok
 				if cookieErr == nil {
 					session, err := VerifySession(cookie.Value, sessionKey)
 					if err == nil && revoked != nil {
-						blocked, err := revoked(r.Context(), cookie.Value)
+						ctx, cancel := context.WithTimeout(r.Context(), revocationCheckTimeout)
+						blocked, err := revoked(ctx, cookie.Value)
+						cancel()
 						if err != nil {
 							http.Error(w, "Session validation unavailable.", http.StatusServiceUnavailable)
 							return
@@ -250,6 +253,9 @@ func authMiddleware(sessionKey string, devHeaders bool, adminGroup string, revok
 							next.ServeHTTP(w, r)
 							return
 						}
+					}
+					if err == nil && session.ExpiresAt <= time.Now().Unix() {
+						err = fmt.Errorf("session expired during validation")
 					}
 					if err == nil {
 						claims = &session.User
