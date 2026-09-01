@@ -65,6 +65,7 @@ chmod +x "$tmp/bin/kubectl"
 
 secret_value=secret-value-must-not-reach-argv-or-output
 printf '%s' "$secret_value" >"$tmp/source"
+printf '%s\n' "$secret_value" >"$tmp/source-with-newline"
 
 if sh -c '. "$1"; apply_secret_from_files fixture-secret --from-file="TOKEN=$2"' \
 	fixture "$repo_dir/deploy/k8s-secret-helpers.sh" "$tmp/source" \
@@ -96,6 +97,27 @@ jq -e '
 ' "$tmp/created.json" >/dev/null || fail 'new Secret was not created from the file-backed value'
 grep -q 'kubectl <--context> <fixture-context> <create> <-f>' "$tmp/create.log" ||
 	fail 'new Secret did not use direct kubectl create'
+
+PATH="$tmp/bin:$PATH" TMPDIR="$tmp/helper-tmp" \
+	NAMESPACE=ternal KUBE_CONTEXT=fixture-context MOCK_SECRET_EXISTS=0 \
+	MOCK_CAPTURE="$tmp/validated.json" MOCK_KUBECTL_LOG="$tmp/validated.log" \
+	sh -c '. "$1"; apply_secret_from_files fixture-secret --from-file="TERNAL_RELAY_ACCESS_TOKEN=$2"' \
+		fixture "$repo_dir/deploy/k8s-secret-helpers.sh" "$tmp/source" \
+		>"$tmp/validated.out" 2>&1 || {
+	cat "$tmp/validated.out" >&2
+	fail 'helper rejected a valid relay token file'
+}
+
+if PATH="$tmp/bin:$PATH" TMPDIR="$tmp/helper-tmp" \
+	NAMESPACE=ternal KUBE_CONTEXT=fixture-context MOCK_SECRET_EXISTS=0 \
+	MOCK_CAPTURE="$tmp/rejected.json" MOCK_KUBECTL_LOG="$tmp/rejected.log" \
+	sh -c '. "$1"; apply_secret_from_files fixture-secret --from-file="TERNAL_RELAY_ACCESS_TOKEN=$2"' \
+		fixture "$repo_dir/deploy/k8s-secret-helpers.sh" "$tmp/source-with-newline" \
+		>"$tmp/rejected.out" 2>&1; then
+	fail 'helper accepted a relay token containing a newline'
+fi
+grep -Fq 'TERNAL_RELAY_ACCESS_TOKEN must not contain CR or LF bytes' "$tmp/rejected.out" ||
+	fail 'newline rejection did not produce a useful error'
 
 run_fixture 1 "$tmp/replaced.json" "$tmp/replace.log" "$tmp/replace.out"
 jq -e '
