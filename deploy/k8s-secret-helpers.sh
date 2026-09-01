@@ -11,6 +11,27 @@ apply_secret_from_files() (
 	}
 	name=$1
 	shift
+	for argument do
+		case $argument in
+		--from-file=TERNAL_SESSION_KEY=*|--from-file=TERNAL_DATA_ADMIN_TOKEN=*|--from-file=TERNAL_RELAY_ACCESS_TOKEN=*)
+			file_spec=${argument#--from-file=}
+			key=${file_spec%%=*}
+			path=${file_spec#*=}
+			[ -r "$path" ] || {
+				echo "$key file is not readable" >&2
+				return 2
+			}
+			[ "$(wc -c <"$path" | tr -d ' ')" -ge 32 ] || {
+				echo "$key must contain at least 32 bytes" >&2
+				return 2
+			}
+			tr -d '\015\012' <"$path" | cmp -s - "$path" || {
+				echo "$key must not contain CR or LF bytes" >&2
+				return 2
+			}
+			;;
+		esac
+	done
 
 	command -v jq >/dev/null 2>&1 || {
 		echo 'missing command: jq' >&2

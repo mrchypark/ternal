@@ -67,6 +67,7 @@ jobs:
           go vet ./...
           python3 deploy/release/tag-release-workflow.test.py
           sh deploy/vind/helm-render-check.sh
+          sh deploy/k8s-secret-helpers.test.sh
 
       - name: Package Helm chart
         run: |
