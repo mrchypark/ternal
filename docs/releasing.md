@@ -42,7 +42,8 @@ The workflow publishes both the version tag and the exact-commit
 creates SPDX SBOMs, and keyless-signs the resulting digest. It also packages
 `deploy/helm/ternal` with the tag version and records the chart archive SHA-256.
 The release contains native CLI bundles for Linux, macOS, and Windows on amd64
-and arm64, the Linux amd64 agent bundle, the chart, SBOMs, signature evidence,
+and arm64, Linux agent bundles for both architectures, the chart, SBOMs,
+signature evidence,
 checksums, and source/pigeons provenance. It is created as a draft, its exact
 asset inventory is checked, and only then is it published. The workflow does
 not deploy.

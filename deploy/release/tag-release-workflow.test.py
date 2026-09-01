@@ -47,6 +47,7 @@ for required in (
     'gh release edit "$GITHUB_REF_NAME" --draft=false',
     "ternalctl-windows-arm64.zip",
     "ternal-agent-linux-amd64.tar.gz",
+    "ternal-agent-linux-arm64.tar.gz",
 ):
     if required not in workflow:
         raise SystemExit(f"tag release security contract is missing: {required}")

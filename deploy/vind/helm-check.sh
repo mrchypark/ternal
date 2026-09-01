@@ -48,6 +48,7 @@ vcluster connect "$name" --driver docker -- helm upgrade --install ternal deploy
 	--set-string secrets.oidcClientSecret=test-oidc-secret \
 	--set-string secrets.sessionKey=0123456789abcdef0123456789abcdef \
 	--set-string secrets.dataAdminToken=0123456789abcdef0123456789abcdef \
-	--set-string secrets.relayAccessToken=0123456789abcdef0123456789abcdef
+	--set-string secrets.relayAccessToken=0123456789abcdef0123456789abcdef \
+	>/dev/null
 
 echo "vind helm server dry-run check passed: $name"

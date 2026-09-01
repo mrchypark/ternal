@@ -72,16 +72,18 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git status --short)"
 
-      - name: Build Go CLI and Linux agent
+      - name: Build Go CLI
         if: matrix.family == 'unix'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist/bin
           go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o dist/bin/ternalctl ./cmd/ternalctl
-          if [ "${{ matrix.platform }}" = linux-amd64 ]; then
-            go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o dist/bin/ternal-agent ./cmd/ternal-agent
-          fi
+
+      - name: Build Go Linux agent
+        if: startsWith(matrix.platform, 'linux-')
+        shell: bash
+        run: go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o dist/bin/ternal-agent ./cmd/ternal-agent
 
       - name: Build Go CLI
         if: matrix.family == 'windows'
@@ -102,12 +104,17 @@ jobs:
           TERNAL_TRANSPORT_BIN="dist/pigeons-${{ matrix.platform }}" \
             sh deploy/cli/package-unix.sh "${{ matrix.platform }}" >/dev/null
           cmp "$RUNNER_TEMP/first-${{ matrix.archive }}" "dist/${{ matrix.archive }}"
-          if [ "${{ matrix.platform }}" = linux-amd64 ]; then
-            TERNAL_TRANSPORT_BIN=dist/pigeons-linux-amd64 sh deploy/agent/package-linux-amd64.sh
-            cp dist/ternal-agent-linux-amd64.tar.gz "$RUNNER_TEMP/first-ternal-agent-linux-amd64.tar.gz"
-            TERNAL_TRANSPORT_BIN=dist/pigeons-linux-amd64 sh deploy/agent/package-linux-amd64.sh >/dev/null
-            cmp "$RUNNER_TEMP/first-ternal-agent-linux-amd64.tar.gz" dist/ternal-agent-linux-amd64.tar.gz
-          fi
+
+      - name: Package Linux agent
+        if: startsWith(matrix.platform, 'linux-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          agent_archive="ternal-agent-${{ matrix.platform }}.tar.gz"
+          TERNAL_TRANSPORT_BIN="dist/pigeons-${{ matrix.platform }}" sh deploy/agent/package-linux-amd64.sh "${{ matrix.platform }}"
+          cp "dist/$agent_archive" "$RUNNER_TEMP/first-$agent_archive"
+          TERNAL_TRANSPORT_BIN="dist/pigeons-${{ matrix.platform }}" sh deploy/agent/package-linux-amd64.sh "${{ matrix.platform }}" >/dev/null
+          cmp "$RUNNER_TEMP/first-$agent_archive" "dist/$agent_archive"
 
       - name: Build and package patched pigeons bundle
         if: matrix.family == 'windows'
@@ -132,10 +139,10 @@ jobs:
           retention-days: 30
 
       - name: Upload Linux agent archive
-        if: matrix.platform == 'linux-amd64'
+        if: startsWith(matrix.platform, 'linux-')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ternal-agent-linux-amd64
-          path: dist/ternal-agent-linux-amd64.tar.gz
+          name: ternal-agent-${{ matrix.platform }}
+          path: dist/ternal-agent-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
           retention-days: 30

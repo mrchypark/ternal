@@ -52,6 +52,7 @@ if windows_pigeons.count("-C link-arg=/Brepro") != 2:
 
 archives = (
     "ternal-agent-linux-amd64.tar.gz",
+    "ternal-agent-linux-arm64.tar.gz",
     "ternalctl-linux-amd64.tar.gz",
     "ternalctl-linux-arm64.tar.gz",
     "ternalctl-macos-amd64.tar.gz",
@@ -60,7 +61,8 @@ archives = (
     "ternalctl-windows-arm64.zip",
 )
 for archive in archives:
-    if combined.count(archive) < 2:
+    minimum = 1 if archive.startswith("ternal-agent-") else 2
+    if combined.count(archive) < minimum:
         raise SystemExit(f"release candidate inventory is not bound end-to-end: {archive}")
 
 if "pattern:" in workflow or "merge-multiple:" in workflow:
@@ -80,6 +82,8 @@ for required in (
     '"pigeons_patch_sha256"',
     "archive_paths = sorted(path for path in candidate.iterdir() if path.is_file())",
     "candidate-sha256.txt",
+    'name: ternal-agent-${{ matrix.platform }}',
+    'path: dist/ternal-agent-${{ matrix.platform }}.tar.gz',
 ):
     if required not in combined:
         raise SystemExit(f"release candidate identity or reproducibility guard is missing: {required}")
