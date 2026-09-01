@@ -26,6 +26,7 @@ sh deploy/backup/local-backup.test.sh
 sh deploy/backup/local-backup-restore.test.sh
 sh deploy/k8s-secret-helpers.test.sh
 sh deploy/e2e/local-go-smoke.sh
+sh deploy/e2e/scenario-scripts.test.sh
 sh deploy/agent/build-pigeons-native.test.sh
 sh deploy/agent/package-linux-amd64.test.sh
 sh deploy/cli/package-unix.test.sh

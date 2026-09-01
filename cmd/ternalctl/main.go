@@ -310,7 +310,7 @@ func cmdHosts(client *http.Client, apiURL string) {
 	json.NewDecoder(resp.Body).Decode(&hosts)
 
 	for _, h := range hosts {
-		fmt.Printf("%-20s %s\n", h.Name, h.EndpointID)
+		fmt.Printf("%-20s %s\n", h.Name, h.Status)
 	}
 }
 

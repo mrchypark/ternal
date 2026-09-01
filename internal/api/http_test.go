@@ -8,8 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/mrchypark/ternal/internal/auth"
 	"github.com/mrchypark/ternal/internal/store"
 )
 
@@ -61,6 +63,15 @@ func TestRouterSetsBrowserSecurityHeaders(t *testing.T) {
 	}
 }
 
+func TestOIDCConfigReportsDevelopmentHeaderMode(t *testing.T) {
+	t.Setenv("TERNAL_DEV_HEADERS", "1")
+	w := httptest.NewRecorder()
+	NewServer(nil).handleOIDCConfig(w, httptest.NewRequest(http.MethodGet, "/auth/oidc-config", nil))
+	if got := w.Body.String(); !strings.Contains(got, `"dev_headers":true`) {
+		t.Fatalf("OIDC config did not report development header mode: %s", got)
+	}
+}
+
 func TestRouterDoesNotLogOIDCCallbackSecrets(t *testing.T) {
 	var logs bytes.Buffer
 	original := middleware.DefaultLogger
@@ -82,5 +93,58 @@ func TestPublicRouterDoesNotExposeRelayCallback(t *testing.T) {
 	NewServer(nil).Router().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/internal/iroh-relay/access", nil))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("public relay callback status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestHostListDoesNotExposeTransportEndpoint(t *testing.T) {
+	t.Setenv("TERNAL_DEV_HEADERS", "1")
+	s, err := store.Open(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	endpoint := strings.Repeat("a", 64)
+	if _, err := s.CreateHost(context.Background(), store.NewHost{Name: "private-route", EndpointID: endpoint, SSHUser: "ops", SSHPort: 22}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/hosts/", nil)
+	req.Header.Set("X-Ternal-User", "admin@example.com")
+	req.Header.Set("X-Ternal-Groups", "ternal-admins")
+	w := httptest.NewRecorder()
+	NewServer(s).Router().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), endpoint) || strings.Contains(w.Body.String(), "endpoint_id") {
+		t.Fatalf("host list exposed transport endpoint: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestLogoutRejectsReplayedSession(t *testing.T) {
+	key := strings.Repeat("s", 32)
+	t.Setenv("TERNAL_SESSION_KEY", key)
+	s, err := store.Open(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	cookie, err := auth.SignSession(auth.SessionData{
+		User: auth.UserClaims{Subject: "user@example.com"}, CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewServer(s).Router()
+	logout := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	logout.AddCookie(&http.Cookie{Name: auth.SessionCookie, Value: cookie})
+	logout.Header.Set(auth.CSRFHeader, "csrf")
+	logoutResponse := httptest.NewRecorder()
+	router.ServeHTTP(logoutResponse, logout)
+	if logoutResponse.Code != http.StatusOK {
+		t.Fatalf("logout status=%d body=%s", logoutResponse.Code, logoutResponse.Body.String())
+	}
+	replay := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
+	replay.AddCookie(&http.Cookie{Name: auth.SessionCookie, Value: cookie})
+	replayResponse := httptest.NewRecorder()
+	router.ServeHTTP(replayResponse, replay)
+	if replayResponse.Code != http.StatusOK || replayResponse.Body.String() != "{\"authenticated\":false}\n" {
+		t.Fatalf("replayed session status=%d body=%s", replayResponse.Code, replayResponse.Body.String())
 	}
 }

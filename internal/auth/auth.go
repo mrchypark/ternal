@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	SessionCookie   = "ternal_session"
-	OIDCStateCookie = "ternal_oidc_state"
-	CSRFHeader      = "X-CSRF-Token"
+	SessionCookie          = "ternal_session"
+	OIDCStateCookie        = "ternal_oidc_state"
+	CSRFHeader             = "X-CSRF-Token"
+	revocationCheckTimeout = 5 * time.Second
 )
 
 type OIDCConfig struct {
@@ -212,6 +213,17 @@ func AuthMiddleware(sessionKey string, devHeaders bool, adminGroups ...string) f
 	if len(adminGroups) > 0 && adminGroups[0] != "" {
 		adminGroup = adminGroups[0]
 	}
+	return authMiddleware(sessionKey, devHeaders, adminGroup, nil)
+}
+
+func AuthMiddlewareWithRevocation(sessionKey string, devHeaders bool, adminGroup string, revoked func(context.Context, string) (bool, error)) func(http.Handler) http.Handler {
+	if adminGroup == "" {
+		adminGroup = "ternal-admins"
+	}
+	return authMiddleware(sessionKey, devHeaders, adminGroup, revoked)
+}
+
+func authMiddleware(sessionKey string, devHeaders bool, adminGroup string, revoked func(context.Context, string) (bool, error)) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var claims *UserClaims
@@ -226,10 +238,29 @@ func AuthMiddleware(sessionKey string, devHeaders bool, adminGroups ...string) f
 			}
 
 			if claims == nil {
-				session, err := GetSessionFromRequest(r, sessionKey)
-				if err == nil {
-					claims = &session.User
-					csrfToken = session.CSRFToken
+				cookie, cookieErr := r.Cookie(SessionCookie)
+				if cookieErr == nil {
+					session, err := VerifySession(cookie.Value, sessionKey)
+					if err == nil && revoked != nil {
+						ctx, cancel := context.WithTimeout(r.Context(), revocationCheckTimeout)
+						blocked, err := revoked(ctx, cookie.Value)
+						cancel()
+						if err != nil {
+							http.Error(w, "Session validation unavailable.", http.StatusServiceUnavailable)
+							return
+						}
+						if blocked {
+							next.ServeHTTP(w, r)
+							return
+						}
+					}
+					if err == nil && session.ExpiresAt <= time.Now().Unix() {
+						err = fmt.Errorf("session expired during validation")
+					}
+					if err == nil {
+						claims = &session.User
+						csrfToken = session.CSRFToken
+					}
 				}
 			}
 
