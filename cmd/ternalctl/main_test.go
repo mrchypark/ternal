@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -115,5 +116,118 @@ func TestSessionCanBeSuppliedWithoutPersistentState(t *testing.T) {
 	}
 	if session.Cookie != "ephemeral-session" || session.CSRFToken != "ephemeral-csrf" {
 		t.Fatalf("session = %#v", session)
+	}
+}
+
+func TestLogoutRevokesServerBeforeClearingSession(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TERNAL_SESSION_COOKIE", "")
+	session := &Session{Cookie: "signed-session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	if err := saveSession(session); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie("ternal_session")
+		if err != nil || cookie.Value != session.Cookie || r.Header.Get("X-CSRF-Token") != session.CSRFToken {
+			t.Errorf("logout request cookie=%v err=%v csrf=%q", cookie, err, r.Header.Get("X-CSRF-Token"))
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := logout(server.Client(), server.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSession(); err == nil {
+		t.Fatal("logout retained local session")
+	}
+}
+
+func TestLogoutRetainsSessionWhenRevocationFails(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TERNAL_SESSION_COOKIE", "")
+	session := &Session{Cookie: "signed-session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	if err := saveSession(session); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	if err := logout(server.Client(), server.URL); err == nil {
+		t.Fatal("failed server revocation was accepted")
+	}
+	if got, err := loadSession(); err != nil || got.Cookie != session.Cookie {
+		t.Fatalf("session after failed revocation = %#v, err=%v", got, err)
+	}
+}
+
+func TestLogoutRetainsSessionWhenServerReturnsUnauthorized(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TERNAL_SESSION_COOKIE", "")
+	session := &Session{Cookie: "signed-session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	if err := saveSession(session); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	if err := logout(server.Client(), server.URL); err == nil {
+		t.Fatal("unauthorized logout was accepted without confirmed revocation")
+	}
+	got, err := loadSession()
+	if err != nil || got.Cookie != session.Cookie {
+		t.Fatalf("session after unauthorized logout = %#v, err=%v", got, err)
+	}
+}
+
+func TestLogoutSubmitsLocallyExpiredSession(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TERNAL_SESSION_COOKIE", "")
+	session := &Session{Cookie: "server-still-valid", CSRFToken: "csrf", ExpiresAt: time.Now().Add(-time.Hour).Unix()}
+	if err := saveSession(session); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		cookie, err := r.Cookie("ternal_session")
+		if err != nil || cookie.Value != session.Cookie {
+			t.Errorf("logout request cookie=%v err=%v", cookie, err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := logout(server.Client(), server.URL); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("locally expired session was not submitted for server revocation")
+	}
+}
+
+func TestLogoutOfEnvironmentSessionPreservesDiskSession(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	diskSession := &Session{Cookie: "disk-session", CSRFToken: "disk-csrf", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	if err := saveSession(diskSession); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TERNAL_SESSION_COOKIE", "environment-session")
+	t.Setenv("TERNAL_CSRF_TOKEN", "environment-csrf")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie("ternal_session")
+		if err != nil || cookie.Value != "environment-session" {
+			t.Errorf("logout request cookie=%v err=%v", cookie, err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := logout(server.Client(), server.URL); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TERNAL_SESSION_COOKIE", "")
+	got, err := loadSession()
+	if err != nil || got.Cookie != diskSession.Cookie {
+		t.Fatalf("disk session after environment logout = %#v, err=%v", got, err)
 	}
 }

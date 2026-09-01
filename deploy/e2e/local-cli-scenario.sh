@@ -60,10 +60,13 @@ status=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "$api_url/ssh-keys/$k
 
 run_cli logout | grep -q 'Logged out.'
 [ ! -e "$session" ] || { echo 'ternalctl logout retained its local session' >&2; exit 1; }
+printf 'cookie: ternal_session=%s\n' "$cookie" >"$state/cli-replay.headers"
+curl -fsS "$api_url/auth/session" -H "@$state/cli-replay.headers" | jq -e '.authenticated == false' >/dev/null
 if run_cli whoami >/dev/null 2>&1; then
 	echo 'terminal session remained usable after ternalctl logout' >&2
 	exit 1
 fi
 find "$state" -depth -name 'cli.headers' -delete
+find "$state" -depth -name 'cli-replay.headers' -delete
 
-printf 'CLI device login, local-only session schema, key submission, endpoint redaction, and logout passed\n'
+printf 'CLI device login, local-only session schema, key submission, endpoint redaction, and server-side logout passed\n'

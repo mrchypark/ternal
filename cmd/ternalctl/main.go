@@ -65,7 +65,7 @@ func main() {
 	case "login":
 		cmdLogin(client, apiURL)
 	case "logout":
-		cmdLogout()
+		cmdLogout(client, apiURL)
 	case "whoami":
 		cmdWhoami(client, apiURL)
 	case "hosts":
@@ -148,7 +148,7 @@ func printUsage() {
 	fmt.Println("")
 	fmt.Println("commands:")
 	fmt.Println("  login          Login via OIDC device flow")
-	fmt.Println("  logout         Clear stored session")
+	fmt.Println("  logout         Revoke and clear session")
 	fmt.Println("  whoami         Show current user")
 	fmt.Println("  hosts          List accessible hosts")
 	fmt.Println("  ssh <host>     Connect to host")
@@ -243,12 +243,41 @@ func numberAsInt64(value any, fallback int64) int64 {
 	return fallback
 }
 
-func cmdLogout() {
-	if err := removeSession(); err != nil {
+func cmdLogout(client *http.Client, apiURL string) {
+	if err := logout(client, apiURL); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("Logged out.")
+}
+
+func logout(client *http.Client, apiURL string) error {
+	session, persistent, err := loadSessionForLogout()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, apiURL+"/auth/logout", nil)
+	if err != nil {
+		return err
+	}
+	addSession(req, session)
+	req.Header.Set("X-CSRF-Token", session.CSRFToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("logout returned HTTP %d", resp.StatusCode)
+	}
+	if persistent {
+		return removeSession()
+	}
+	return nil
 }
 
 func cmdWhoami(client *http.Client, apiURL string) {
@@ -732,6 +761,25 @@ func loadSession() (*Session, error) {
 		return nil, fmt.Errorf("session expired")
 	}
 	return &session, nil
+}
+
+func loadSessionForLogout() (*Session, bool, error) {
+	if cookie := os.Getenv("TERNAL_SESSION_COOKIE"); cookie != "" {
+		return &Session{Cookie: cookie, CSRFToken: os.Getenv("TERNAL_CSRF_TOKEN")}, false, nil
+	}
+	path, err := sessionPath()
+	if err != nil {
+		return nil, false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, err
+	}
+	var session Session
+	if err := json.Unmarshal(data, &session); err != nil {
+		return nil, false, err
+	}
+	return &session, true, nil
 }
 
 func saveSession(session *Session) error {

@@ -73,19 +73,20 @@ func TestAuthMiddlewareFailsClosedWhenRevocationCheckFails(t *testing.T) {
 
 func TestAuthMiddlewareRechecksExpiryAfterRevocationLookup(t *testing.T) {
 	key := strings.Repeat("k", 32)
-	expiresAt := time.Now().Unix() + 1
+	clock := time.Unix(100, 0)
+	expiresAt := clock.Unix() + 1
 	cookie, err := SignSession(SessionData{
 		User: UserClaims{Subject: "user@example.com"}, CSRFToken: "csrf", ExpiresAt: expiresAt,
 	}, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := AuthMiddlewareWithRevocation(key, false, "ternal-admins", func(context.Context, string) (bool, error) {
-		for time.Now().Unix() < expiresAt {
-			time.Sleep(10 * time.Millisecond)
-		}
+	checks := 0
+	handler := authMiddlewareWithClock(key, false, "ternal-admins", func(context.Context, string) (bool, error) {
+		checks++
+		clock = time.Unix(expiresAt, 0)
 		return false, nil
-	})(RequireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	}, func() time.Time { return clock })(RequireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("session expired during revocation lookup reached protected handler")
 	})))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -94,6 +95,9 @@ func TestAuthMiddlewareRechecksExpiryAfterRevocationLookup(t *testing.T) {
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusUnauthorized {
 		t.Fatalf("expired session status = %d", res.Code)
+	}
+	if checks != 1 {
+		t.Fatalf("revocation checks = %d, want 1", checks)
 	}
 }
 
