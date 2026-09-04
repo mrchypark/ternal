@@ -1,18 +1,25 @@
 Port-forward:
   kubectl port-forward svc/{{ .Release.Name }} {{ .Values.service.port }}:{{ .Values.service.port }}
 
-{{- if .Values.persistence.enabled }}
+DATA MODE: {{ default "standalone" .Values.data.mode }}
+{{- if eq (default "standalone" .Values.data.mode) "ha" }}
+  Three embedded voters use disposable emptyDir caches, the
+  {{ .Release.Name }}-data headless Service, fixed Secret-backed membership,
+  and shared Rhiza-certified object storage.
+  Peer-protocol upgrades use coordinated pod deletion because updateStrategy is
+  OnDelete; keep at least two voters available.
+{{- end }}
+
 DATA PERSISTENCE:
-  {{ .Release.Name }} stores /data on a PVC. Pod replacement preserves the
-  current database, but restoring an older trust database remains unsupported
-  because it could revive revoked device or grant state.
+  {{ .Release.Name }} always stores /data in emptyDir; no PVC is created.
+{{- if .Values.data.objectStore.provider }}
+  Rhiza-certified object storage is authoritative. A replacement pod rebuilds
+  its disposable local cache from the configured cluster prefix.
 {{- else }}
 DATA SAFETY WARNING:
-  {{ .Release.Name }} stores /data in emptyDir and intentionally has no PVC.
-  Every pod replacement, upgrade, or rollback loses the current Ternal database.
-  This breaking greenfield port does not support restoring an older trust
-  database because that could revive revoked device or grant state. After a
-  greenfield rollout, verify the empty state and enroll devices afresh.
+  This is ephemeral standalone development mode: no object store is configured,
+  so every pod replacement loses the current Ternal database. Production and HA
+  must configure Rhiza object storage with before-ack durability.
 {{- end }}
 
 Required secrets (create this Secret outside Helm without kubectl apply, then

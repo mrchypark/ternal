@@ -3,6 +3,43 @@
 {{- end }}
 {{- $gateway := default dict .Values.gateway -}}
 {{- $managedRelay := default dict .Values.transport.managedRelay -}}
+{{- $data := default dict .Values.data -}}
+{{- $dataMode := default "standalone" $data.mode -}}
+{{- if not (has $dataMode (list "standalone" "ha")) -}}
+{{- fail "data.mode must be standalone or ha" -}}
+{{- end -}}
+{{- if ne (int $data.schemaVersion) 1 -}}
+{{- fail "data.schemaVersion must be 1 for this chart" -}}
+{{- end -}}
+{{- $objectStore := default dict $data.objectStore -}}
+{{- $objectStoreBucket := default "" $objectStore.bucket -}}
+{{- $objectStoreProvider := default "" $objectStore.provider -}}
+{{- $objectStoreRequired := or (eq $dataMode "ha") ($data.requireObjectStore | default false) -}}
+{{- $clusterID := default "ternal" $data.clusterID -}}
+{{- if or $objectStoreRequired $objectStoreProvider -}}
+{{- $clusterID = required "data.clusterID is required when Rhiza object storage is enabled" $data.clusterID -}}
+{{- if or (gt (len $clusterID) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $clusterID)) -}}
+{{- fail "data.clusterID must be a lowercase DNS label" -}}
+{{- end -}}
+{{- end -}}
+{{- if $objectStoreRequired -}}
+{{- $objectStoreProvider = required "data.objectStore.provider is required" $objectStore.provider -}}
+{{- end -}}
+{{- if $objectStoreProvider -}}
+{{- if not (has $objectStoreProvider (list "s3" "gcs")) -}}
+{{- fail "data.objectStore.provider must be s3 or gcs" -}}
+{{- end -}}
+{{- if and (eq $objectStoreProvider "gcs") (or $objectStore.endpoint ($objectStore.insecure | default false)) -}}
+{{- fail "data.objectStore.endpoint and insecure are unsupported for gcs" -}}
+{{- end -}}
+{{- $objectStoreBucket = required "data.objectStore.bucket is required" $objectStore.bucket -}}
+{{- if not (has (default "before-ack" $objectStore.durability) (list "async" "before-ack")) -}}
+{{- fail "data.objectStore.durability must be async or before-ack" -}}
+{{- end -}}
+{{- if ne (default "before-ack" $objectStore.durability) "before-ack" -}}
+{{- fail "Rhiza object storage requires data.objectStore.durability=before-ack" -}}
+{{- end -}}
+{{- end -}}
 {{- $relayUrls := .Values.transport.relayUrls -}}
 {{- if and ($managedRelay.enabled | default false) (not $relayUrls) ($gateway.enabled | default false) -}}
 {{- $relayUrls = printf "%s://%s" ($gateway.scheme | default "https") (required "gateway.host is required when gateway is enabled" $gateway.host) -}}
@@ -10,7 +47,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ .Release.Name }}
+  name: {{ include "ternal.dataConfigMapName" . }}
   labels:
     app.kubernetes.io/name: {{ .Chart.Name }}
     app.kubernetes.io/instance: {{ .Release.Name }}
@@ -21,6 +58,18 @@ data:
 {{ end }}
   TERNAL_DATA_DIR: /data/ternal
   TERNAL_REQUIRE_DATA_ADMIN_TOKEN: "1"
+  TERNAL_DATA_SCHEMA_VERSION: "1"
+  TERNAL_DATA_CLUSTER_ID: {{ $clusterID | quote }}
+{{ if $objectStoreProvider }}
+  TERNAL_DATA_CHECKPOINT_INTERVAL: {{ default "15m" $data.checkpointInterval | quote }}
+  TERNAL_OBJECT_STORE_PROVIDER: {{ $objectStore.provider | quote }}
+  TERNAL_OBJECT_STORE_ENDPOINT: {{ default "" $objectStore.endpoint | quote }}
+  TERNAL_OBJECT_STORE_BUCKET: {{ $objectStoreBucket | quote }}
+  TERNAL_OBJECT_STORE_PREFIX: {{ default (printf "clusters/%s" $clusterID) $objectStore.prefix | quote }}
+  TERNAL_OBJECT_STORE_REGION: {{ default "" $objectStore.region | quote }}
+  TERNAL_OBJECT_STORE_INSECURE: {{ ternary "true" "false" ($objectStore.insecure | default false) | quote }}
+  TERNAL_OBJECT_STORE_DURABILITY: {{ default "before-ack" $objectStore.durability | quote }}
+{{ end }}
   TERNAL_OIDC_ISSUER: {{ required "oidc.issuer is required" .Values.oidc.issuer | quote }}
   TERNAL_OIDC_CLIENT_ID: {{ required "oidc.clientId is required" .Values.oidc.clientId | quote }}
   TERNAL_OIDC_REDIRECT_URL: {{ required "oidc.redirectUrl is required" .Values.oidc.redirectUrl | quote }}

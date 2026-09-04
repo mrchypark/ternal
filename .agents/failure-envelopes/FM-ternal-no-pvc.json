@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "id": "FM-ternal-no-pvc",
+  "state": "active",
+  "scope": "repo",
+  "match": {
+    "paths": [
+      "deploy/helm/ternal/**",
+      "deploy/vind/helm-render-check.sh"
+    ]
+  },
+  "failure": {
+    "invariant": "Ternal Kubernetes workloads use disposable local caches and never claim PVC-backed database persistence.",
+    "trigger": "A chart change emits a PVC reference or enables the retired persistence setting.",
+    "mechanism": "PVC-backed /data incorrectly competes with Rhiza certified object storage as the persistence authority.",
+    "impact": "Operators can infer the wrong recovery contract and deploy an unqualified dual-persistence topology."
+  },
+  "root": {
+    "cause": "The initial HA design treated stable pod identity as requiring stable local storage instead of preserving Rhiza object storage as the sole persistence authority.",
+    "detection_gap": "The prior render check accepted production PVCs and did not exercise the retired persistence value as a negative fixture."
+  },
+  "evidence": {
+    "verifier": "Ternal Repo Steward",
+    "refs": [
+      "deploy/vind/helm-render-check.sh",
+      "internal/store/store_test.go#TestRhizaRestoresIntoEmptyCacheFromObjectStore"
+    ],
+    "sanitized": true
+  },
+  "control": {
+    "kind": "test",
+    "mode": "block",
+    "artifact": "deploy/vind/helm-render-check.sh",
+    "current_args": []
+  },
+  "replay": {
+    "failure_args": ["--failure-fixture"],
+    "valid_args": ["--valid-fixture"],
+    "failure_exit": 1,
+    "valid_exit": 0,
+    "oracle": "The same Helm render control rejects persistence.enabled=true, accepts the emptyDir chart, and scans current durable renders for PVC resources and references."
+  },
+  "owner": "mrchypark/ternal",
+  "review_after": "2027-09-04",
+  "duplicates": [],
+  "supersedes": []
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +37,27 @@ func openRhiza(ctx context.Context, config rhiza.Config) (*rhizaSQL, error) {
 }
 
 func (d *rhizaSQL) Close() error { return d.db.Close() }
+
+func (d *rhizaSQL) WaitReady(ctx context.Context) error {
+	return waitUntilReady(ctx, d.db.Ready)
+}
+
+func waitUntilReady(ctx context.Context, ready func() bool) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for !ready() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+	return nil
+}
+
+func (d *rhizaSQL) Migrate(ctx context.Context, migrations []rhiza.Migration) error {
+	return d.db.Migrate(ctx, migrations)
+}
 
 func (d *rhizaSQL) ExecContext(ctx context.Context, statement string, args ...any) (rhiza.ExecuteResponse, error) {
 	return d.db.Execute(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), SQL: statement, Args: normalizeArgs(args)})
@@ -205,14 +227,68 @@ func rhizaConfigFromEnv(dataDir string) (rhiza.Config, error) {
 			return rhiza.Config{}, fmt.Errorf("parse TERNAL_DATA_CLUSTER_MEMBERS: %w", err)
 		}
 	}
-	if os.Getenv("TERNAL_DATA_MULTI_NODE") == "1" && len(members) < 3 {
-		return rhiza.Config{}, fmt.Errorf("multi-node mode requires at least three TERNAL_DATA_CLUSTER_MEMBERS")
+	multiNode := os.Getenv("TERNAL_DATA_MULTI_NODE")
+	expectedMemberIDs := os.Getenv("TERNAL_DATA_EXPECTED_MEMBER_IDS")
+	if multiNode != "" && multiNode != "0" && multiNode != "1" {
+		return rhiza.Config{}, fmt.Errorf("TERNAL_DATA_MULTI_NODE must be 0 or 1")
+	}
+	if multiNode == "1" {
+		if len(members) != 3 {
+			return rhiza.Config{}, fmt.Errorf("multi-node mode requires exactly three TERNAL_DATA_CLUSTER_MEMBERS")
+		}
+		if len(adminToken) < 32 {
+			return rhiza.Config{}, fmt.Errorf("multi-node mode requires TERNAL_DATA_ADMIN_TOKEN with at least 32 bytes")
+		}
+		seenIDs := make(map[string]struct{}, len(members))
+		seenTokens := make(map[string]struct{}, len(members))
+		for _, member := range members {
+			id := string(member.ID)
+			if _, duplicate := seenIDs[id]; duplicate {
+				return rhiza.Config{}, fmt.Errorf("multi-node member IDs must be distinct")
+			}
+			seenIDs[id] = struct{}{}
+			if len(member.Token) < 32 {
+				return rhiza.Config{}, fmt.Errorf("multi-node member %s token must contain at least 32 bytes", member.ID)
+			}
+			if member.Token == adminToken {
+				return rhiza.Config{}, fmt.Errorf("multi-node member %s token must differ from TERNAL_DATA_ADMIN_TOKEN", member.ID)
+			}
+			if _, duplicate := seenTokens[member.Token]; duplicate {
+				return rhiza.Config{}, fmt.Errorf("multi-node member tokens must be distinct")
+			}
+			seenTokens[member.Token] = struct{}{}
+		}
+		if expectedMemberIDs != "" {
+			expected := strings.Split(expectedMemberIDs, ",")
+			if len(expected) != 3 {
+				return rhiza.Config{}, fmt.Errorf("TERNAL_DATA_EXPECTED_MEMBER_IDS must contain exactly three IDs")
+			}
+			expectedSeen := make(map[string]struct{}, len(expected))
+			for _, id := range expected {
+				if id == "" {
+					return rhiza.Config{}, fmt.Errorf("TERNAL_DATA_EXPECTED_MEMBER_IDS must not contain an empty ID")
+				}
+				if _, duplicate := expectedSeen[id]; duplicate {
+					return rhiza.Config{}, fmt.Errorf("TERNAL_DATA_EXPECTED_MEMBER_IDS must contain distinct IDs")
+				}
+				expectedSeen[id] = struct{}{}
+				if _, found := seenIDs[id]; !found {
+					return rhiza.Config{}, fmt.Errorf("multi-node member set is missing expected ID %s", id)
+				}
+			}
+		}
+	} else if len(members) != 0 || expectedMemberIDs != "" {
+		return rhiza.Config{}, fmt.Errorf("HA member configuration requires TERNAL_DATA_MULTI_NODE=1")
 	}
 	syncInterval, err := durationEnv("TERNAL_OBJECT_STORE_SYNC_INTERVAL", time.Minute)
 	if err != nil {
 		return rhiza.Config{}, err
 	}
 	batchDelay, err := durationEnv("TERNAL_OBJECT_STORE_BATCH_DELAY", 2*time.Millisecond)
+	if err != nil {
+		return rhiza.Config{}, err
+	}
+	checkpointInterval, err := durationEnv("TERNAL_DATA_CHECKPOINT_INTERVAL", 15*time.Minute)
 	if err != nil {
 		return rhiza.Config{}, err
 	}
@@ -237,6 +313,7 @@ func rhizaConfigFromEnv(dataDir string) (rhiza.Config, error) {
 		ObjStoreDurability:   rhiza.ObjectStoreDurability(envOr("TERNAL_OBJECT_STORE_DURABILITY", string(rhiza.ObjectStoreDurabilityAsync))),
 		ObjStoreSyncInterval: syncInterval,
 		ObjStoreBatchDelay:   batchDelay,
+		CheckpointInterval:   checkpointInterval,
 	}, nil
 }
 

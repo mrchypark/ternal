@@ -13,6 +13,6 @@
 | Agent syncs keys | The signed ACK must match the current content digest and generation; changed, stale, rollback, and equivocation state is rejected | store/API/agent tests | repeated `local-agent-scenario.sh` sync |
 | Device is revoked | SSH and relay grants, discovery, and callback admission fail; the agent stops transport and trust is not recreated | store/API/agent tests | live revoked device |
 | Portal is used | HTML works server-side; htmx fragments enhance navigation; untrusted text is escaped | web tests/local smoke | browser accessibility pass |
-| Server restarts | Ternal data remains on the configured volume | persistence/backup tests | container/PVC restart |
+| Server restarts | A fresh emptyDir cache rebuilds from certified object-store state | persistence/backup tests | pod recreation with no PVC |
 | Old provider is presented | Old issuer and endpoint origin are rejected with no fallback | auth tests | negative provider probes |
 | User signs out | The browser cookie is cleared, its captured signed value is rejected, and revocation survives API restart | auth/API/store tests | `rauthy-session-scenario.sh` replay probe plus workload restart |

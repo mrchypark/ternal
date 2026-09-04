@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+func TestOpenRejectsMismatchedSchemaVersion(t *testing.T) {
+	t.Setenv("TERNAL_DATA_SCHEMA_VERSION", "2")
+	if _, err := Open(context.Background(), t.TempDir()); err == nil || !strings.Contains(err.Error(), "must be 1") {
+		t.Fatalf("mismatched schema version was accepted: %v", err)
+	}
+}
+
 func TestRhizaPersistsHostsAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -32,6 +39,39 @@ func TestRhizaPersistsHostsAcrossReopen(t *testing.T) {
 	loaded, err := reopened.GetHost(ctx, host.ID)
 	if err != nil || loaded == nil || loaded.Name != host.Name {
 		t.Fatalf("persisted host = %#v, err=%v", loaded, err)
+	}
+}
+
+func TestRhizaRestoresIntoEmptyCacheFromObjectStore(t *testing.T) {
+	ctx := context.Background()
+	objectStore := t.TempDir()
+	t.Setenv("TERNAL_DATA_CLUSTER_ID", "empty-cache-recovery")
+	t.Setenv("TERNAL_DATA_NODE_ID", "node-1")
+	t.Setenv("TERNAL_OBJECT_STORE_PROVIDER", "filesystem")
+	t.Setenv("TERNAL_OBJECT_STORE_DIR", objectStore)
+	t.Setenv("TERNAL_OBJECT_STORE_PREFIX", "clusters/empty-cache-recovery")
+	t.Setenv("TERNAL_OBJECT_STORE_DURABILITY", "before-ack")
+
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := s.CreateHost(ctx, NewHost{Name: "object-store", EndpointID: strings.Repeat("b", 64), SSHUser: "ops", SSHPort: 22})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restored.Close() })
+	loaded, err := restored.GetHost(ctx, host.ID)
+	if err != nil || loaded == nil || loaded.Name != host.Name {
+		t.Fatalf("object-store restored host = %#v, err=%v", loaded, err)
 	}
 }
 

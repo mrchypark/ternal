@@ -20,7 +20,10 @@ import (
 	"github.com/mrchypark/ternal/internal/core"
 )
 
-const sessionRevocationRetention = 10 * time.Minute
+const (
+	schemaVersion              = 1
+	sessionRevocationRetention = 10 * time.Minute
+)
 
 func sessionRevocationCleanupCutoff(now int64) int64 {
 	return now - int64(sessionRevocationRetention/time.Second)
@@ -140,6 +143,9 @@ type RelayAccessGrant struct {
 }
 
 func Open(ctx context.Context, dataDir string) (*Store, error) {
+	if expected := os.Getenv("TERNAL_DATA_SCHEMA_VERSION"); expected != "" && expected != fmt.Sprint(schemaVersion) {
+		return nil, fmt.Errorf("TERNAL_DATA_SCHEMA_VERSION must be %d for this binary", schemaVersion)
+	}
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
@@ -151,6 +157,10 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 	db, err := openRhiza(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
+	}
+	if err := db.WaitReady(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("wait for database readiness: %w", err)
 	}
 	s := &Store{db: db, path: dbPath}
 	if err := s.migrate(ctx); err != nil {
@@ -324,21 +334,21 @@ func (s *Store) migrate(ctx context.Context) error {
 			grant_id TEXT NOT NULL,
 			PRIMARY KEY (host_id, ssh_user, grant_id)
 		)`,
+		`INSERT INTO ternal_schema (version)
+		 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ternal_schema)`,
 	}
-	for _, m := range migrations {
-		if _, err := s.db.ExecContext(ctx, m); err != nil {
-			return fmt.Errorf("execute migration: %w", err)
-		}
+	statements := make([]rhiza.SQLStatement, len(migrations))
+	for i, migration := range migrations {
+		statements[i] = rhiza.SQLStatement{SQL: migration}
+	}
+	if err := s.db.Migrate(ctx, []rhiza.Migration{{Version: schemaVersion, Name: "ternal-v1", Statements: statements}}); err != nil {
+		return fmt.Errorf("execute migration: %w", err)
 	}
 	var versionCount, version int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(version), 0) FROM ternal_schema`).Scan(&versionCount, &version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if versionCount == 0 {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO ternal_schema (version) VALUES (1)`); err != nil {
-			return fmt.Errorf("initialize schema version: %w", err)
-		}
-	} else if versionCount != 1 || version != 1 {
+	if versionCount != 1 || version != schemaVersion {
 		return fmt.Errorf("unsupported Ternal schema version")
 	}
 	return nil
