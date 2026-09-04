@@ -47,6 +47,9 @@ func TestPortalRendersHTMXAndEscapesData(t *testing.T) {
 		`src="/assets/htmx.min.js"`,
 		`hx-get="/?view=policies"`,
 		`hx-target="#workspace"`,
+		`id="workspace" tabindex="-1"`,
+		`aria-current="page"`,
+		`aria-label="Registered SSH hosts"`,
 		`name="htmx-config" content="{&#34;noSwap&#34;:[204,304,&#34;4xx&#34;,&#34;5xx&#34;]}"`,
 		`&lt;script&gt;alert(&#34;x&#34;)&lt;/script&gt;`,
 	} {
@@ -77,6 +80,9 @@ func TestHTMXRequestReturnsWorkspaceFragment(t *testing.T) {
 	body := res.Body.String()
 	if res.Code != http.StatusOK || !strings.HasPrefix(body, `<section id="workspace"`) {
 		t.Fatalf("expected workspace fragment, status=%d body=%s", res.Code, body)
+	}
+	if !strings.Contains(body, `id="workspace-navigation"`) || !strings.Contains(body, `hx-swap-oob="outerHTML"`) || !strings.Contains(body, `aria-current="page"`) {
+		t.Fatal("HTMX fragment did not include the current navigation OOB update")
 	}
 	if strings.Contains(body, "<!doctype html>") || strings.Contains(body, `<script src=`) {
 		t.Fatal("HTMX fragment unexpectedly contains the document shell")

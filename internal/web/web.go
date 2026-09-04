@@ -56,7 +56,7 @@ func (s *Server) Index(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.Header.Get("HX-Request") == "true" {
-			node = workspace
+			node = g.Group{workspace, navigation(identity, view, true)}
 		} else {
 			node = page(identity, view, workspace)
 		}
@@ -104,7 +104,7 @@ func page(identity *auth.AuthContext, active string, workspace g.Node) g.Node {
 			h.Div(h.Class("min-h-screen lg:grid lg:grid-cols-[17rem_1fr]"),
 				h.Aside(h.Class("border-b border-ink-200 bg-ink-900 px-5 py-6 text-ink-100 lg:fixed lg:inset-y-0 lg:w-[17rem] lg:border-b-0 lg:border-r lg:border-ink-700"),
 					brand(),
-					h.Nav(h.Aria("label", "Workspace"), h.Class("mt-8 grid grid-cols-2 gap-1 sm:grid-cols-5 lg:grid-cols-1"), g.Group(navItems(identity, active))),
+					navigation(identity, active, false),
 					h.Div(h.Class("mt-8 hidden border-t border-ink-700 pt-5 text-sm lg:block"),
 						h.P(h.Class("font-semibold text-ink-100"), g.Text(identity.User.Subject)),
 						h.P(h.Class("mt-1 text-xs text-ink-400"), g.Text(role(identity))),
@@ -125,7 +125,7 @@ func (s *Server) workspace(r *http.Request, identity *auth.AuthContext, view str
 	if err != nil {
 		return nil, err
 	}
-	return h.Section(h.ID("workspace"), h.Class("mx-auto max-w-[94rem] px-5 py-8 sm:px-8 lg:px-12 lg:py-12"),
+	return h.Section(h.ID("workspace"), h.TabIndex("-1"), h.Class("mx-auto max-w-[94rem] px-5 py-8 sm:px-8 lg:px-12 lg:py-12"),
 		h.Header(h.Class("mb-10 grid gap-4 border-b border-ink-200 pb-7 sm:grid-cols-[1fr_auto] sm:items-end"),
 			h.Div(
 				h.P(h.Class("mb-2 text-xs font-bold tracking-[0.18em] text-forest-600"), g.Text("CONTROL PLANE / "+strings.ToUpper(view))),
@@ -215,8 +215,20 @@ func navItems(identity *auth.AuthContext, active string) []g.Node {
 			class = "min-h-11 bg-ink-700 px-3 py-3 text-sm font-semibold text-ink-50"
 		}
 		url := "/?view=" + item[0]
-		return h.A(h.Href(url), h.Class(class), hx("get", url), hx("target", "#workspace"), hx("swap", "outerHTML"), hx("push-url", "true"), g.Text(item[1]))
+		attrs := []g.Node{h.Href(url), h.Class(class), hx("get", url), hx("target", "#workspace"), hx("swap", "outerHTML"), hx("push-url", "true")}
+		if item[0] == active {
+			attrs = append(attrs, h.Aria("current", "page"))
+		}
+		return h.A(append(attrs, g.Text(item[1]))...)
 	})
+}
+
+func navigation(identity *auth.AuthContext, active string, outOfBand bool) g.Node {
+	attrs := []g.Node{h.ID("workspace-navigation"), h.Aria("label", "Workspace"), h.Class("mt-8 grid grid-cols-2 gap-1 sm:grid-cols-5 lg:grid-cols-1")}
+	if outOfBand {
+		attrs = append(attrs, hx("swap-oob", "outerHTML"))
+	}
+	return h.Nav(append(attrs, g.Group(navItems(identity, active)))...)
 }
 
 func filterGrants(items []store.AccessGrant, userID string) []store.AccessGrant {
@@ -295,7 +307,7 @@ func dataTable(caption string, headers []string, rows g.Group, empty string) g.N
 	return h.Section(h.Class("overflow-hidden border border-ink-200 bg-white"),
 		h.Div(h.Class("flex items-center justify-between border-b border-ink-200 px-5 py-4"), h.H2(h.Class("text-lg font-semibold text-ink-900"), g.Text(caption)), h.Span(h.Class("text-xs font-bold tracking-[0.12em] text-ink-400"), g.Text(strconv.Itoa(len(rows))+" TOTAL"))),
 		h.Div(h.Class("overflow-x-auto"),
-			h.Table(h.Class("w-full min-w-[44rem] border-collapse text-left text-sm"),
+			h.Table(h.Aria("label", caption), h.Class("w-full min-w-[44rem] border-collapse text-left text-sm"),
 				h.THead(h.Class("bg-ink-100 text-xs uppercase tracking-[0.1em] text-ink-500"), h.Tr(g.Map(headers, func(label string) g.Node { return h.Th(h.Scope("col"), h.Class("px-5 py-3 font-bold"), g.Text(label)) })...)),
 				h.TBody(h.Class("divide-y divide-ink-200"), body),
 			),
