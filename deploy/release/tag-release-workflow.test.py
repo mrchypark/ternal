@@ -1,9 +1,21 @@
 #!/usr/bin/env python3
 import pathlib
 import re
+import sys
 
 
 workflow = pathlib.Path(".github/workflows/release.yml").read_text()
+args = sys.argv[1:]
+if args == ["--failure-fixture"]:
+    workflow = workflow.replace(
+        '(cd "$(dirname "$chart")" && sha256sum "$(basename "$chart")") > helm-chart-sha256.txt',
+        'sha256sum "$chart" > helm-chart-sha256.txt',
+    ).replace(
+        "if recorded_chart != [chart_digest, chart.name]:",
+        'if recorded_chart != [chart_digest, f"dist/release/{chart.name}"]:',
+    )
+elif args not in ([], ["--valid-fixture"]):
+    raise SystemExit("usage: tag-release-workflow.test.py [--failure-fixture|--valid-fixture]")
 
 if not workflow.startswith('name: Tag release\n\non:\n  push:\n    tags: ["v*"]\n'):
     raise SystemExit("tag release workflow must only start from a v* tag push")
@@ -31,6 +43,7 @@ for required in (
     "${{ env.IMAGE_NAME }}:sha-${{ github.sha }}",
     "helm package deploy/helm/ternal",
     'chart="dist/release/ternal-$version.tgz"',
+    '(cd "$(dirname "$chart")" && sha256sum "$(basename "$chart")") > helm-chart-sha256.txt',
     "helm-chart-sha256.txt",
     "--fail-on high",
     "-e DOCKER_CONFIG=/auth",
@@ -58,6 +71,8 @@ if "/root/.docker/config.json" in workflow:
     raise SystemExit("scanner authentication must not assume the container runs as root")
 if re.search(r"(?:tar -tzf|unzip -Z1).*\| grep -Eq", workflow):
     raise SystemExit("archive inventory checks must consume the full pipe under pipefail")
+if 'f"dist/release/{chart.name}"' in workflow:
+    raise SystemExit("published Helm checksum must use the downloadable asset basename")
 
 inventories = re.findall(r"expected='(.*?)'\n\s+actual=", workflow, re.DOTALL)
 if len(inventories) != 2:
