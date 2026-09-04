@@ -4,13 +4,42 @@ image:
   pullPolicy: IfNotPresent
   pullSecrets: []
 
+# Existing Kubernetes ServiceAccount used by the API pods. On GKE, bind this
+# account through Workload Identity instead of supplying a service-account key.
+serviceAccountName: ""
+
 service:
   port: 3000
 
 persistence:
+  # PVC-backed /data is intentionally unsupported. Keep false so accidental
+  # reuse of the retired setting fails closed during rendering.
   enabled: false
-  storageClassName: ""
-  size: 1Gi
+
+data:
+  # standalone runs one embedded Rhiza voter. ha runs exactly three voters.
+  mode: standalone
+  # Production sets this true. HA implies it. When false, standalone is an
+  # explicitly ephemeral development mode.
+  requireObjectStore: false
+  # Must match the binary; changes require a new greenfield data identity.
+  schemaVersion: 1
+  # Durable standalone and HA require a unique, stable lowercase DNS label.
+  clusterID: ""
+  checkpointInterval: 15m
+  objectStore:
+    # Rhiza-certified S3-compatible or native GCS storage is the persistence
+    # authority. /data is always a disposable emptyDir cache.
+    provider: ""
+    endpoint: ""
+    bucket: ""
+    # Empty defaults to clusters/<clusterID>.
+    prefix: ""
+    region: ""
+    insecure: false
+    durability: before-ack
+  ha:
+    peerPort: 9090
 
 gateway:
   enabled: false

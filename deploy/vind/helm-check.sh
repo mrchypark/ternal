@@ -45,6 +45,9 @@ vcluster connect "$name" --driver docker -- helm upgrade --install ternal deploy
 	--set-string oidc.redirectUrl=https://ternal.example.invalid/auth/callback \
 	--set-string oidc.adminGroup=ternal-admins \
 	--set-string oidc.groupsClaim=groups \
+	--set-string data.clusterID=ternal-vind-a1 \
+	--set data.objectStore.provider=gcs \
+	--set-string data.objectStore.bucket=ternal-vind \
 	--set-string secrets.oidcClientSecret=test-oidc-secret \
 	--set-string secrets.sessionKey=0123456789abcdef0123456789abcdef \
 	--set-string secrets.dataAdminToken=0123456789abcdef0123456789abcdef \

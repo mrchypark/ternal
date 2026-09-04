@@ -1,8 +1,25 @@
 {{- $imageTag := required "image.tag is required" .Values.image.tag -}}
 {{- $secretName := .Values.secrets.existingSecret | default .Release.Name -}}
 {{- $managedRelay := default dict .Values.transport.managedRelay -}}
+{{- $data := default dict .Values.data -}}
+{{- $dataMode := default "standalone" $data.mode -}}
+{{- $haMode := eq $dataMode "ha" -}}
+{{- $ha := default dict $data.ha -}}
+{{- $dataIdentity := include "ternal.dataIdentity" . -}}
+{{- with (lookup "apps/v1" "StatefulSet" .Release.Namespace .Release.Name) -}}
+{{- $currentIdentity := index .spec.selector.matchLabels "ternal.dev/data-identity" -}}
+{{- if ne (default "" $currentIdentity) $dataIdentity -}}
+{{- fail "data mode, cluster identity, membership, and object storage are immutable; create a new Helm release for a greenfield cluster" -}}
+{{- end -}}
+{{- end -}}
 {{- if eq $imageTag "latest" -}}
 {{- fail "image.tag must not be latest; use an immutable build tag" -}}
+{{- end -}}
+{{- if .Values.persistence.enabled -}}
+{{- fail "PVC persistence is unsupported; use Rhiza object storage and keep persistence.enabled=false" -}}
+{{- end -}}
+{{- if and $haMode (not .Values.secrets.existingSecret) -}}
+{{- fail "data.mode=ha requires secrets.existingSecret with TERNAL_DATA_CLUSTER_MEMBERS" -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -12,12 +29,18 @@ metadata:
     app.kubernetes.io/name: {{ .Chart.Name }}
     app.kubernetes.io/instance: {{ .Release.Name }}
 spec:
-  serviceName: {{ .Release.Name }}
-  replicas: 1
+  serviceName: {{ ternary (printf "%s-data" .Release.Name) .Release.Name $haMode }}
+  replicas: {{ ternary 3 1 $haMode }}
+  {{- if $haMode }}
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: OnDelete
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ .Chart.Name }}
       app.kubernetes.io/instance: {{ .Release.Name }}
+      ternal.dev/data-identity: {{ $dataIdentity }}
   template:
     metadata:
       annotations:
@@ -25,11 +48,25 @@ spec:
       labels:
         app.kubernetes.io/name: {{ .Chart.Name }}
         app.kubernetes.io/instance: {{ .Release.Name }}
+        ternal.dev/data-identity: {{ $dataIdentity }}
     spec:
+      {{- with .Values.serviceAccountName }}
+      serviceAccountName: {{ . | quote }}
+      {{- end }}
       securityContext:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      {{- if $haMode }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: {{ .Chart.Name }}
+                  app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- end }}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -49,6 +86,11 @@ spec:
           ports:
             - name: http
               containerPort: 3000
+{{ if $haMode }}
+            - name: data-peer
+              containerPort: {{ default 9090 $ha.peerPort }}
+              protocol: UDP
+{{ end }}
 {{ if ($managedRelay.enabled | default false) }}
             - name: relay-access
               containerPort: 3001
@@ -57,34 +99,44 @@ spec:
             httpGet:
               path: /ready
               port: http
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /health
               port: http
           envFrom:
             - configMapRef:
-                name: {{ .Release.Name }}
+                name: {{ include "ternal.dataConfigMapName" . }}
             - secretRef:
                 name: {{ $secretName }}
+          {{- if $haMode }}
+          env:
+            - name: TERNAL_DATA_MULTI_NODE
+              value: "1"
+            - name: TERNAL_DATA_NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: TERNAL_DATA_EXPECTED_MEMBER_IDS
+              value: {{ printf "%s-0,%s-1,%s-2" .Release.Name .Release.Name .Release.Name | quote }}
+            - name: TERNAL_DATA_BIND_ADDR
+              value: {{ printf "0.0.0.0:%d" (int (default 9090 $ha.peerPort)) | quote }}
+            - name: TERNAL_DATA_PEER_ADDR
+              value: {{ printf "0.0.0.0:%d" (int (default 9090 $ha.peerPort)) | quote }}
+            - name: TERNAL_DATA_CLUSTER_MEMBERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: TERNAL_DATA_CLUSTER_MEMBERS
+          {{- end }}
           volumeMounts:
             - name: data
               mountPath: /data
-      {{- if not .Values.persistence.enabled }}
       volumes:
         - name: data
           emptyDir: {}
-      {{- end }}
-  {{- if .Values.persistence.enabled }}
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        {{- with .Values.persistence.storageClassName }}
-        storageClassName: {{ . | quote }}
-        {{- end }}
-        resources:
-          requests:
-            storage: {{ .Values.persistence.size | quote }}
-  {{- end }}

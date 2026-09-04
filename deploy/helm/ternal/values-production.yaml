@@ -28,6 +28,7 @@ transport:
       connectionDraining:
         drainingTimeoutSec: 300
 
-persistence:
-  enabled: true
-  size: 10Gi
+data:
+  # Production must supply data.clusterID and data.objectStore metadata.
+  # Rhiza-certified object storage is authoritative; /data remains emptyDir.
+  requireObjectStore: true

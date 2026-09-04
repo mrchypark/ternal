@@ -1,0 +1,26 @@
+{{- $data := default dict .Values.data -}}
+{{- if eq (default "standalone" $data.mode) "ha" }}
+{{- $ha := default dict $data.ha -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-data
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+    - name: data-peer
+      port: {{ default 9090 $ha.peerPort }}
+      targetPort: data-peer
+      protocol: UDP
+{{- end }}

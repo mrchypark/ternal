@@ -6,7 +6,8 @@ Run `./scripts/run-all-tests.sh`. It verifies:
 
 - generated htmx/Tailwind assets and a clean asset diff;
 - Go formatting, race-enabled tests, vet, and all three binaries;
-- data-store reopen persistence and offline archive readback (not trust-state reactivation);
+- data-store reopen, empty-cache recovery from object storage, and offline
+  archive readback (not trust-state reactivation);
 - gomponents rendering, escaping, htmx fragments, and embedded asset hash;
 - OIDC state/session integrity and old-origin rejection;
 - persistent logout revocation and captured-cookie replay rejection;
@@ -30,13 +31,16 @@ must be run against artifacts built from the exact reviewed commit:
 - relay callback bearer plus exact endpoint subject;
 - strict wrong-key rejection and correct-key SSH banner/session;
 - bidirectional stream drain, half-close, and process exit semantics;
+- GCS Workload Identity principal/audit verification and denied-write
+  fail-closed behavior;
 - zero-replica cutover, workload health, and fail-closed rollback.
 
 Passing repository tests is not evidence of those live behaviors. Roost startup
 alone is not SSH compatibility evidence.
 
-The Go greenfield release deliberately rejects restoring an older trust
-database. The archive readback test proves storage recovery only; it does not
-prove that revocations, grants, or authorized-key generations remain monotonic
-after rollback. A future live restore path requires a separately reviewed
-security-epoch protocol and adversarial post-restore tests.
+The Go greenfield release rebuilds an empty local cache from the current
+certified object-store state, but deliberately rejects rolling back to an older
+trust database. Offline archive readback proves storage readability only; it
+does not prove that revocations, grants, or authorized-key generations remain
+monotonic after rollback. Any older-point restore requires a separately
+reviewed security-epoch protocol and adversarial post-restore tests.

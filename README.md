@@ -147,6 +147,11 @@ host-key fingerprint in one operation.
 - `deploy/helm/ternal` contains the Helm chart.
 - Runtime secrets can come from one pre-created Kubernetes Secret, keeping
   plaintext values out of Helm release history.
+- The chart supports one-voter `standalone` and fixed three-voter `ha` data
+  modes. `/data` is always a disposable `emptyDir` cache; Rhiza-certified
+  S3-compatible or GCS object storage is the persistence authority. HA adds
+  stable voter identities, quorum-aware readiness, and a disruption budget.
+  GKE deployments can use Workload Identity without JSON keys.
 - GitHub Actions builds the image, chart, native CLI bundles, Linux agent bundle,
   checksums, SBOMs, and provenance for version tags.
 - Release workflows publish artifacts only; they do not deploy them.
