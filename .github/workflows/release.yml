@@ -81,7 +81,7 @@ jobs:
           test -f "$chart"
           test "$(helm show chart "$chart" | awk '/^version:/ { print $2 }')" = "$version"
           test "$(helm show chart "$chart" | awk '/^appVersion:/ { gsub(/\"/, "", $2); print $2 }')" = "$version"
-          sha256sum "$chart" > helm-chart-sha256.txt
+          (cd "$(dirname "$chart")" && sha256sum "$(basename "$chart")") > helm-chart-sha256.txt
 
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -277,7 +277,7 @@ jobs:
               raise SystemExit("invalid image digest")
           recorded_chart = (release / "helm-chart-sha256.txt").read_text().split()
           chart_digest = hashlib.sha256(chart.read_bytes()).hexdigest()
-          if recorded_chart != [chart_digest, f"dist/release/{chart.name}"]:
+          if recorded_chart != [chart_digest, chart.name]:
               raise SystemExit("Helm chart digest record does not match the release asset")
           build = dict(
               line.split("=", 1)

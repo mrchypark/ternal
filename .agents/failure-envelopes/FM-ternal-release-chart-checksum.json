@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "id": "FM-ternal-release-chart-checksum",
+  "state": "active",
+  "scope": "repo",
+  "match": {
+    "paths": [
+      ".github/workflows/release.yml",
+      "deploy/release/tag-release-workflow.test.py"
+    ]
+  },
+  "failure": {
+    "invariant": "Every published checksum file names the downloadable release asset rather than an internal build path.",
+    "trigger": "The tag workflow hashes a chart using its dist/release path and publishes that record beside the chart basename.",
+    "mechanism": "sha256sum records the supplied internal path verbatim, so a consumer downloading the release assets into one directory cannot run the checksum file directly.",
+    "impact": "The chart bytes remain valid, but the dedicated public verification artifact fails for normal consumers and weakens the release-integrity workflow."
+  },
+  "root": {
+    "cause": "The chart checksum was generated from the repository-root path instead of from within the chart output directory.",
+    "detection_gap": "The workflow test checked that a checksum asset existed but did not replay it from the published flat asset layout."
+  },
+  "evidence": {
+    "verifier": "Ternal Repo Steward",
+    "refs": [
+      ".github/workflows/release.yml",
+      "deploy/release/tag-release-workflow.test.py",
+      "public v0.3.5 Helm checksum consumer smoke"
+    ],
+    "sanitized": true
+  },
+  "control": {
+    "kind": "test",
+    "mode": "block",
+    "artifact": "deploy/release/tag-release-workflow.test.py",
+    "current_args": []
+  },
+  "replay": {
+    "failure_args": ["--failure-fixture"],
+    "valid_args": ["--valid-fixture"],
+    "failure_exit": 1,
+    "valid_exit": 0,
+    "oracle": "The same workflow contract test rejects the historical dist/release checksum entry and accepts a checksum whose recorded filename is the public chart basename."
+  },
+  "owner": "mrchypark/ternal",
+  "review_after": "2027-09-04",
+  "duplicates": [],
+  "supersedes": []
+}
