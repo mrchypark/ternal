@@ -7,7 +7,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-chi/cors v1.2.2
 	github.com/google/uuid v1.6.0
-	github.com/mrchypark/rhiza v0.10.2
+	github.com/mrchypark/rhiza v0.12.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/oauth2 v0.36.0
 	maragu.dev/gomponents v1.3.0
@@ -72,7 +72,7 @@ require (
 	github.com/minio/crc64nvme v1.0.2 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
 	github.com/minio/minio-go/v7 v7.0.95 // indirect
-	github.com/mrchypark/latticedb-go v0.3.0 // indirect
+	github.com/mrchypark/latticedb-go v0.5.1 // indirect
 	github.com/ncruces/go-sqlite3 v0.35.3 // indirect
 	github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35304 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
