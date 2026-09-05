@@ -31,12 +31,13 @@ write_headers() {
 require_env TERNAL_USER_SESSION_COOKIE
 require_env TERNAL_USER_CSRF_TOKEN
 require_env TERNAL_OTHER_USER_SESSION_COOKIE
+require_env TERNAL_OTHER_USER_CSRF_TOKEN
 
 umask 077
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT INT TERM HUP
 write_headers "$work/user.headers" "$TERNAL_USER_SESSION_COOKIE" "$TERNAL_USER_CSRF_TOKEN"
-write_headers "$work/other.headers" "$TERNAL_OTHER_USER_SESSION_COOKIE"
+write_headers "$work/other.headers" "$TERNAL_OTHER_USER_SESSION_COOKIE" "$TERNAL_OTHER_USER_CSRF_TOKEN"
 
 key_path="$state/user-key"
 ssh-keygen -q -t ed25519 -N '' -C 'ternal-e2e-user' -f "$key_path"
