@@ -77,8 +77,9 @@ write_headers "$work/user.headers" "$TERNAL_USER_SESSION_COOKIE" "$TERNAL_USER_C
 write_headers "$work/other.headers" "$TERNAL_OTHER_USER_SESSION_COOKIE" ''
 
 expires_at=$(( $(date +%s) + 900 ))
-batch_request=$(jq -nc --argjson expires_at "$expires_at" \
-	'{name:"ied-greenfield",serial_prefix:"IED",expires_at:$expires_at,max_devices:1}')
+batch_name="ied-greenfield-$(basename "$work")"
+batch_request=$(jq -nc --arg name "$batch_name" --argjson expires_at "$expires_at" \
+	'{name:$name,serial_prefix:"IED",expires_at:$expires_at,max_devices:1}')
 status=$(request POST /manufacturing/batches "$work/admin.headers" "$batch_request" "$work/batch.json")
 [ "$status" = 201 ] || { echo "manufacturing batch creation returned HTTP $status" >&2; exit 1; }
 jq -er '.token' "$work/batch.json" >"$work/manufacturing-token"
