@@ -567,3 +567,64 @@ func TestManufacturingBatchAssignsSerialAndClosesAtLimit(t *testing.T) {
 		t.Fatal("closed manufacturing batch accepted another device")
 	}
 }
+
+func TestEnrollDeviceRollsBackCredentialConsumptionOnInsertFailure(t *testing.T) {
+	t.Run("one-time token", func(t *testing.T) {
+		ctx := t.Context()
+		s, err := Open(ctx, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		conflict, err := s.CreateHost(ctx, NewHost{Name: "DUPLICATE", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22})
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := s.CreateManufacturingToken(ctx, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.EnrollDevice(ctx, token.Token, strings.Repeat("b", 64), "DUPLICATE", "test", "SHA256:"+strings.Repeat("A", 43), "device-key", "ops", 22, nil); err == nil {
+			t.Fatal("enrollment with duplicate host name succeeded")
+		}
+		if available, err := s.GetManufacturingToken(ctx, token.Token); err != nil || available == nil {
+			t.Fatalf("manufacturing token was consumed: %#v, err=%v", available, err)
+		}
+		if err := s.DeleteHost(ctx, conflict.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.EnrollDevice(ctx, token.Token, strings.Repeat("b", 64), "DUPLICATE", "test", "SHA256:"+strings.Repeat("A", 43), "device-key", "ops", 22, nil); err != nil {
+			t.Fatalf("token was not reusable after rollback: %v", err)
+		}
+	})
+
+	t.Run("batch slot", func(t *testing.T) {
+		ctx := t.Context()
+		s, err := Open(ctx, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		conflict, err := s.CreateHost(ctx, NewHost{Name: "DUPLICATE-000001", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, token, err := s.CreateManufacturingBatch(ctx, "rollback", "DUPLICATE", time.Now().Add(time.Hour).Unix(), 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.EnrollDevice(ctx, token, strings.Repeat("b", 64), "", "test", "SHA256:"+strings.Repeat("A", 43), "device-key", "ops", 22, nil); err == nil {
+			t.Fatal("enrollment with duplicate host name succeeded")
+		}
+		batches, err := s.ListManufacturingBatches(ctx)
+		if err != nil || len(batches) != 1 || batches[0].UsedCount != 0 || batches[0].Status != "open" {
+			t.Fatalf("manufacturing batch changed after rollback: %#v, err=%v", batches, err)
+		}
+		if err := s.DeleteHost(ctx, conflict.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.EnrollDevice(ctx, token, strings.Repeat("b", 64), "", "test", "SHA256:"+strings.Repeat("A", 43), "device-key", "ops", 22, nil); err != nil {
+			t.Fatalf("batch slot was not reusable after rollback: %v", err)
+		}
+	})
+}

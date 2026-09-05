@@ -1115,8 +1115,11 @@ func (s *Store) EnrollDevice(ctx context.Context, token, endpointID, serialNumbe
 	if devicePublicKey == "" {
 		return nil, fmt.Errorf("device public key is required")
 	}
+	expectedOne := int64(1)
+	now := nowUnix()
+	var consume rhiza.SQLStatement
 	if batch != nil {
-		if batch.Status != "open" || batch.ExpiresAt <= nowUnix() || batch.UsedCount >= batch.MaxDevices {
+		if batch.Status != "open" || batch.ExpiresAt <= now || batch.UsedCount >= batch.MaxDevices {
 			return nil, fmt.Errorf("manufacturing batch is closed")
 		}
 		expectedSerial := fmt.Sprintf("%s-%06d", batch.SerialPrefix, batch.UsedCount+1)
@@ -1124,26 +1127,23 @@ func (s *Store) EnrollDevice(ctx context.Context, token, endpointID, serialNumbe
 			return nil, fmt.Errorf("serial does not match manufacturing batch")
 		}
 		serialNumber = expectedSerial
-		now := nowUnix()
-		reserved, err := s.db.ExecContext(ctx,
-			`UPDATE manufacturing_batches SET used_count = used_count + 1, status = CASE WHEN used_count + 1 >= max_devices THEN 'closed' ELSE status END, closed_at = CASE WHEN used_count + 1 >= max_devices THEN ? ELSE closed_at END WHERE id = ? AND status = 'open' AND expires_at > ? AND used_count = ? AND used_count < max_devices`,
-			now, batch.ID, now, batch.UsedCount,
-		)
-		if err != nil || reserved.RowsAffected != 1 {
-			return nil, fmt.Errorf("manufacturing reservation conflicted")
+		consume = rhiza.SQLStatement{
+			SQL:                  `UPDATE manufacturing_batches SET used_count = used_count + 1, status = CASE WHEN used_count + 1 >= max_devices THEN 'closed' ELSE status END, closed_at = CASE WHEN used_count + 1 >= max_devices THEN ? ELSE closed_at END WHERE id = ? AND status = 'open' AND expires_at > ? AND used_count = ? AND used_count < max_devices`,
+			Args:                 []any{now, batch.ID, now, batch.UsedCount},
+			ExpectedRowsAffected: &expectedOne,
 		}
 	} else {
 		if serialNumber == "" {
 			return nil, fmt.Errorf("serial number is required")
 		}
-		spent, err := s.db.ExecContext(ctx, `DELETE FROM manufacturing_tokens WHERE id = ?`, mt.ID)
-		if err != nil || spent.RowsAffected != 1 {
-			return nil, fmt.Errorf("manufacturing token is no longer available")
+		consume = rhiza.SQLStatement{
+			SQL:                  `DELETE FROM manufacturing_tokens WHERE id = ?`,
+			Args:                 []any{mt.ID},
+			ExpectedRowsAffected: &expectedOne,
 		}
 	}
 	id := newID()
 	hostID := newID()
-	now := nowUnix()
 	if sshUser == "" {
 		sshUser = "root"
 	}
@@ -1151,19 +1151,21 @@ func (s *Store) EnrollDevice(ctx context.Context, token, endpointID, serialNumbe
 		sshPort = 22
 	}
 	tagsJSON, _ := json.Marshal(tags)
-	if _, err = s.db.ExecContext(ctx,
-		`INSERT INTO hosts (id, name, endpoint_id, ssh_user, tags, ssh_port, status, owner, last_seen, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'manufactured', 'manufacturing', NULL, ?, ?)`,
-		hostID, serialNumber, endpointID, sshUser, string(tagsJSON), sshPort, now, now,
-	); err != nil {
-		return nil, err
-	}
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO devices (id, host_id, endpoint_id, ssh_host_key_fingerprint, device_public_key, state, serial_number, model, enrolled_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 'manufactured', ?, ?, ?, NULL)`,
-		id, hostID, endpointID, fingerprint, devicePublicKey, serialNumber, model, now,
+	_, err = s.db.ExecTransactionResult(ctx,
+		consume,
+		rhiza.SQLStatement{
+			SQL:                  `INSERT INTO hosts (id, name, endpoint_id, ssh_user, tags, ssh_port, status, owner, last_seen, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'manufactured', 'manufacturing', NULL, ?, ?)`,
+			Args:                 []any{hostID, serialNumber, endpointID, sshUser, string(tagsJSON), sshPort, now, now},
+			ExpectedRowsAffected: &expectedOne,
+		},
+		rhiza.SQLStatement{
+			SQL:                  `INSERT INTO devices (id, host_id, endpoint_id, ssh_host_key_fingerprint, device_public_key, state, serial_number, model, enrolled_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 'manufactured', ?, ?, ?, NULL)`,
+			Args:                 []any{id, hostID, endpointID, fingerprint, devicePublicKey, serialNumber, model, now},
+			ExpectedRowsAffected: &expectedOne,
+		},
 	)
 	if err != nil {
-		_, _ = s.db.ExecContext(ctx, `DELETE FROM hosts WHERE id = ?`, hostID)
-		return nil, err
+		return nil, fmt.Errorf("enroll device atomically: %w", err)
 	}
 	return &Device{ID: id, HostID: hostID, EndpointID: endpointID, SSHHostKeyFingerprint: fingerprint, DevicePublicKey: devicePublicKey, State: "manufactured", SerialNumber: serialNumber, Model: model, EnrolledAt: now}, nil
 }
