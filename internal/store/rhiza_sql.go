@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -39,7 +40,14 @@ func openRhiza(ctx context.Context, config rhiza.Config) (*rhizaSQL, error) {
 func (d *rhizaSQL) Close() error { return d.db.Close() }
 
 func (d *rhizaSQL) WaitReady(ctx context.Context) error {
-	return waitUntilReady(ctx, d.db.Ready)
+	return waitUntilReadable(ctx, d.db.Ready, func(ctx context.Context) error {
+		_, err := d.db.Query(ctx, rhiza.QueryRequest{SQL: "SELECT 1", Consistency: rhiza.ConsistencyLinearizable})
+		return err
+	})
+}
+
+func waitUntilReadable(ctx context.Context, ready func() bool, query func(context.Context) error) error {
+	return waitUntilReady(ctx, func() bool { return ready() && query(ctx) == nil })
 }
 
 func waitUntilReady(ctx context.Context, ready func() bool) error {
@@ -56,7 +64,29 @@ func waitUntilReady(ctx context.Context, ready func() bool) error {
 }
 
 func (d *rhizaSQL) Migrate(ctx context.Context, migrations []rhiza.Migration) error {
-	return d.db.Migrate(ctx, migrations)
+	return retryRhizaStartup(ctx, func(attemptCtx context.Context) error {
+		return d.db.Migrate(attemptCtx, migrations)
+	})
+}
+
+func retryRhizaStartup(ctx context.Context, operation func(context.Context) error) error {
+	for {
+		attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := operation(attemptCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, rhiza.ErrCommitUnknown) || errors.Is(err, rhiza.ErrDurabilityUnavailable) ||
+			(!errors.Is(err, rhiza.ErrNotReady) && !errors.Is(err, rhiza.ErrQuorumUnavailable)) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func (d *rhizaSQL) ExecContext(ctx context.Context, statement string, args ...any) (rhiza.ExecuteResponse, error) {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/mrchypark/rhiza"
 )
 
 func TestWaitUntilReady(t *testing.T) {
@@ -20,6 +22,55 @@ func TestWaitUntilReady(t *testing.T) {
 	cancel()
 	if err := waitUntilReady(ctx, func() bool { return false }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled readiness wait returned %v", err)
+	}
+}
+
+func TestWaitUntilReadableRequiresLinearizableRead(t *testing.T) {
+	queries := 0
+	if err := waitUntilReadable(context.Background(), func() bool { return true }, func(context.Context) error {
+		queries++
+		if queries == 1 {
+			return errors.New("quorum unavailable")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if queries != 2 {
+		t.Fatalf("linearizable queries = %d, want 2", queries)
+	}
+}
+
+func TestRetryRhizaStartupRetriesOnlyTransientFailures(t *testing.T) {
+	attempts := 0
+	if err := retryRhizaStartup(context.Background(), func(context.Context) error {
+		attempts++
+		if attempts == 1 {
+			return rhiza.ErrQuorumUnavailable
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("transient attempts = %d, want 2", attempts)
+	}
+
+	permanent := errors.New("invalid migration")
+	for name, failure := range map[string]error{
+		"permanent":              permanent,
+		"unknown commit":         rhiza.ErrCommitUnknown,
+		"unconfirmed durability": rhiza.ErrDurabilityUnavailable,
+	} {
+		t.Run(name, func(t *testing.T) {
+			attempts = 0
+			if err := retryRhizaStartup(context.Background(), func(context.Context) error {
+				attempts++
+				return failure
+			}); !errors.Is(err, failure) || attempts != 1 {
+				t.Fatalf("error = %v after %d attempts", err, attempts)
+			}
+		})
 	}
 }
 

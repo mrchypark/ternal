@@ -158,12 +158,14 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	if err := db.WaitReady(ctx); err != nil {
+	startupCtx, cancelStartup := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancelStartup()
+	if err := db.WaitReady(startupCtx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("wait for database readiness: %w", err)
 	}
 	s := &Store{db: db, path: dbPath}
-	if err := s.migrate(ctx); err != nil {
+	if err := s.migrate(startupCtx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
