@@ -1,5 +1,5 @@
 image:
-  repository: ternal
+  repository: ghcr.io/mrchypark/ternal
   tag: ""
   pullPolicy: IfNotPresent
   pullSecrets: []

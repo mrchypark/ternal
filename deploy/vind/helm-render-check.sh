@@ -49,6 +49,7 @@ helm template ternal "$chart" \
 
 grep -q '^kind: StatefulSet$' "$tmp/default.yaml"
 grep -q '^kind: Service$' "$tmp/default.yaml"
+grep -q 'image: "ghcr.io/mrchypark/ternal:render-check"' "$tmp/default.yaml"
 grep -q 'TERNAL_OIDC_ISSUER: "https://auth.ternal.example.invalid/auth/v1/"' "$tmp/default.yaml"
 grep -q '^  replicas: 1$' "$tmp/default.yaml"
 grep -q '^          emptyDir: {}$' "$tmp/default.yaml"
