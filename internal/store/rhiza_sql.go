@@ -60,7 +60,8 @@ func (d *rhizaSQL) Migrate(ctx context.Context, migrations []rhiza.Migration) er
 }
 
 func (d *rhizaSQL) ExecContext(ctx context.Context, statement string, args ...any) (rhiza.ExecuteResponse, error) {
-	return d.db.Execute(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), SQL: statement, Args: normalizeArgs(args)})
+	response, err := d.db.Execute(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), SQL: statement, Args: normalizeArgs(args)})
+	return committedResponse(response, err)
 }
 
 func (d *rhizaSQL) ExecTransaction(ctx context.Context, statements ...rhiza.SQLStatement) error {
@@ -72,7 +73,15 @@ func (d *rhizaSQL) ExecTransactionResult(ctx context.Context, statements ...rhiz
 	for i := range statements {
 		statements[i].Args = normalizeArgs(statements[i].Args)
 	}
-	return d.db.Execute(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), Statements: statements})
+	response, err := d.db.Execute(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), Statements: statements})
+	return committedResponse(response, err)
+}
+
+func committedResponse(response rhiza.ExecuteResponse, err error) (rhiza.ExecuteResponse, error) {
+	if err == nil && response.Status != rhiza.MutationCommitted {
+		err = fmt.Errorf("SQL mutation was rejected: %s", response.ErrorCode)
+	}
+	return response, err
 }
 
 func (d *rhizaSQL) QueryContext(ctx context.Context, statement string, args ...any) (*rhizaRows, error) {
