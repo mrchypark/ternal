@@ -23,6 +23,15 @@ func TestInternalErrorsDoNotExposeDetails(t *testing.T) {
 	}
 }
 
+func TestWriteJSONEncodesNilSlicesAsEmptyArrays(t *testing.T) {
+	w := httptest.NewRecorder()
+	var items []string
+	writeJSON(w, http.StatusOK, items)
+	if body := w.Body.String(); body != "[]\n" {
+		t.Fatalf("nil slice body = %q, want empty JSON array", body)
+	}
+}
+
 func TestMetricsArePrometheusText(t *testing.T) {
 	w := httptest.NewRecorder()
 	NewServer(nil).handleMetrics(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))

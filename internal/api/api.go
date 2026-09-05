@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -1221,6 +1222,10 @@ func writeRelayDecision(w http.ResponseWriter, status int, allowed bool) {
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
+	value := reflect.ValueOf(v)
+	if value.IsValid() && value.Kind() == reflect.Slice && value.IsNil() {
+		v = []interface{}{}
+	}
 	json.NewEncoder(w).Encode(v)
 }
 
