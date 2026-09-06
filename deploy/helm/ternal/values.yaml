@@ -57,6 +57,8 @@ oidc:
   redirectUrl: http://127.0.0.1:3000/auth/callback
   adminGroup: ternal-admins
   groupsClaim: groups
+  # Only non-secret authorization claims; exposed to the signed-in user.
+  policyClaims: []
 
 session:
   ttlSeconds: 3600

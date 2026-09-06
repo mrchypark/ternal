@@ -75,6 +75,7 @@ data:
   TERNAL_OIDC_REDIRECT_URL: {{ required "oidc.redirectUrl is required" .Values.oidc.redirectUrl | quote }}
   TERNAL_OIDC_ADMIN_GROUP: {{ required "oidc.adminGroup is required" .Values.oidc.adminGroup | quote }}
   TERNAL_OIDC_GROUPS_CLAIM: {{ required "oidc.groupsClaim is required" .Values.oidc.groupsClaim | quote }}
+  TERNAL_OIDC_POLICY_CLAIMS: {{ join "," .Values.oidc.policyClaims | quote }}
   TERNAL_SESSION_TTL_SECONDS: {{ .Values.session.ttlSeconds | quote }}
   TERNAL_DEV_HEADERS: {{ ternary "1" "0" .Values.devHeaders | quote }}
   TERNAL_AGENT_RELAY_URLS: {{ $relayUrls | quote }}
