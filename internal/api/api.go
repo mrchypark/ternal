@@ -447,7 +447,7 @@ func (s *Server) handleCreateHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	created, err := s.store.CreateHost(r.Context(), h)
+	created, err := s.store.CreateHost(r.Context(), h, auth.GetAuth(r).User.PrincipalID())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -503,7 +503,7 @@ func (s *Server) handleUpdateHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := s.store.UpdateHost(r.Context(), id, h); err != nil {
+	if err := s.store.UpdateHost(r.Context(), id, h, auth.GetAuth(r).User.PrincipalID()); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -512,7 +512,7 @@ func (s *Server) handleUpdateHost(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteHost(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := s.store.DeleteHost(r.Context(), id); err != nil {
+	if err := s.store.DeleteHost(r.Context(), id, auth.GetAuth(r).User.PrincipalID()); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -534,7 +534,7 @@ func (s *Server) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	created, err := s.store.CreatePolicy(r.Context(), p)
+	created, err := s.store.CreatePolicy(r.Context(), p, auth.GetAuth(r).User.PrincipalID())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -549,7 +549,7 @@ func (s *Server) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := s.store.UpdatePolicy(r.Context(), id, p); err != nil {
+	if err := s.store.UpdatePolicy(r.Context(), id, p, auth.GetAuth(r).User.PrincipalID()); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -558,7 +558,7 @@ func (s *Server) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeletePolicy(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := s.store.DeletePolicy(r.Context(), id); err != nil {
+	if err := s.store.DeletePolicy(r.Context(), id, auth.GetAuth(r).User.PrincipalID()); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -601,6 +601,10 @@ func (s *Server) handleIssueSSHCommand(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !allowed {
+			if err := s.store.RecordPolicyDenied(r.Context(), "access.ssh.denied", host.ID, identity.User.PrincipalID()); err != nil {
+				writeError(w, http.StatusInternalServerError, "internal server error")
+				return
+			}
 			writeError(w, http.StatusNotFound, "host not found")
 			return
 		}
@@ -748,6 +752,10 @@ func (s *Server) handleIssueRelayGrant(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !allowed {
+			if err := s.store.RecordPolicyDenied(r.Context(), "relay.grant.denied", host.ID, identity.User.PrincipalID()); err != nil {
+				writeError(w, http.StatusInternalServerError, "internal server error")
+				return
+			}
 			writeError(w, http.StatusNotFound, "host not found")
 			return
 		}
@@ -948,7 +956,7 @@ func (s *Server) handleCreateManufacturingToken(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	token, err := s.store.CreateManufacturingToken(r.Context(), req.BatchID, req.ExpiresAt)
+	token, err := s.store.CreateManufacturingToken(r.Context(), req.BatchID, req.ExpiresAt, auth.GetAuth(r).User.PrincipalID())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -976,7 +984,7 @@ func (s *Server) handleCreateManufacturingBatch(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	batch, token, err := s.store.CreateManufacturingBatch(r.Context(), req.Name, req.SerialPrefix, req.ExpiresAt, req.MaxDevices)
+	batch, token, err := s.store.CreateManufacturingBatch(r.Context(), req.Name, req.SerialPrefix, req.ExpiresAt, req.MaxDevices, auth.GetAuth(r).User.PrincipalID())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -986,7 +994,7 @@ func (s *Server) handleCreateManufacturingBatch(w http.ResponseWriter, r *http.R
 
 func (s *Server) handleCloseManufacturingBatch(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := s.store.CloseManufacturingBatch(r.Context(), id); err != nil {
+	if err := s.store.CloseManufacturingBatch(r.Context(), id, auth.GetAuth(r).User.PrincipalID()); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1033,7 +1041,7 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := s.store.DeleteDevice(r.Context(), id); err != nil {
+	if err := s.store.DeleteDevice(r.Context(), id, auth.GetAuth(r).User.PrincipalID()); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

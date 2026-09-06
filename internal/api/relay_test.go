@@ -25,7 +25,7 @@ func TestRelayAdmissionRequiresBearerAndActiveGrant(t *testing.T) {
 	handler := NewServer(s).RelayRouter()
 	endpointID := strings.Repeat("a", 64)
 	expires := time.Now().Add(time.Hour).Unix()
-	token, err := s.CreateManufacturingToken(context.Background(), "", &expires)
+	token, err := s.CreateManufacturingToken(context.Background(), "", &expires, "system")
 	if err != nil {
 		t.Fatal(err)
 	}

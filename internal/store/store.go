@@ -394,9 +394,12 @@ func nowUnix() int64 {
 	return time.Now().Unix()
 }
 
-func (s *Store) CreateHost(ctx context.Context, h NewHost) (*core.Host, error) {
+func (s *Store) CreateHost(ctx context.Context, h NewHost, actor string) (*core.Host, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if actor == "" {
+		return nil, fmt.Errorf("audit actor is required")
+	}
 	id := newID()
 	now := nowUnix()
 	if h.SSHUser == "" {
@@ -409,11 +412,10 @@ func (s *Store) CreateHost(ctx context.Context, h NewHost) (*core.Host, error) {
 		h.Status = "unknown"
 	}
 	tagsJSON, _ := json.Marshal(h.Tags)
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO hosts (id, name, endpoint_id, ssh_user, tags, ssh_port, status, owner, last_seen, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, h.Name, h.EndpointID, h.SSHUser, string(tagsJSON), h.SSHPort, h.Status, h.Owner, h.LastSeen, now, now,
-	)
+	statement := rhiza.SQLStatement{SQL: `INSERT INTO hosts (id, name, endpoint_id, ssh_user, tags, ssh_port, status, owner, last_seen, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, Args: []any{id, h.Name, h.EndpointID, h.SSHUser, string(tagsJSON), h.SSHPort, h.Status, h.Owner, h.LastSeen, now, now}}
+	_, err := s.db.ExecTransactionResult(ctx, statement,
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) VALUES (?, 'host.created', 'host', ?, ?, ?)`, Args: []any{newID(), id, actor, now}})
 	if err != nil {
 		return nil, err
 	}
@@ -462,35 +464,46 @@ func (s *Store) GetHost(ctx context.Context, id string) (*core.Host, error) {
 	return &h, nil
 }
 
-func (s *Store) UpdateHost(ctx context.Context, id string, h NewHost) error {
+func (s *Store) UpdateHost(ctx context.Context, id string, h NewHost, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if actor == "" {
+		return fmt.Errorf("audit actor is required")
+	}
 	tagsJSON, _ := json.Marshal(h.Tags)
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE hosts SET name=?, endpoint_id=?, ssh_user=?, tags=?, ssh_port=?, status=?, owner=?, last_seen=?, updated_at=? WHERE id=?`,
-		h.Name, h.EndpointID, h.SSHUser, string(tagsJSON), h.SSHPort, h.Status, h.Owner, h.LastSeen, nowUnix(), id,
-	)
+	now := nowUnix()
+	statement := rhiza.SQLStatement{SQL: `UPDATE hosts SET name=?, endpoint_id=?, ssh_user=?, tags=?, ssh_port=?, status=?, owner=?, last_seen=?, updated_at=?
+		WHERE id=? AND (name IS NOT ? OR endpoint_id IS NOT ? OR ssh_user IS NOT ? OR tags IS NOT ? OR ssh_port IS NOT ? OR status IS NOT ? OR owner IS NOT ? OR last_seen IS NOT ?)`, Args: []any{h.Name, h.EndpointID, h.SSHUser, string(tagsJSON), h.SSHPort, h.Status, h.Owner, h.LastSeen, now, id, h.Name, h.EndpointID, h.SSHUser, string(tagsJSON), h.SSHPort, h.Status, h.Owner, h.LastSeen}}
+	_, err := s.db.ExecTransactionResult(ctx, statement,
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'host.updated', 'host', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, now}})
 	return err
 }
 
-func (s *Store) DeleteHost(ctx context.Context, id string) error {
+func (s *Store) DeleteHost(ctx context.Context, id, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM hosts WHERE id=?`, id)
+	if actor == "" {
+		return fmt.Errorf("audit actor is required")
+	}
+	_, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `DELETE FROM hosts WHERE id=?`, Args: []any{id}},
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'host.deleted', 'host', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, nowUnix()}})
 	return err
 }
 
-func (s *Store) CreatePolicy(ctx context.Context, p NewPolicy) (*core.Policy, error) {
+func (s *Store) CreatePolicy(ctx context.Context, p NewPolicy, actor string) (*core.Policy, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if actor == "" {
+		return nil, fmt.Errorf("audit actor is required")
+	}
 	id := newID()
 	now := nowUnix()
 	sshUsersJSON, _ := json.Marshal(p.SSHUsers)
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO policies (id, name, principal, host_selector, ssh_users, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, p.Name, p.Principal, p.HostSelector, string(sshUsersJSON), p.ExpiresAt, now, now,
-	)
+	statement := rhiza.SQLStatement{SQL: `INSERT INTO policies (id, name, principal, host_selector, ssh_users, expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, Args: []any{id, p.Name, p.Principal, p.HostSelector, string(sshUsersJSON), p.ExpiresAt, now, now}}
+	_, err := s.db.ExecTransactionResult(ctx, statement,
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) VALUES (?, 'policy.created', 'policy', ?, ?, ?)`, Args: []any{newID(), id, actor, now}})
 	if err != nil {
 		return nil, err
 	}
@@ -521,21 +534,30 @@ func (s *Store) ListPolicies(ctx context.Context) ([]core.Policy, error) {
 	return policies, rows.Err()
 }
 
-func (s *Store) UpdatePolicy(ctx context.Context, id string, p NewPolicy) error {
+func (s *Store) UpdatePolicy(ctx context.Context, id string, p NewPolicy, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if actor == "" {
+		return fmt.Errorf("audit actor is required")
+	}
 	sshUsersJSON, _ := json.Marshal(p.SSHUsers)
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE policies SET name=?, principal=?, host_selector=?, ssh_users=?, expires_at=?, updated_at=? WHERE id=?`,
-		p.Name, p.Principal, p.HostSelector, string(sshUsersJSON), p.ExpiresAt, nowUnix(), id,
-	)
+	now := nowUnix()
+	statement := rhiza.SQLStatement{SQL: `UPDATE policies SET name=?, principal=?, host_selector=?, ssh_users=?, expires_at=?, updated_at=?
+		WHERE id=? AND (name IS NOT ? OR principal IS NOT ? OR host_selector IS NOT ? OR ssh_users IS NOT ? OR expires_at IS NOT ?)`, Args: []any{p.Name, p.Principal, p.HostSelector, string(sshUsersJSON), p.ExpiresAt, now, id, p.Name, p.Principal, p.HostSelector, string(sshUsersJSON), p.ExpiresAt}}
+	_, err := s.db.ExecTransactionResult(ctx, statement,
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'policy.updated', 'policy', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, now}})
 	return err
 }
 
-func (s *Store) DeletePolicy(ctx context.Context, id string) error {
+func (s *Store) DeletePolicy(ctx context.Context, id, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM policies WHERE id=?`, id)
+	if actor == "" {
+		return fmt.Errorf("audit actor is required")
+	}
+	_, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `DELETE FROM policies WHERE id=?`, Args: []any{id}},
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'policy.deleted', 'policy', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, nowUnix()}})
 	return err
 }
 
@@ -707,10 +729,27 @@ func (s *Store) DeleteSSHKeyForUser(ctx context.Context, id, userID string, admi
 	statement := `DELETE FROM ssh_keys WHERE id = ? AND user_id = ?`
 	args := []any{id, userID}
 	if admin {
-		statement, args = `DELETE FROM ssh_keys WHERE id = ?`, []any{id}
+		response, err := s.db.ExecTransactionResult(ctx,
+			rhiza.SQLStatement{SQL: `DELETE FROM ssh_keys WHERE id = ?`, Args: []any{id}},
+			rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'ssh_key.deleted', 'ssh_key', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, userID, nowUnix()}})
+		return response.RowsAffected >= 1, err
 	}
 	response, err := s.db.ExecContext(ctx, statement, args...)
 	return response.RowsAffected == 1, err
+}
+
+// RecordPolicyDenied records a decision made for an authenticated caller. It is
+// intentionally not used for malformed or unauthenticated requests.
+func (s *Store) RecordPolicyDenied(ctx context.Context, action, resourceID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if userID == "" {
+		return fmt.Errorf("audit actor is required")
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO audit_events (id, action, resource, resource_id, user_id, after_json, created_at) VALUES (?, ?, 'host', ?, ?, '{"reason":"policy_denied"}', ?)`,
+		newID(), action, resourceID, userID, nowUnix())
+	return err
 }
 
 func (s *Store) CreateAccessRequest(ctx context.Context, userID, hostID, sshUser string) (*AccessRequest, error) {
@@ -988,9 +1027,12 @@ func (s *Store) RelayEndpointAllowed(ctx context.Context, endpointID string) (bo
 	return count > 0, nil
 }
 
-func (s *Store) CreateManufacturingToken(ctx context.Context, batchID string, expiresAt *int64) (*ManufacturingToken, error) {
+func (s *Store) CreateManufacturingToken(ctx context.Context, batchID string, expiresAt *int64, actor string) (*ManufacturingToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if actor == "" {
+		return nil, fmt.Errorf("audit actor is required")
+	}
 	id := newID()
 	random := make([]byte, 32)
 	if _, err := rand.Read(random); err != nil {
@@ -999,10 +1041,9 @@ func (s *Store) CreateManufacturingToken(ctx context.Context, batchID string, ex
 	token := base64.RawURLEncoding.EncodeToString(random)
 	tokenHash := hashSecret(token)
 	now := nowUnix()
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO manufacturing_tokens (id, token_hash, batch_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`,
-		id, tokenHash, batchID, expiresAt, now,
-	)
+	statement := rhiza.SQLStatement{SQL: `INSERT INTO manufacturing_tokens (id, token_hash, batch_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`, Args: []any{id, tokenHash, batchID, expiresAt, now}}
+	_, err := s.db.ExecTransactionResult(ctx, statement,
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) VALUES (?, 'manufacturing.token.created', 'manufacturing_token', ?, ?, ?)`, Args: []any{newID(), id, actor, now}})
 	if err != nil {
 		return nil, err
 	}
@@ -1044,9 +1085,12 @@ func (s *Store) GetManufacturingToken(ctx context.Context, token string) (*Manuf
 	return &t, nil
 }
 
-func (s *Store) CreateManufacturingBatch(ctx context.Context, name, serialPrefix string, expiresAt, maxDevices int64) (*ManufacturingBatch, string, error) {
+func (s *Store) CreateManufacturingBatch(ctx context.Context, name, serialPrefix string, expiresAt, maxDevices int64, actor string) (*ManufacturingBatch, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if actor == "" {
+		return nil, "", fmt.Errorf("audit actor is required")
+	}
 	if name == "" || serialPrefix == "" || expiresAt <= nowUnix() || maxDevices < 1 || maxDevices > 10000 {
 		return nil, "", fmt.Errorf("invalid manufacturing batch")
 	}
@@ -1057,10 +1101,9 @@ func (s *Store) CreateManufacturingBatch(ctx context.Context, name, serialPrefix
 		return nil, "", err
 	}
 	token := base64.RawURLEncoding.EncodeToString(random)
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO manufacturing_batches (id, name, serial_prefix, token_hash, status, expires_at, max_devices, used_count, created_at) VALUES (?, ?, ?, ?, 'open', ?, ?, 0, ?)`,
-		id, name, serialPrefix, hashSecret(token), expiresAt, maxDevices, now,
-	)
+	statement := rhiza.SQLStatement{SQL: `INSERT INTO manufacturing_batches (id, name, serial_prefix, token_hash, status, expires_at, max_devices, used_count, created_at) VALUES (?, ?, ?, ?, 'open', ?, ?, 0, ?)`, Args: []any{id, name, serialPrefix, hashSecret(token), expiresAt, maxDevices, now}}
+	_, err := s.db.ExecTransactionResult(ctx, statement,
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) VALUES (?, 'manufacturing.batch.created', 'manufacturing_batch', ?, ?, ?)`, Args: []any{newID(), id, actor, now}})
 	if err != nil {
 		return nil, "", err
 	}
@@ -1086,14 +1129,16 @@ func (s *Store) ListManufacturingBatches(ctx context.Context) ([]ManufacturingBa
 	return batches, rows.Err()
 }
 
-func (s *Store) CloseManufacturingBatch(ctx context.Context, id string) error {
+func (s *Store) CloseManufacturingBatch(ctx context.Context, id, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if actor == "" {
+		return fmt.Errorf("audit actor is required")
+	}
 	now := nowUnix()
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE manufacturing_batches SET status='closed', closed_at=? WHERE id=? AND status='open'`,
-		now, id,
-	)
+	statement := rhiza.SQLStatement{SQL: `UPDATE manufacturing_batches SET status='closed', closed_at=? WHERE id=? AND status='open'`, Args: []any{now, id}}
+	_, err := s.db.ExecTransactionResult(ctx, statement,
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'manufacturing.batch.closed', 'manufacturing_batch', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, now}})
 	return err
 }
 
@@ -1278,18 +1323,27 @@ func (s *Store) TouchDevice(ctx context.Context, id, hostID, endpointID, fingerp
 	return nil
 }
 
-func (s *Store) DeleteDevice(ctx context.Context, id string) error {
+func (s *Store) DeleteDevice(ctx context.Context, id, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var hostID string
-	if err := s.db.QueryRowContext(ctx, `SELECT host_id FROM devices WHERE id = ?`, id).Scan(&hostID); err != nil {
+	if actor == "" {
+		return fmt.Errorf("audit actor is required")
+	}
+	var hostID, state string
+	if err := s.db.QueryRowContext(ctx, `SELECT host_id, state FROM devices WHERE id = ?`, id).Scan(&hostID, &state); err != nil {
 		return err
 	}
+	if state == "revoked" {
+		return nil
+	}
 	now := nowUnix()
-	return s.db.ExecTransaction(ctx,
-		rhiza.SQLStatement{SQL: `UPDATE devices SET state = 'revoked', last_seen_at = ? WHERE id = ?`, Args: []any{now, id}},
+	statements := []rhiza.SQLStatement{
+		{SQL: `UPDATE devices SET state = 'revoked', last_seen_at = ? WHERE id = ? AND state != 'revoked'`, Args: []any{now, id}},
+	}
+	statements = append(statements, rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'device.revoked', 'device', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, now}})
+	statements = append(statements,
 		rhiza.SQLStatement{SQL: `UPDATE hosts SET status = 'revoked', last_seen = ?, updated_at = ? WHERE id = ?`, Args: []any{now, now, hostID}},
 		rhiza.SQLStatement{SQL: `UPDATE access_grants SET expires_at = ? WHERE host_id = ? AND expires_at > ?`, Args: []any{now, hostID, now}},
-		rhiza.SQLStatement{SQL: `DELETE FROM relay_access_grants WHERE host_id = ?`, Args: []any{hostID}},
-	)
+		rhiza.SQLStatement{SQL: `DELETE FROM relay_access_grants WHERE host_id = ?`, Args: []any{hostID}})
+	return s.db.ExecTransaction(ctx, statements...)
 }
