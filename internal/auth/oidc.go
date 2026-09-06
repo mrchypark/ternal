@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -31,9 +32,10 @@ type ProviderError struct {
 func (e *ProviderError) Error() string { return e.Code }
 
 type loginState struct {
-	State     string `json:"state"`
-	Nonce     string `json:"nonce"`
-	ExpiresAt int64  `json:"expires_at"`
+	State        string `json:"state"`
+	Nonce        string `json:"nonce"`
+	CodeVerifier string `json:"code_verifier"`
+	ExpiresAt    int64  `json:"expires_at"`
 }
 
 type providerMetadata struct {
@@ -55,14 +57,18 @@ func NewOIDCClient(config OIDCConfig) (*OIDCClient, error) {
 	}, nil
 }
 
-func (c *OIDCClient) authorizationURL(ctx context.Context, state, nonce string) (string, error) {
+func (c *OIDCClient) authorizationURL(ctx context.Context, state, nonce, codeChallenge string) (string, error) {
 	ctx = c.requestContext(ctx)
 	provider, metadata, err := c.provider(ctx)
 	if err != nil {
 		return "", err
 	}
 	config := c.oauthConfig(provider, metadata)
-	return config.AuthCodeURL(state, oauth2.SetAuthURLParam("nonce", nonce)), nil
+	return config.AuthCodeURL(state,
+		oauth2.SetAuthURLParam("nonce", nonce),
+		oauth2.SetAuthURLParam("code_challenge", codeChallenge),
+		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+	), nil
 }
 
 func (c *OIDCClient) BeginLogin(ctx context.Context, signingKey string) (authorizationURL, signedState string, err error) {
@@ -74,12 +80,16 @@ func (c *OIDCClient) BeginLogin(ctx context.Context, signingKey string) (authori
 	if err != nil {
 		return "", "", err
 	}
-	payload := loginState{State: state, Nonce: nonce, ExpiresAt: time.Now().Add(5 * time.Minute).Unix()}
+	codeVerifier, err := randomToken(32)
+	if err != nil {
+		return "", "", err
+	}
+	payload := loginState{State: state, Nonce: nonce, CodeVerifier: codeVerifier, ExpiresAt: time.Now().Add(5 * time.Minute).Unix()}
 	signedState, err = signValue(payload, signingKey)
 	if err != nil {
 		return "", "", err
 	}
-	authorizationURL, err = c.authorizationURL(ctx, state, nonce)
+	authorizationURL, err = c.authorizationURL(ctx, state, nonce, pkceChallenge(codeVerifier))
 	return authorizationURL, signedState, err
 }
 
@@ -89,7 +99,7 @@ func (c *OIDCClient) CompleteLogin(ctx context.Context, code, state, signedState
 	if err := verifyValue(signedState, signingKey, &saved); err != nil {
 		return nil, fmt.Errorf("invalid OIDC state: %w", err)
 	}
-	if saved.ExpiresAt <= time.Now().Unix() || !constantEqual(saved.State, state) {
+	if saved.ExpiresAt <= time.Now().Unix() || !constantEqual(saved.State, state) || len(saved.CodeVerifier) < 43 || len(saved.CodeVerifier) > 128 {
 		return nil, errors.New("invalid OIDC state")
 	}
 	provider, metadata, err := c.provider(ctx)
@@ -97,7 +107,7 @@ func (c *OIDCClient) CompleteLogin(ctx context.Context, code, state, signedState
 		return nil, err
 	}
 	config := c.oauthConfig(provider, metadata)
-	token, err := config.Exchange(ctx, code)
+	token, err := config.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", saved.CodeVerifier))
 	if err != nil {
 		return nil, fmt.Errorf("OIDC code exchange failed: %w", err)
 	}
@@ -206,7 +216,7 @@ func (c *OIDCClient) verifyToken(ctx context.Context, provider *oidc.Provider, t
 			return nil, errors.New("invalid groups claim")
 		}
 	}
-	return &UserClaims{Subject: subject, Groups: groups}, nil
+	return &UserClaims{Issuer: c.config.Issuer, Subject: subject, Groups: groups}, nil
 }
 
 func validateAudienceAndAuthorizedParty(raw map[string]json.RawMessage, clientID string) error {
@@ -281,6 +291,11 @@ func randomToken(size int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func pkceChallenge(verifier string) string {
+	digest := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
 func NewRandomToken(size int) (string, error) {

@@ -73,9 +73,18 @@ func isLoopbackHost(host string) bool {
 }
 
 type UserClaims struct {
+	Issuer       string              `json:"iss,omitempty"`
 	Subject      string              `json:"sub"`
 	Groups       []string            `json:"groups"`
 	CustomClaims map[string][]string `json:"custom_claims,omitempty"`
+}
+
+func (c UserClaims) PrincipalID() string {
+	if c.Issuer == "" {
+		return c.Subject
+	}
+	digest := sha256.Sum256([]byte(c.Issuer + "\x00" + c.Subject))
+	return "oidc:" + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
 type SessionData struct {
@@ -217,21 +226,21 @@ func AuthMiddleware(sessionKey string, devHeaders bool, adminGroups ...string) f
 	if len(adminGroups) > 0 && adminGroups[0] != "" {
 		adminGroup = adminGroups[0]
 	}
-	return authMiddleware(sessionKey, devHeaders, adminGroup, nil)
+	return authMiddleware(sessionKey, devHeaders, adminGroup, "", nil)
 }
 
-func AuthMiddlewareWithRevocation(sessionKey string, devHeaders bool, adminGroup string, revoked func(context.Context, string) (bool, error)) func(http.Handler) http.Handler {
+func AuthMiddlewareWithRevocation(sessionKey string, devHeaders bool, adminGroup, expectedIssuer string, revoked func(context.Context, string) (bool, error)) func(http.Handler) http.Handler {
 	if adminGroup == "" {
 		adminGroup = "ternal-admins"
 	}
-	return authMiddleware(sessionKey, devHeaders, adminGroup, revoked)
+	return authMiddleware(sessionKey, devHeaders, adminGroup, expectedIssuer, revoked)
 }
 
-func authMiddleware(sessionKey string, devHeaders bool, adminGroup string, revoked func(context.Context, string) (bool, error)) func(http.Handler) http.Handler {
-	return authMiddlewareWithClock(sessionKey, devHeaders, adminGroup, revoked, time.Now)
+func authMiddleware(sessionKey string, devHeaders bool, adminGroup, expectedIssuer string, revoked func(context.Context, string) (bool, error)) func(http.Handler) http.Handler {
+	return authMiddlewareWithClock(sessionKey, devHeaders, adminGroup, expectedIssuer, revoked, time.Now)
 }
 
-func authMiddlewareWithClock(sessionKey string, devHeaders bool, adminGroup string, revoked func(context.Context, string) (bool, error), now func() time.Time) func(http.Handler) http.Handler {
+func authMiddlewareWithClock(sessionKey string, devHeaders bool, adminGroup, expectedIssuer string, revoked func(context.Context, string) (bool, error), now func() time.Time) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var claims *UserClaims
@@ -249,6 +258,9 @@ func authMiddlewareWithClock(sessionKey string, devHeaders bool, adminGroup stri
 				cookie, cookieErr := r.Cookie(SessionCookie)
 				if cookieErr == nil {
 					session, err := verifySessionAt(cookie.Value, sessionKey, now())
+					if err == nil && expectedIssuer != "" && !constantEqual(session.User.Issuer, expectedIssuer) {
+						err = fmt.Errorf("session issuer mismatch")
+					}
 					if err == nil && revoked != nil {
 						ctx, cancel := context.WithTimeout(r.Context(), revocationCheckTimeout)
 						blocked, err := revoked(ctx, cookie.Value)

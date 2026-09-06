@@ -133,7 +133,7 @@ func (s *Server) Router() http.Handler {
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
-	r.Use(auth.AuthMiddlewareWithRevocation(s.sessionKey, s.devHeaders, s.auth.AdminGroup, func(ctx context.Context, cookie string) (bool, error) {
+	r.Use(auth.AuthMiddlewareWithRevocation(s.sessionKey, s.devHeaders, s.auth.AdminGroup, s.auth.Issuer, func(ctx context.Context, cookie string) (bool, error) {
 		if s.store == nil {
 			return false, nil
 		}
@@ -490,7 +490,7 @@ func (s *Server) handleGetHost(w http.ResponseWriter, r *http.Request) {
 
 func authClaims(identity *auth.AuthContext) *core.UserClaims {
 	return &core.UserClaims{
-		Subject:      identity.User.Subject,
+		Subject:      identity.User.PrincipalID(),
 		Groups:       identity.User.Groups,
 		CustomClaims: identity.User.CustomClaims,
 	}
@@ -636,7 +636,8 @@ func (s *Server) handleIssueSSHCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	keys, err := s.store.ListSSHKeys(r.Context(), identity.User.Subject)
+	principalID := identity.User.PrincipalID()
+	keys, err := s.store.ListSSHKeys(r.Context(), principalID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -645,7 +646,7 @@ func (s *Server) handleIssueSSHCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "register an SSH public key before requesting access")
 		return
 	}
-	if err := s.store.IssueSSHAccess(r.Context(), identity.User.Subject, host.ID, req.SSHUser, time.Now().Add(5*time.Minute).Unix()); err != nil {
+	if err := s.store.IssueSSHAccess(r.Context(), principalID, host.ID, req.SSHUser, time.Now().Add(5*time.Minute).Unix()); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not issue access grant")
 		return
 	}
@@ -670,7 +671,7 @@ func (s *Server) handleSSHConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	visible := hosts
 	if !a.IsAdmin {
-		visible = core.FilterVisibleHosts(&core.UserClaims{Subject: a.User.Subject, Groups: a.User.Groups, CustomClaims: a.User.CustomClaims}, hosts, policies)
+		visible = core.FilterVisibleHosts(authClaims(a), hosts, policies)
 	}
 	var configs []string
 	for _, h := range visible {
@@ -738,7 +739,7 @@ func (s *Server) handleIssueRelayGrant(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
-		claims := &core.UserClaims{Subject: identity.User.Subject, Groups: identity.User.Groups, CustomClaims: identity.User.CustomClaims}
+		claims := authClaims(identity)
 		allowed := false
 		for i := range policies {
 			if core.PolicyAllowsSSHUser(claims, host, &policies[i], host.SSHUser) {
@@ -751,7 +752,7 @@ func (s *Server) handleIssueRelayGrant(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	grant, err := s.store.CreateRelayAccessGrant(r.Context(), req.HostID, strings.ToLower(req.ClientEndpointID), identity.User.Subject, 300)
+	grant, err := s.store.CreateRelayAccessGrant(r.Context(), req.HostID, strings.ToLower(req.ClientEndpointID), identity.User.PrincipalID(), 300)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -803,7 +804,7 @@ func (s *Server) handleKeyStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	identity := auth.GetAuth(r)
-	if !identity.IsAdmin && grant.UserID != identity.User.Subject {
+	if !identity.IsAdmin && grant.UserID != identity.User.PrincipalID() {
 		writeError(w, http.StatusNotFound, "grant not found")
 		return
 	}
@@ -822,7 +823,7 @@ func (s *Server) handleListAccessGrants(w http.ResponseWriter, r *http.Request) 
 	if !identity.IsAdmin {
 		filtered := grants[:0]
 		for _, grant := range grants {
-			if grant.UserID == identity.User.Subject {
+			if grant.UserID == identity.User.PrincipalID() {
 				filtered = append(filtered, grant)
 			}
 		}
@@ -841,7 +842,7 @@ func (s *Server) handleListAccessRequests(w http.ResponseWriter, r *http.Request
 	if !identity.IsAdmin {
 		filtered := requests[:0]
 		for _, request := range requests {
-			if request.UserID == identity.User.Subject {
+			if request.UserID == identity.User.PrincipalID() {
 				filtered = append(filtered, request)
 			}
 		}
@@ -876,7 +877,7 @@ func (s *Server) handleListSSHKeys(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	keys, err := s.store.ListSSHKeys(r.Context(), a.User.Subject)
+	keys, err := s.store.ListSSHKeys(r.Context(), a.User.PrincipalID())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -906,7 +907,7 @@ func (s *Server) handleCreateSSHKey(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(comment) != "" {
 		canonical += " " + strings.TrimSpace(comment)
 	}
-	key, err := s.store.CreateSSHKey(r.Context(), a.User.Subject, canonical, ssh.FingerprintSHA256(parsed))
+	key, err := s.store.CreateSSHKey(r.Context(), a.User.PrincipalID(), canonical, ssh.FingerprintSHA256(parsed))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -917,7 +918,7 @@ func (s *Server) handleCreateSSHKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteSSHKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	identity := auth.GetAuth(r)
-	deleted, err := s.store.DeleteSSHKeyForUser(r.Context(), id, identity.User.Subject, identity.IsAdmin)
+	deleted, err := s.store.DeleteSSHKeyForUser(r.Context(), id, identity.User.PrincipalID(), identity.IsAdmin)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -10,6 +10,7 @@ Run `./scripts/run-all-tests.sh`. It verifies:
   archive readback (not trust-state reactivation);
 - gomponents rendering, escaping, htmx fragments, and embedded asset hash;
 - OIDC state/session integrity and old-origin rejection;
+- S256 PKCE, issuer-bound sessions, and distinct `(issuer, sub)` principals;
 - persistent logout revocation and captured-cookie replay rejection;
 - strict host-key acceptance/rejection and endpoint-ID-only route rejection;
 - 300-second relay grant admission and ungranted denial;
@@ -37,6 +38,12 @@ must be run against artifacts built from the exact reviewed commit:
 
 Passing repository tests is not evidence of those live behaviors. Roost startup
 alone is not SSH compatibility evidence.
+
+`GOAUTHY_ROOT=/path/to/goauthy ./deploy/e2e/goauthy-standalone.sh` is an
+independent-process live gate for GoAuthy discovery/JWKS and browser
+Authorization Code integration. It does not use Dory. The Device path remains
+blocked until the provider supports the generic OIDC Device contract described
+in [GoAuthy integration](goauthy.md).
 
 The Go greenfield release rebuilds an empty local cache from the current
 certified object-store state, but deliberately rejects rolling back to an older

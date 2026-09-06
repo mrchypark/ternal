@@ -50,6 +50,11 @@ Non-loopback issuers and redirect URLs must use HTTPS. Discovery and advertised
 authorization, token, device, and JWKS endpoints must remain on the configured
 issuer origin.
 
+OIDC account ownership is the verified `(issuer, sub)` pair, not `sub` alone.
+Changing the issuer creates new local principals and invalidates existing
+issuer-bound sessions. See the optional [GoAuthy integration](goauthy.md) for a
+concrete standards-based provider example and its current Device Flow limit.
+
 ## Data
 
 | Variable | Default | Purpose |
