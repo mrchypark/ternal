@@ -147,12 +147,12 @@ func (s *Server) view(r *http.Request, identity *auth.AuthContext, view string) 
 			if policyErr != nil {
 				return nil, "", "", policyErr
 			}
-			items = core.FilterVisibleHosts(&core.UserClaims{Subject: identity.User.Subject, Groups: identity.User.Groups, CustomClaims: identity.User.CustomClaims}, items, policies)
+			items = core.FilterVisibleHosts(&core.UserClaims{Subject: identity.User.PrincipalID(), Groups: identity.User.Groups, CustomClaims: identity.User.CustomClaims}, items, policies)
 		}
 		return hostsTable(items), "Host inventory", "Registered endpoints and just-in-time SSH access.", err
 	case "keys":
 		identity := auth.GetAuth(r)
-		items, err := s.store.ListSSHKeys(r.Context(), identity.User.Subject)
+		items, err := s.store.ListSSHKeys(r.Context(), identity.User.PrincipalID())
 		return keysTable(items), "SSH keys", "User credentials authorized for access grants.", err
 	case "policies":
 		if !identity.IsAdmin {
@@ -167,8 +167,8 @@ func (s *Server) view(r *http.Request, identity *auth.AuthContext, view string) 
 		}
 		requests, err := s.store.ListAccessRequests(r.Context())
 		if !identity.IsAdmin {
-			grants = filterGrants(grants, identity.User.Subject)
-			requests = filterRequests(requests, identity.User.Subject)
+			grants = filterGrants(grants, identity.User.PrincipalID())
+			requests = filterRequests(requests, identity.User.PrincipalID())
 		}
 		return accessTables(grants, requests), "Access control", "Short-lived grants and their policy decisions.", err
 	case "audit":

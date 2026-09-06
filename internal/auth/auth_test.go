@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +21,7 @@ func TestAuthMiddlewareRejectsRevokedSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := AuthMiddlewareWithRevocation(key, false, "ternal-admins", func(context.Context, string) (bool, error) {
+	handler := AuthMiddlewareWithRevocation(key, false, "ternal-admins", "", func(context.Context, string) (bool, error) {
 		return true, nil
 	})(RequireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("revoked session reached protected handler")
@@ -34,7 +36,7 @@ func TestAuthMiddlewareRejectsRevokedSession(t *testing.T) {
 }
 
 func TestAuthMiddlewareDoesNotCheckRevocationForInvalidSession(t *testing.T) {
-	handler := AuthMiddlewareWithRevocation(strings.Repeat("k", 32), false, "ternal-admins", func(context.Context, string) (bool, error) {
+	handler := AuthMiddlewareWithRevocation(strings.Repeat("k", 32), false, "ternal-admins", "", func(context.Context, string) (bool, error) {
 		t.Fatal("invalid session reached revocation store")
 		return false, nil
 	})(RequireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -57,7 +59,7 @@ func TestAuthMiddlewareFailsClosedWhenRevocationCheckFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := AuthMiddlewareWithRevocation(key, false, "ternal-admins", func(context.Context, string) (bool, error) {
+	handler := AuthMiddlewareWithRevocation(key, false, "ternal-admins", "", func(context.Context, string) (bool, error) {
 		return false, context.DeadlineExceeded
 	})(RequireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("unverified revocation reached protected handler")
@@ -82,7 +84,7 @@ func TestAuthMiddlewareRechecksExpiryAfterRevocationLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	checks := 0
-	handler := authMiddlewareWithClock(key, false, "ternal-admins", func(context.Context, string) (bool, error) {
+	handler := authMiddlewareWithClock(key, false, "ternal-admins", "", func(context.Context, string) (bool, error) {
 		checks++
 		clock = time.Unix(expiresAt, 0)
 		return false, nil
@@ -171,6 +173,31 @@ func TestSessionSigningRequiresStrongKeyAndRejectsTampering(t *testing.T) {
 	}
 }
 
+func TestOIDCPrincipalAndSessionAreBoundToIssuer(t *testing.T) {
+	first := UserClaims{Issuer: "https://id.example.test", Subject: "user-1"}
+	second := UserClaims{Issuer: "https://other.example.test", Subject: "user-1"}
+	principalID := first.PrincipalID()
+	if principalID == second.PrincipalID() || principalID != first.PrincipalID() {
+		t.Fatal("OIDC principal ID is not stable and issuer-bound")
+	}
+
+	key := strings.Repeat("k", 32)
+	cookie, err := SignSession(SessionData{User: first, CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Minute).Unix()}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	handler := AuthMiddlewareWithRevocation(key, false, "admins", second.Issuer, nil)(RequireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	})))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookie, Value: cookie})
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	if called {
+		t.Fatal("session issued by a different OIDC issuer was accepted")
+	}
+}
+
 func TestOIDCConfigRejectsOldOriginEndpointsAndInsecureRemoteIssuer(t *testing.T) {
 	config := OIDCConfig{
 		Issuer: "https://auth.ternal.example.invalid/auth/v1/", ClientID: "ternal",
@@ -233,6 +260,111 @@ func TestStartDeviceUsesConfidentialClientPostAuthentication(t *testing.T) {
 	if received.Get("client_secret") != clientSecret {
 		t.Fatal("confidential client authentication was omitted or changed")
 	}
+}
+
+func TestOIDCLoginUsesBoundS256PKCE(t *testing.T) {
+	const signingKey = "0123456789abcdef0123456789abcdef"
+	privateKey := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	var expectedVerifier string
+	var expectedNonce string
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			writeTestJSON(t, w, map[string]any{
+				"issuer": server.URL, "authorization_endpoint": server.URL + "/authorize",
+				"token_endpoint": server.URL + "/token", "jwks_uri": server.URL + "/jwks",
+				"id_token_signing_alg_values_supported": []string{"EdDSA"},
+			})
+		case "/jwks":
+			writeTestJSON(t, w, map[string]any{"keys": []map[string]any{{
+				"kty": "OKP", "crv": "Ed25519", "use": "sig", "alg": "EdDSA", "kid": "test",
+				"x": base64.RawURLEncoding.EncodeToString(publicKey),
+			}}})
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if r.PostForm.Get("client_secret") != "confidential-secret" {
+				http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
+				return
+			}
+			if r.PostForm.Get("code_verifier") != expectedVerifier {
+				http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+				return
+			}
+			writeTestJSON(t, w, map[string]any{
+				"access_token": "access", "token_type": "Bearer",
+				"id_token": signedTestIDToken(t, privateKey, map[string]any{
+					"iss": server.URL, "sub": "user-1", "aud": "ternal", "exp": time.Now().Add(time.Minute).Unix(),
+					"iat": time.Now().Unix(), "nonce": expectedNonce, "groups": []string{"operators"},
+				}),
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewOIDCClient(OIDCConfig{
+		Issuer: server.URL, ClientID: "ternal", ClientSecret: "confidential-secret",
+		RedirectURL: server.URL + "/callback", AdminGroup: "admins", GroupsClaim: "groups",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizationURL, signedState, err := client.BeginLogin(t.Context(), signingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved loginState
+	if err := verifyValue(signedState, signingKey, &saved); err != nil {
+		t.Fatal(err)
+	}
+	expectedVerifier = saved.CodeVerifier
+	expectedNonce = saved.Nonce
+	query, err := url.Parse(authorizationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query.Query().Get("state") != saved.State || query.Query().Get("nonce") != saved.Nonce || query.Query().Get("code_challenge_method") != "S256" || query.Query().Get("code_challenge") != pkceChallenge(saved.CodeVerifier) {
+		t.Fatal("authorization request did not bind state, nonce, and S256 PKCE")
+	}
+	if query.Query().Get("code_verifier") != "" {
+		t.Fatal("authorization request exposed the PKCE verifier")
+	}
+
+	claims, err := client.CompleteLogin(t.Context(), "code", saved.State, signedState, signingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Issuer != server.URL || claims.Subject != "user-1" || strings.Join(claims.Groups, ",") != "operators" {
+		t.Fatalf("unexpected claims: %#v", claims)
+	}
+
+	saved.CodeVerifier = strings.Repeat("x", 43)
+	mismatchedState, err := signValue(saved, signingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims, err := client.CompleteLogin(t.Context(), "code", saved.State, mismatchedState, signingKey); err == nil || claims != nil {
+		t.Fatal("mismatched PKCE verifier was accepted")
+	}
+}
+
+func signedTestIDToken(t *testing.T, privateKey ed25519.PrivateKey, claims map[string]any) string {
+	t.Helper()
+	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": "test", "typ": "JWT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsigned := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(unsigned)))
 }
 
 func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {

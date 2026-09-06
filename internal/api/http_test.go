@@ -135,7 +135,7 @@ func TestLogoutRejectsReplayedSession(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	cookie, err := auth.SignSession(auth.SessionData{
-		User: auth.UserClaims{Subject: "user@example.com"}, CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		User: auth.UserClaims{Issuer: auth.OIDCConfigFromEnv().Issuer, Subject: "user@example.com"}, CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix(),
 	}, key)
 	if err != nil {
 		t.Fatal(err)
