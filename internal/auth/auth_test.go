@@ -5,12 +5,15 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mrchypark/ternal/internal/core"
 )
 
 func TestAuthMiddlewareRejectsRevokedSession(t *testing.T) {
@@ -173,6 +176,18 @@ func TestSessionSigningRequiresStrongKeyAndRejectsTampering(t *testing.T) {
 	}
 }
 
+func TestSessionSigningRejectsCookieOverflow(t *testing.T) {
+	key := strings.Repeat("k", 32)
+	groups := make([]string, 10)
+	for i := range groups {
+		groups[i] = strings.Repeat(string(rune('a'+i)), maxPolicyClaimValueBytes)
+	}
+	data := SessionData{User: UserClaims{Subject: "user-1", Groups: groups, CustomClaims: map[string][]string{"department": {strings.Repeat("x", maxPolicyClaimValueBytes), strings.Repeat("y", maxPolicyClaimValueBytes), strings.Repeat("z", maxPolicyClaimValueBytes)}}}, CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Minute).Unix()}
+	if signed, err := SignSession(data, key); err == nil || signed != "" {
+		t.Fatal("oversized session cookie accepted")
+	}
+}
+
 func TestOIDCPrincipalAndSessionAreBoundToIssuer(t *testing.T) {
 	first := UserClaims{Issuer: "https://id.example.test", Subject: "user-1"}
 	second := UserClaims{Issuer: "https://other.example.test", Subject: "user-1"}
@@ -213,6 +228,76 @@ func TestOIDCConfigRejectsOldOriginEndpointsAndInsecureRemoteIssuer(t *testing.T
 	config.Issuer = "http://rauthy.example/auth/v1/"
 	if err := config.Validate(); err == nil {
 		t.Fatal("remote cleartext issuer accepted")
+	}
+}
+
+func TestOIDCConfigValidatesPolicyClaims(t *testing.T) {
+	base := OIDCConfig{Issuer: "https://auth.ternal.example.invalid/auth/v1/", ClientID: "ternal", ClientSecret: "secret", RedirectURL: "https://ternal.example.invalid/auth/callback", AdminGroup: "ternal-admins", GroupsClaim: "groups"}
+	if err := (OIDCConfig{Issuer: base.Issuer, ClientID: base.ClientID, ClientSecret: base.ClientSecret, RedirectURL: base.RedirectURL, AdminGroup: base.AdminGroup, GroupsClaim: base.GroupsClaim, PolicyClaims: []string{"department", "role"}}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	tooMany := make([]string, maxPolicyClaims+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("claim-%d", i)
+	}
+	for name, claims := range map[string][]string{
+		"empty": {""}, "duplicate": {"role", "role"}, "groups claim": {"groups"},
+		"literal groups with alternate groups claim": {"groups"}, "configured alternate groups claim": {"roles"},
+		"reserved protocol claim": {"sub"}, "control": {"role\x00"}, "too many": tooMany,
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := base
+			config.PolicyClaims = claims
+			if name == "configured alternate groups claim" {
+				config.GroupsClaim = "roles"
+				config.PolicyClaims = []string{"roles"}
+			}
+			if name == "literal groups with alternate groups claim" {
+				config.GroupsClaim = "roles"
+			}
+			if err := config.Validate(); err == nil {
+				t.Fatal("invalid policy claims accepted")
+			}
+		})
+	}
+
+	t.Setenv("TERNAL_OIDC_POLICY_CLAIMS", " department, role ")
+	if got := OIDCConfigFromEnv().PolicyClaims; strings.Join(got, ",") != "department,role" {
+		t.Fatalf("policy claims from environment = %#v", got)
+	}
+	t.Setenv("TERNAL_OIDC_POLICY_CLAIMS", " ")
+	if err := OIDCConfigFromEnv().Validate(); err == nil {
+		t.Fatal("whitespace-only policy claims environment accepted")
+	}
+}
+
+func TestOIDCPolicyClaimsRejectMalformedOrOversizedValues(t *testing.T) {
+	client := &OIDCClient{config: OIDCConfig{PolicyClaims: []string{"role"}}}
+	for name, raw := range map[string]json.RawMessage{
+		"null": json.RawMessage(`null`), "object": json.RawMessage(`{"name":"support"}`),
+		"empty string": json.RawMessage(`""`), "whitespace string": json.RawMessage(`" \t "`), "padded string": json.RawMessage(`" support "`), "control": json.RawMessage(`"support\u0000"`),
+		"empty array": json.RawMessage(`[]`), "array value not string": json.RawMessage(`["support",1]`),
+		"too many values": json.RawMessage(`["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17"]`),
+		"too long value":  json.RawMessage(`"` + strings.Repeat("x", maxPolicyClaimValueBytes+1) + `"`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if claims, err := client.extractPolicyClaims(map[string]json.RawMessage{"role": raw}); err == nil || claims != nil {
+				t.Fatal("malformed policy claim accepted")
+			}
+		})
+	}
+	names := []string{strings.Repeat(`a"`, maxPolicyClaimNameBytes/2), strings.Repeat(`b"`, maxPolicyClaimNameBytes/2)}
+	client.config.PolicyClaims = names
+	raw := make(map[string]json.RawMessage, len(names))
+	escapedValue, err := json.Marshal(strings.Repeat(`"`, maxPolicyClaimValueBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		raw[name] = escapedValue
+	}
+	if claims, err := client.extractPolicyClaims(raw); err == nil || claims != nil {
+		t.Fatal("cookie-sized policy claims accepted")
 	}
 }
 
@@ -294,11 +379,15 @@ func TestOIDCLoginUsesBoundS256PKCE(t *testing.T) {
 				http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
 				return
 			}
+			audience := "ternal"
+			if r.PostForm.Get("code") == "wrong-audience" {
+				audience = "legacy"
+			}
 			writeTestJSON(t, w, map[string]any{
 				"access_token": "access", "token_type": "Bearer",
 				"id_token": signedTestIDToken(t, privateKey, map[string]any{
-					"iss": server.URL, "sub": "user-1", "aud": "ternal", "exp": time.Now().Add(time.Minute).Unix(),
-					"iat": time.Now().Unix(), "nonce": expectedNonce, "groups": []string{"operators"},
+					"iss": server.URL, "sub": "user-1", "aud": audience, "exp": time.Now().Add(time.Minute).Unix(),
+					"iat": time.Now().Unix(), "nonce": expectedNonce, "groups": []string{"operators"}, "department": []string{"support"}, "unlisted": "no",
 				}),
 			})
 		default:
@@ -309,7 +398,7 @@ func TestOIDCLoginUsesBoundS256PKCE(t *testing.T) {
 
 	client, err := NewOIDCClient(OIDCConfig{
 		Issuer: server.URL, ClientID: "ternal", ClientSecret: "confidential-secret",
-		RedirectURL: server.URL + "/callback", AdminGroup: "admins", GroupsClaim: "groups",
+		RedirectURL: server.URL + "/callback", AdminGroup: "admins", GroupsClaim: "groups", PolicyClaims: []string{"department"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -339,8 +428,24 @@ func TestOIDCLoginUsesBoundS256PKCE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claims.Issuer != server.URL || claims.Subject != "user-1" || strings.Join(claims.Groups, ",") != "operators" {
+	if claims.Issuer != server.URL || claims.Subject != "user-1" || strings.Join(claims.Groups, ",") != "operators" || strings.Join(claims.CustomClaims["department"], ",") != "support" || claims.CustomClaims["unlisted"] != nil {
 		t.Fatalf("unexpected claims: %#v", claims)
+	}
+	if !core.PolicyAllows(&core.UserClaims{Subject: claims.Subject, Groups: claims.Groups, CustomClaims: claims.CustomClaims}, &core.Host{Name: "host", Tags: map[string]string{"site": "ied"}}, &core.Policy{Principal: "department=support", HostSelector: "tag:site=ied"}) {
+		t.Fatal("verified policy claim did not reach core policy evaluation")
+	}
+
+	wrongNonce := saved
+	wrongNonce.Nonce = "wrong-nonce"
+	wrongNonceState, err := signValue(wrongNonce, signingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims, err := client.CompleteLogin(t.Context(), "nonce-check", saved.State, wrongNonceState, signingKey); err == nil || claims != nil {
+		t.Fatal("signed token with mismatched nonce was accepted")
+	}
+	if claims, err := client.CompleteLogin(t.Context(), "wrong-audience", saved.State, signedState, signingKey); err == nil || claims != nil {
+		t.Fatal("signed token with wrong audience was accepted")
 	}
 
 	saved.CodeVerifier = strings.Repeat("x", 43)
@@ -350,6 +455,51 @@ func TestOIDCLoginUsesBoundS256PKCE(t *testing.T) {
 	}
 	if claims, err := client.CompleteLogin(t.Context(), "code", saved.State, mismatchedState, signingKey); err == nil || claims != nil {
 		t.Fatal("mismatched PKCE verifier was accepted")
+	}
+}
+
+func TestOIDCDeviceTokenCarriesOnlyVerifiedPolicyClaims(t *testing.T) {
+	privateKey := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			writeTestJSON(t, w, map[string]any{
+				"issuer": server.URL, "authorization_endpoint": server.URL + "/authorize", "token_endpoint": server.URL + "/token", "jwks_uri": server.URL + "/jwks", "id_token_signing_alg_values_supported": []string{"EdDSA"},
+			})
+		case "/jwks":
+			writeTestJSON(t, w, map[string]any{"keys": []map[string]any{{"kty": "OKP", "crv": "Ed25519", "use": "sig", "alg": "EdDSA", "kid": "test", "x": base64.RawURLEncoding.EncodeToString(publicKey)}}})
+		case "/token":
+			if err := r.ParseForm(); err != nil || r.PostForm.Get("device_code") != "device-code" {
+				http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
+				return
+			}
+			writeTestJSON(t, w, map[string]any{
+				"access_token": "access", "token_type": "Bearer", "expires_in": 60,
+				"id_token": signedTestIDToken(t, privateKey, map[string]any{
+					"iss": server.URL, "sub": "device-user", "aud": "ternal", "exp": time.Now().Add(time.Minute).Unix(), "iat": time.Now().Unix(), "groups": []string{"operators"}, "department": "support", "unlisted": "no",
+				}),
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewOIDCClient(OIDCConfig{Issuer: server.URL, ClientID: "ternal", ClientSecret: "secret", RedirectURL: server.URL + "/callback", AdminGroup: "admins", GroupsClaim: "groups", PolicyClaims: []string{"department"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, expiry, err := client.PollDevice(t.Context(), "device-code")
+	if err != nil || expiry.Before(time.Now()) {
+		t.Fatalf("device token rejected: %v", err)
+	}
+	if strings.Join(claims.CustomClaims["department"], ",") != "support" || claims.CustomClaims["unlisted"] != nil {
+		t.Fatalf("unexpected device policy claims: %#v", claims.CustomClaims)
+	}
+	if !core.PolicyAllows(&core.UserClaims{Subject: claims.Subject, Groups: claims.Groups, CustomClaims: claims.CustomClaims}, &core.Host{Name: "host", Tags: map[string]string{"site": "ied"}}, &core.Policy{Principal: "department=support", HostSelector: "tag:site=ied"}) {
+		t.Fatal("verified device policy claim did not reach core policy evaluation")
 	}
 }
 

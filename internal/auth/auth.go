@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -28,6 +29,23 @@ type OIDCConfig struct {
 	RedirectURL  string
 	AdminGroup   string
 	GroupsClaim  string
+	PolicyClaims []string
+}
+
+const (
+	maxPolicyClaims          = 16
+	maxPolicyClaimNameBytes  = 128
+	maxPolicyClaimValues     = 16
+	maxPolicyClaimValueBytes = 256
+	maxPolicyClaimsJSONBytes = 1024
+	maxSessionCookieBytes    = 3800
+)
+
+var reservedPolicyClaims = map[string]struct{}{
+	"iss": {}, "sub": {}, "aud": {}, "exp": {}, "nbf": {}, "iat": {}, "jti": {}, "groups": {},
+	"azp": {}, "nonce": {}, "auth_time": {}, "acr": {}, "amr": {}, "at_hash": {},
+	"c_hash": {}, "s_hash": {}, "sid": {}, "scope": {}, "client_id": {}, "cnf": {},
+	"act": {}, "may_act": {},
 }
 
 func (c OIDCConfig) Validate() error {
@@ -51,7 +69,42 @@ func (c OIDCConfig) Validate() error {
 	if c.AdminGroup == "" || c.GroupsClaim == "" {
 		return fmt.Errorf("OIDC group configuration is required")
 	}
+	if err := c.validatePolicyClaims(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (c OIDCConfig) validatePolicyClaims() error {
+	if len(c.PolicyClaims) > maxPolicyClaims {
+		return fmt.Errorf("too many OIDC policy claims")
+	}
+	seen := make(map[string]struct{}, len(c.PolicyClaims))
+	for _, claim := range c.PolicyClaims {
+		if claim == "" || strings.TrimSpace(claim) != claim || len(claim) > maxPolicyClaimNameBytes || !utf8.ValidString(claim) || strings.ContainsAny(claim, ",=") || containsControl(claim) {
+			return fmt.Errorf("invalid OIDC policy claim")
+		}
+		if claim == c.GroupsClaim {
+			return fmt.Errorf("OIDC policy claim must not duplicate groups claim")
+		}
+		if _, reserved := reservedPolicyClaims[claim]; reserved {
+			return fmt.Errorf("OIDC policy claim is reserved")
+		}
+		if _, duplicate := seen[claim]; duplicate {
+			return fmt.Errorf("duplicate OIDC policy claim")
+		}
+		seen[claim] = struct{}{}
+	}
+	return nil
+}
+
+func containsControl(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func (c OIDCConfig) validateProviderEndpoint(raw string) error {
@@ -107,7 +160,19 @@ func OIDCConfigFromEnv() OIDCConfig {
 		RedirectURL:  getEnv("TERNAL_OIDC_REDIRECT_URL", "http://127.0.0.1:3000/auth/callback"),
 		AdminGroup:   getEnv("TERNAL_OIDC_ADMIN_GROUP", "ternal-admins"),
 		GroupsClaim:  getEnv("TERNAL_OIDC_GROUPS_CLAIM", "groups"),
+		PolicyClaims: policyClaimsFromEnv(os.Getenv("TERNAL_OIDC_POLICY_CLAIMS")),
 	}
+}
+
+func policyClaimsFromEnv(value string) []string {
+	if value == "" {
+		return nil
+	}
+	claims := strings.Split(value, ",")
+	for i := range claims {
+		claims[i] = strings.TrimSpace(claims[i])
+	}
+	return claims
 }
 
 func getEnv(key, defaultValue string) string {
@@ -118,7 +183,14 @@ func getEnv(key, defaultValue string) string {
 }
 
 func SignSession(data SessionData, key string) (string, error) {
-	return signValue(data, key)
+	signed, err := signValue(data, key)
+	if err != nil {
+		return "", err
+	}
+	if len(signed) > maxSessionCookieBytes {
+		return "", fmt.Errorf("session exceeds cookie limit")
+	}
+	return signed, nil
 }
 
 func signValue(data any, key string) (string, error) {

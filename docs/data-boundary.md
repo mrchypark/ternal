@@ -12,7 +12,11 @@ Ternal must not store or manage:
 - user profile lifecycle, account UI, or OIDC provider configuration beyond client env vars
 - long-lived copies of identity-provider user records
 
-Ternal reads OIDC claims at login and keeps only a short signed session cookie. The subject, groups, and custom claims are authorization input, not a local user database. Profile and email claims are not requested for authorization and are filtered out if the provider sends them anyway. `/auth/session` returns only the current subject, groups, admin status, auth mode, and CSRF token; custom claims stay server-side for policy checks.
+Ternal reads verified ID-token claims at login and keeps a short-lived signed session cookie. The subject, groups, and explicitly selected policy claims are authorization input, not a local user database. Non-group claims are excluded by default. To use a policy such as `role=support`, configure `TERNAL_OIDC_POLICY_CLAIMS=role` (Helm: `oidc.policyClaims: [role]`) and have the provider include that claim in the ID token. This setting does not request additional OAuth scopes or fetch a provider profile.
+
+Only allowlisted string/string-array claims are accepted; missing claims do not grant access and malformed selected claims reject login. The same verification applies to authorization-code and device flows. Do not allowlist credentials, sensitive profiles, or other confidential attributes: selected claims are visible to the signed-in user both in the signed, **not encrypted**, session cookie and under `user.custom_claims` in `/auth/session`. Unselected email/profile claims remain excluded. The setting affects new logins; existing session snapshots retain their values until logout or expiry. Policy changes themselves are checked against current stored policies.
+
+Limits: at most 16 unique claim names (128 bytes each), 16 string values per claim (256 bytes each), and 1,024 bytes for the complete JSON-encoded custom-claim map, including names and escaping. Empty values, control characters, and leading/trailing whitespace are rejected. Protocol claims and the groups claim cannot be selected as custom claims. The final signed session value, including subject/groups, must also fit within 3,800 bytes; oversized sessions are rejected, never truncated.
 
 ## Ternal-Owned Data
 

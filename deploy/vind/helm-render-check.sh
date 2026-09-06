@@ -51,6 +51,7 @@ grep -q '^kind: StatefulSet$' "$tmp/default.yaml"
 grep -q '^kind: Service$' "$tmp/default.yaml"
 grep -q 'image: "ghcr.io/mrchypark/ternal:render-check"' "$tmp/default.yaml"
 grep -q 'TERNAL_OIDC_ISSUER: "https://auth.ternal.example.invalid/auth/v1/"' "$tmp/default.yaml"
+grep -q 'TERNAL_OIDC_POLICY_CLAIMS: ""' "$tmp/default.yaml"
 grep -q '^  replicas: 1$' "$tmp/default.yaml"
 grep -q '^          emptyDir: {}$' "$tmp/default.yaml"
 if grep -Eq 'kind: PersistentVolumeClaim|volumeClaimTemplates:|claimName:|TERNAL_OBJECT_STORE_' "$tmp/default.yaml"; then
@@ -65,6 +66,8 @@ fi
 helm template ternal "$chart" \
 	--set image.tag=render-check \
 	--set data.requireObjectStore=true \
+	--set-string 'oidc.policyClaims[0]=role' \
+	--set-string 'oidc.policyClaims[1]=department' \
 	--set-string data.clusterID=ternal-standalone-a1 \
 	--set data.objectStore.provider=s3 \
 	--set-string data.objectStore.endpoint=object-store.example.invalid:9000 \
@@ -77,6 +80,7 @@ grep -q '^  replicas: 1$' "$tmp/standalone-durable.yaml"
 grep -q '^          emptyDir: {}$' "$tmp/standalone-durable.yaml"
 grep -q 'TERNAL_OBJECT_STORE_PREFIX: "clusters/ternal-standalone-a1"' "$tmp/standalone-durable.yaml"
 grep -q 'TERNAL_OBJECT_STORE_DURABILITY: "before-ack"' "$tmp/standalone-durable.yaml"
+grep -q 'TERNAL_OIDC_POLICY_CLAIMS: "role,department"' "$tmp/standalone-durable.yaml"
 
 helm template ternal "$chart" \
 	--set image.tag=render-check \

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -216,7 +217,61 @@ func (c *OIDCClient) verifyToken(ctx context.Context, provider *oidc.Provider, t
 			return nil, errors.New("invalid groups claim")
 		}
 	}
-	return &UserClaims{Issuer: c.config.Issuer, Subject: subject, Groups: groups}, nil
+	customClaims, err := c.extractPolicyClaims(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &UserClaims{Issuer: c.config.Issuer, Subject: subject, Groups: groups, CustomClaims: customClaims}, nil
+}
+
+func (c *OIDCClient) extractPolicyClaims(raw map[string]json.RawMessage) (map[string][]string, error) {
+	if len(c.config.PolicyClaims) == 0 {
+		return nil, nil
+	}
+	custom := make(map[string][]string, len(c.config.PolicyClaims))
+	for _, name := range c.config.PolicyClaims {
+		claim, found := raw[name]
+		if !found {
+			continue // A configured but absent claim must never grant a policy.
+		}
+		values, err := policyClaimValues(claim)
+		if err != nil {
+			return nil, fmt.Errorf("invalid OIDC policy claim %q", name)
+		}
+		custom[name] = values
+		encoded, err := json.Marshal(custom)
+		if err != nil || len(encoded) > maxPolicyClaimsJSONBytes {
+			return nil, errors.New("OIDC policy claims exceed session limit")
+		}
+	}
+	if len(custom) == 0 {
+		return nil, nil
+	}
+	return custom, nil
+}
+
+func policyClaimValues(raw json.RawMessage) ([]string, error) {
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		if !validPolicyClaimValue(one) {
+			return nil, errors.New("invalid value")
+		}
+		return []string{one}, nil
+	}
+	var many []string
+	if err := json.Unmarshal(raw, &many); err != nil || len(many) == 0 || len(many) > maxPolicyClaimValues {
+		return nil, errors.New("invalid values")
+	}
+	for _, value := range many {
+		if !validPolicyClaimValue(value) {
+			return nil, errors.New("invalid value")
+		}
+	}
+	return many, nil
+}
+
+func validPolicyClaimValue(value string) bool {
+	return value != "" && strings.TrimSpace(value) == value && len(value) <= maxPolicyClaimValueBytes && utf8.ValidString(value) && !containsControl(value)
 }
 
 func validateAudienceAndAuthorizedParty(raw map[string]json.RawMessage, clientID string) error {

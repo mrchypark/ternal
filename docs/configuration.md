@@ -41,6 +41,7 @@ provenance. They do not define Ternal's runtime configuration contract.
 | `TERNAL_OIDC_REDIRECT_URL` | `http://127.0.0.1:3000/auth/callback` | Exact authorization callback |
 | `TERNAL_OIDC_ADMIN_GROUP` | `ternal-admins` | Group that receives administrator access |
 | `TERNAL_OIDC_GROUPS_CLAIM` | `groups` | ID-token claim containing group strings |
+| `TERNAL_OIDC_POLICY_CLAIMS` | empty | Comma-separated allowlist of non-secret ID-token claims for `claim=value` policies; Helm: `oidc.policyClaims`. No arbitrary claims are copied by default. |
 
 Non-loopback issuers and redirect URLs must use HTTPS. Discovery and advertised
 authorization, token, device, and JWKS endpoints must remain on the configured
