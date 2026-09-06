@@ -27,6 +27,8 @@ chmod 755 "$package_dir/ternal-agent" "$package_dir/pigeons"
 printf '%s\n' \
 	"Ternal agent $platform bundle" \
 	'' \
+	'Runtime requirements: glibc 2.39 or newer (Ubuntu 24.04 baseline); musl-only systems are not supported.' \
+	'' \
 	'Files:' \
 	'- ternal-agent' \
 	'- pigeons' \
