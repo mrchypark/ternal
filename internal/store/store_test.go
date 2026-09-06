@@ -24,7 +24,7 @@ func TestRhizaPersistsHostsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := s.CreateHost(ctx, NewHost{Name: "persistent", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22})
+	host, err := s.CreateHost(ctx, NewHost{Name: "persistent", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22}, "system")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestRhizaRestoresIntoEmptyCacheFromObjectStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, err := s.CreateHost(ctx, NewHost{Name: "object-store", EndpointID: strings.Repeat("b", 64), SSHUser: "ops", SSHPort: 22})
+	host, err := s.CreateHost(ctx, NewHost{Name: "object-store", EndpointID: strings.Repeat("b", 64), SSHUser: "ops", SSHPort: 22}, "system")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestPolicyPrincipalPersists(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	created, err := s.CreatePolicy(ctx, NewPolicy{Name: "support", Principal: "role=support", HostSelector: "*", SSHUsers: []string{"ops"}})
+	created, err := s.CreatePolicy(ctx, NewPolicy{Name: "support", Principal: "role=support", HostSelector: "*", SSHUsers: []string{"ops"}}, "system")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestIssueSSHAccessWritesDecisionGrantAndAuditAtomically(t *testing.T) {
 	if len(grants) != 1 || grants[0].RequestID != requests[0].ID || grants[0].ExpiresAt != expiresAt {
 		t.Fatalf("grants = %#v", grants)
 	}
-	if len(events) != 1 || events[0].Action != "access.approved" || events[0].ResourceID != hostID || events[0].UserID != "user-1" {
+	if !hasAuditEvent(events, "access.approved", hostID, "user-1") {
 		t.Fatalf("events = %#v", events)
 	}
 }
@@ -271,7 +271,7 @@ func TestCreateRelayAccessGrantWritesGrantAndAuditAtomically(t *testing.T) {
 	if !allowed || grant.ExpiresAt-grant.CreatedAt != 300 {
 		t.Fatalf("grant = %#v, allowed = %v", grant, allowed)
 	}
-	if len(events) != 1 || events[0].Action != "relay.grant.created" || events[0].ResourceID != hostID || events[0].UserID != "user-1" {
+	if !hasAuditEvent(events, "relay.grant.created", hostID, "user-1") {
 		t.Fatalf("events = %#v", events)
 	}
 }
@@ -306,7 +306,7 @@ func TestRenewRelayAccessGrantReplacesPriorEndpointGrant(t *testing.T) {
 func createActiveTestHost(t *testing.T, s *Store) string {
 	t.Helper()
 	expires := time.Now().Add(time.Hour).Unix()
-	token, err := s.CreateManufacturingToken(t.Context(), "", &expires)
+	token, err := s.CreateManufacturingToken(t.Context(), "", &expires, "system")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,6 +321,157 @@ func createActiveTestHost(t *testing.T, s *Store) string {
 	return device.HostID
 }
 
+func hasAuditEvent(events []AuditEvent, action, resourceID, userID string) bool {
+	for _, event := range events {
+		if event.Action == action && event.ResourceID == resourceID && event.UserID == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAdminAuditEventsRequireActorAndSkipNoops(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	const actor = "admin@example.com"
+	if err := s.RecordPolicyDenied(ctx, "access.ssh.denied", "host-1", ""); err == nil {
+		t.Fatal("empty policy-denial audit actor accepted")
+	}
+	hostInput := NewHost{Name: "audit-host", EndpointID: strings.Repeat("b", 64), SSHUser: "ops", SSHPort: 22}
+	if _, err := s.CreateHost(ctx, hostInput, ""); err == nil {
+		t.Fatal("empty audit actor accepted")
+	}
+	host, err := s.CreateHost(ctx, hostInput, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostInput.Status = "unknown"
+	if err := s.UpdateHost(ctx, host.ID, hostInput, actor); err != nil {
+		t.Fatal(err)
+	}
+	hostInput.Name = "audit-host-updated"
+	if err := s.UpdateHost(ctx, host.ID, hostInput, actor); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteHost(ctx, "missing", actor); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := s.CreatePolicy(ctx, NewPolicy{Name: "audit-policy", Principal: "role=ops", HostSelector: "*", SSHUsers: []string{"ops"}}, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedPolicy := NewPolicy{Name: "audit-policy", Principal: "role=ops", HostSelector: "env=prod", SSHUsers: []string{"ops"}}
+	if err := s.UpdatePolicy(ctx, policy.ID, updatedPolicy, actor); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeletePolicy(ctx, policy.ID, actor); err != nil {
+		t.Fatal(err)
+	}
+	key, err := s.CreateSSHKey(ctx, "other-user", "ssh-ed25519 test", "SHA256:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := s.DeleteSSHKeyForUser(ctx, key.ID, actor, true); err != nil || !deleted {
+		t.Fatalf("admin key delete = %v, %v", deleted, err)
+	}
+	if deleted, err := s.DeleteSSHKeyForUser(ctx, key.ID, actor, true); err != nil || deleted {
+		t.Fatalf("missing admin key delete = %v, %v", deleted, err)
+	}
+	expires := time.Now().Add(time.Hour).Unix()
+	if _, err := s.CreateManufacturingToken(ctx, "", &expires, actor); err != nil {
+		t.Fatal(err)
+	}
+	batch, token, err := s.CreateManufacturingBatch(ctx, "audit-batch", "AUDIT", expires, 1, actor)
+	if err != nil || token == "" {
+		t.Fatalf("batch = %#v token=%q err=%v", batch, token, err)
+	}
+	if _, _, err := s.CreateManufacturingBatch(ctx, "audit-batch", "OTHER", expires, 1, actor); err == nil {
+		t.Fatal("duplicate batch accepted")
+	}
+	if err := s.CloseManufacturingBatch(ctx, batch.ID, actor); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CloseManufacturingBatch(ctx, batch.ID, actor); err != nil {
+		t.Fatal(err)
+	}
+	deviceHostID := createActiveTestHost(t, s)
+	device, err := s.GetDeviceByHostID(ctx, deviceHostID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteDevice(ctx, device.ID, actor); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteDevice(ctx, device.ID, actor); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteHost(ctx, host.ID, actor); err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.ListAuditEvents(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct{ action, id string }{
+		{"host.created", host.ID}, {"host.updated", host.ID}, {"host.deleted", host.ID},
+		{"policy.created", policy.ID}, {"policy.updated", policy.ID}, {"policy.deleted", policy.ID},
+		{"ssh_key.deleted", key.ID}, {"manufacturing.token.created", ""},
+		{"manufacturing.batch.created", batch.ID}, {"manufacturing.batch.closed", batch.ID},
+		{"device.revoked", device.ID},
+	} {
+		if check.id == "" {
+			found := false
+			for _, event := range events {
+				found = found || (event.Action == check.action && event.UserID == actor)
+			}
+			if !found {
+				t.Fatalf("missing %s audit event: %#v", check.action, events)
+			}
+		} else if !hasAuditEvent(events, check.action, check.id, actor) {
+			t.Fatalf("missing %s/%s audit event: %#v", check.action, check.id, events)
+		}
+	}
+	for _, event := range events {
+		if event.UserID == actor && (event.Action == "host.updated" || event.Action == "manufacturing.batch.closed" || event.Action == "device.revoked") && len(event.After) != 0 {
+			t.Fatalf("audit event leaked payload: %#v", event)
+		}
+	}
+	counts := map[string]int{}
+	for _, event := range events {
+		if event.UserID == actor {
+			counts[event.Action]++
+		}
+	}
+	for _, action := range []string{"host.created", "host.updated", "host.deleted", "policy.created", "policy.updated", "policy.deleted", "ssh_key.deleted", "manufacturing.token.created", "manufacturing.batch.created", "manufacturing.batch.closed", "device.revoked"} {
+		if counts[action] != 1 {
+			t.Fatalf("%s audit count = %d, want 1", action, counts[action])
+		}
+	}
+}
+
+func TestRecordPolicyDeniedPropagatesDatabaseFailure(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER reject_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordPolicyDenied(ctx, "access.ssh.denied", "host-1", "operator@example.com"); err == nil {
+		t.Fatal("database audit failure was swallowed")
+	}
+	events, err := s.ListAuditEvents(ctx, 10)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("events after failed audit = %#v, err=%v", events, err)
+	}
+}
+
 func TestEnrollmentCreatesBoundHostAndDevice(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(ctx, t.TempDir())
@@ -329,7 +480,7 @@ func TestEnrollmentCreatesBoundHostAndDevice(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	expires := time.Now().Add(time.Hour).Unix()
-	token, err := s.CreateManufacturingToken(ctx, "", &expires)
+	token, err := s.CreateManufacturingToken(ctx, "", &expires, "system")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +506,7 @@ func TestDeleteDeviceAtomicallyRevokesAccessAndRelayGrants(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	expires := time.Now().Add(time.Hour).Unix()
-	token, err := s.CreateManufacturingToken(ctx, "", &expires)
+	token, err := s.CreateManufacturingToken(ctx, "", &expires, "system")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +533,7 @@ func TestDeleteDeviceAtomicallyRevokesAccessAndRelayGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.DeleteDevice(ctx, device.ID); err != nil {
+	if err := s.DeleteDevice(ctx, device.ID, "system"); err != nil {
 		t.Fatal(err)
 	}
 	revoked, err := s.GetDeviceByHostID(ctx, device.HostID)
@@ -551,7 +702,7 @@ func TestManufacturingBatchAssignsSerialAndClosesAtLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	_, token, err := s.CreateManufacturingBatch(ctx, "greenfield", "TEST", time.Now().Add(time.Hour).Unix(), 1)
+	_, token, err := s.CreateManufacturingBatch(ctx, "greenfield", "TEST", time.Now().Add(time.Hour).Unix(), 1, "system")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,11 +727,11 @@ func TestEnrollDeviceRollsBackCredentialConsumptionOnInsertFailure(t *testing.T)
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = s.Close() })
-		conflict, err := s.CreateHost(ctx, NewHost{Name: "DUPLICATE", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22})
+		conflict, err := s.CreateHost(ctx, NewHost{Name: "DUPLICATE", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22}, "system")
 		if err != nil {
 			t.Fatal(err)
 		}
-		token, err := s.CreateManufacturingToken(ctx, "", nil)
+		token, err := s.CreateManufacturingToken(ctx, "", nil, "system")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -590,7 +741,7 @@ func TestEnrollDeviceRollsBackCredentialConsumptionOnInsertFailure(t *testing.T)
 		if available, err := s.GetManufacturingToken(ctx, token.Token); err != nil || available == nil {
 			t.Fatalf("manufacturing token was consumed: %#v, err=%v", available, err)
 		}
-		if err := s.DeleteHost(ctx, conflict.ID); err != nil {
+		if err := s.DeleteHost(ctx, conflict.ID, "system"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.EnrollDevice(ctx, token.Token, strings.Repeat("b", 64), "DUPLICATE", "test", "SHA256:"+strings.Repeat("A", 43), "device-key", "ops", 22, nil); err != nil {
@@ -605,11 +756,11 @@ func TestEnrollDeviceRollsBackCredentialConsumptionOnInsertFailure(t *testing.T)
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = s.Close() })
-		conflict, err := s.CreateHost(ctx, NewHost{Name: "DUPLICATE-000001", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22})
+		conflict, err := s.CreateHost(ctx, NewHost{Name: "DUPLICATE-000001", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22}, "system")
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, token, err := s.CreateManufacturingBatch(ctx, "rollback", "DUPLICATE", time.Now().Add(time.Hour).Unix(), 2)
+		_, token, err := s.CreateManufacturingBatch(ctx, "rollback", "DUPLICATE", time.Now().Add(time.Hour).Unix(), 2, "system")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -620,7 +771,7 @@ func TestEnrollDeviceRollsBackCredentialConsumptionOnInsertFailure(t *testing.T)
 		if err != nil || len(batches) != 1 || batches[0].UsedCount != 0 || batches[0].Status != "open" {
 			t.Fatalf("manufacturing batch changed after rollback: %#v, err=%v", batches, err)
 		}
-		if err := s.DeleteHost(ctx, conflict.ID); err != nil {
+		if err := s.DeleteHost(ctx, conflict.ID, "system"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.EnrollDevice(ctx, token, strings.Repeat("b", 64), "", "test", "SHA256:"+strings.Repeat("A", 43), "device-key", "ops", 22, nil); err != nil {

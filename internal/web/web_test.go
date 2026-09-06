@@ -28,7 +28,7 @@ func TestPortalRendersHTMXAndEscapesData(t *testing.T) {
 		EndpointID: strings.Repeat("a", 64),
 		SSHUser:    "ops",
 		SSHPort:    22,
-	}); err != nil {
+	}, "system"); err != nil {
 		t.Fatal(err)
 	}
 

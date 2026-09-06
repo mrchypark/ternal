@@ -28,7 +28,7 @@ func TestSignedDeviceHeartbeatAndAuthorizedKeys(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	expires := time.Now().Add(time.Hour).Unix()
-	manufacturing, err := s.CreateManufacturingToken(ctx, "", &expires)
+	manufacturing, err := s.CreateManufacturingToken(ctx, "", &expires, "system")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestSignedDeviceHeartbeatAndAuthorizedKeys(t *testing.T) {
 		t.Fatalf("stale signed request status=%d", staleRes.Code)
 	}
 
-	if err := s.DeleteDevice(ctx, device.ID); err != nil {
+	if err := s.DeleteDevice(ctx, device.ID, "system"); err != nil {
 		t.Fatal(err)
 	}
 	revokedHeartbeatReq := httptest.NewRequest(http.MethodPost, "/agents/heartbeat", strings.NewReader(string(heartbeatBody)))
