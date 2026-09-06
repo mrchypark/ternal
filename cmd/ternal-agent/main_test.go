@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +72,100 @@ func TestAuthorizedKeysAreValidatedAndWrittenWithStrictMode(t *testing.T) {
 	}
 	if err := validateAuthorizedKeys([]byte("command=evil ssh-ed25519 invalid\n")); err == nil {
 		t.Fatal("invalid authorized_keys content accepted")
+	}
+}
+
+func TestSyncAuthorizedKeysRejectsRollbackAndEquivocation(t *testing.T) {
+	oldKeys := []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D old\n")
+	newKeys := []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D new\n")
+	digest := func(body []byte) string { sum := sha256.Sum256(body); return hex.EncodeToString(sum[:]) }
+	for _, test := range []struct {
+		name       string
+		generation int64
+		body       []byte
+		wantErr    bool
+	}{
+		{"lower generation", 4, newKeys, true},
+		{"same generation different digest", 5, newKeys, true},
+		{"same snapshot", 5, oldKeys, false},
+		{"higher generation empty snapshot", 6, nil, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "authorized_keys")
+			statePath := path + ".ternal-state"
+			if err := atomicWrite(path, oldKeys, 0600); err != nil {
+				t.Fatal(err)
+			}
+			state, _ := json.Marshal(authorizedKeysState{Generation: 5, SHA256: digest(oldKeys)})
+			if err := atomicWrite(statePath, append(state, '\n'), 0600); err != nil {
+				t.Fatal(err)
+			}
+			beforeKeys, _ := os.ReadFile(path)
+			beforeState, _ := os.ReadFile(statePath)
+			acks := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/agents/authorized-keys":
+					w.Header().Set("X-Ternal-Authorized-Keys-Generation", strconv.FormatInt(test.generation, 10))
+					w.Header().Set("X-Ternal-Authorized-Keys-Sha256", digest(test.body))
+					_, _ = w.Write(test.body)
+				case "/agents/authorized-keys/ack":
+					acks++
+					installedKeys, keyErr := os.ReadFile(path)
+					installedState, stateErr := readAuthorizedKeysState(statePath)
+					if keyErr != nil || stateErr != nil || installedState == nil || string(installedKeys) != string(test.body) || installedState.Generation != test.generation || installedState.SHA256 != digest(test.body) {
+						t.Error("ACK preceded persistence of matching keys and state")
+					}
+					var ack struct {
+						Generation int64  `json:"generation"`
+						SHA256     string `json:"sha256"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&ack); err != nil {
+						t.Error(err)
+					} else if ack.Generation != test.generation || ack.SHA256 != digest(test.body) {
+						t.Errorf("ack = %#v", ack)
+					}
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+
+			pigeons := filepath.Join(dir, "pigeons")
+			if err := os.WriteFile(pigeons, []byte("#!/bin/sh\nprintf '%s\\n' '"+strings.Repeat("a", 64)+"'\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			keyPath := filepath.Join(dir, "device.key")
+			if _, err := deviceauth.GenerateKey(keyPath); err != nil {
+				t.Fatal(err)
+			}
+			identityPath := filepath.Join(dir, "device.json")
+			if err := deviceauth.WriteIdentity(identityPath, deviceauth.Identity{Serial: "TEST-SYNC", HostKeyFingerprint: "SHA256:" + strings.Repeat("A", 43)}); err != nil {
+				t.Fatal(err)
+			}
+			err := syncAuthorizedKeys(context.Background(), config{APIURL: server.URL, Pigeons: pigeons, DeviceKey: keyPath, IdentityFile: identityPath, SSHUser: "ops"}, path)
+			if test.wantErr {
+				if err == nil || err.Error() != "authorized_keys snapshot rollback or equivocation rejected" {
+					t.Fatalf("snapshot rejection = %v", err)
+				}
+				afterKeys, _ := os.ReadFile(path)
+				afterState, _ := os.ReadFile(statePath)
+				if string(afterKeys) != string(beforeKeys) || string(afterState) != string(beforeState) || acks != 0 {
+					t.Fatalf("rejection changed keys=%q state=%q acks=%d", afterKeys, afterState, acks)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterKeys, _ := os.ReadFile(path)
+			afterState, err := readAuthorizedKeysState(statePath)
+			if err != nil || afterState == nil || string(afterKeys) != string(test.body) || afterState.Generation != test.generation || afterState.SHA256 != digest(test.body) || acks != 1 {
+				t.Fatalf("accepted snapshot keys=%q state=%#v acks=%d err=%v", afterKeys, afterState, acks, err)
+			}
+		})
 	}
 }
 
