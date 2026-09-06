@@ -20,7 +20,7 @@ if [ "$(uname -s)" != Linux ] && [ "${TERNAL_TRANSPORT_MATRIX_ALLOW_NON_LINUX:-}
 fi
 
 driver=${TERNAL_TRANSPORT_DRIVER:-${1:-}}
-[ -n "$driver" ] || skip "TERNAL_TRANSPORT_DRIVER is required; pigeons cannot observe direct versus relay paths without the patched diagnostics contract"
+[ -n "$driver" ] || skip "TERNAL_TRANSPORT_DRIVER is required; route isolation must independently prove the direct or relay path"
 [ -x "$driver" ] || {
 	echo "transport driver is not executable: $driver" >&2
 	exit 1
@@ -104,8 +104,8 @@ assert_probe() {
 		exit 1
 	}
 	if [ "$evidence" = production ]; then
-		jq -e '(.network_state_verified | type == "boolean") and (.ssh_banner | type == "boolean") and (.diagnostics_jsonl | type == "boolean")' "$result_file" >/dev/null || {
-			echo "$state: production probe omitted required network/banner/diagnostics evidence" >&2
+		jq -e '(.network_state_verified | type == "boolean") and (.route_isolation_verified | type == "boolean") and (.ssh_banner | type == "boolean")' "$result_file" >/dev/null || {
+			echo "$state: production probe omitted required network/isolation/banner evidence" >&2
 			exit 1
 		}
 		jq -e '.network_state_verified == true' "$result_file" >/dev/null || {
@@ -113,8 +113,8 @@ assert_probe() {
 			exit 1
 		}
 		if [ "$expected_connected" = true ]; then
-			jq -e '.ssh_banner == true and .diagnostics_jsonl == true' "$result_file" >/dev/null || {
-				echo "$state: connected production probe requires both SSH banner and diagnostics JSONL" >&2
+			jq -e '.ssh_banner == true and .route_isolation_verified == true' "$result_file" >/dev/null || {
+				echo "$state: connected production probe requires both SSH banner and verified route isolation" >&2
 				exit 1
 			}
 		else

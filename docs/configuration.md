@@ -12,16 +12,12 @@ variables or Kubernetes Secret keys.
 | `TERNAL_DATA_*` | Local or clustered control-plane storage |
 | `TERNAL_OBJECT_STORE_*` | Rhiza-certified persistence authority |
 | `TERNAL_RELAY_*` | Relay admission and connection settings |
-| `TERNAL_TRANSPORT_*` | Transport helper selection and diagnostics |
+| `TERNAL_TRANSPORT_*` | Transport helper selection and route inputs |
 | `TERNAL_AGENT_*` | Device agent behavior |
 
 Names such as Rhiza, Rauthy, and pigeons may still appear in source imports,
 provider-specific development fixtures, binary filenames, licenses, or build
 provenance. They do not define Ternal's runtime configuration contract.
-
-An upstream program can have its own environment variables. For example,
-`PIGEONS_TRANSPORT_DIAGNOSTICS` belongs to the separately executed pigeons
-binary; it is not read as Ternal application configuration.
 
 ## Server
 

@@ -85,7 +85,7 @@ if ([string]::IsNullOrWhiteSpace($PigeonsBin)) {
     if (-not [string]::IsNullOrWhiteSpace($env:TERNAL_TRANSPORT_BIN)) {
         $PigeonsBin = $env:TERNAL_TRANSPORT_BIN
     } else {
-        throw 'pass -PigeonsBin or set TERNAL_TRANSPORT_TEST_BIN to a real patched pigeons.exe build'
+        throw 'pass -PigeonsBin or set TERNAL_TRANSPORT_TEST_BIN to a real pinned pigeons.exe build'
     }
 }
 $TernalctlBin = Get-AbsolutePath $TernalctlBin
@@ -94,7 +94,7 @@ if (-not (Test-Path -LiteralPath $TernalctlBin -PathType Leaf)) {
     throw "missing real ternalctl.exe test binary: $TernalctlBin"
 }
 if (-not (Test-Path -LiteralPath $PigeonsBin -PathType Leaf)) {
-    throw "missing real patched pigeons.exe test binary: $PigeonsBin"
+    throw "missing real pinned pigeons.exe test binary: $PigeonsBin"
 }
 
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("ternal windows package test " + [guid]::NewGuid().ToString('N'))

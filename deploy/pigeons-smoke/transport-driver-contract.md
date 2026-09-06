@@ -22,8 +22,8 @@ Example probe result:
 {"connected":true,"path":"relay","endpoint_id":"stable-id"}
 ```
 
-`path` must be `relay`, `direct`, or `none`, based on independent transport
-telemetry or packet evidence. `unknown` is always a failure. A driver which
+`path` must be `relay`, `direct`, or `none`, based on independent network or
+packet evidence. `unknown` is always a failure. A driver which
 cannot observe the path must report `path_observable: false`; the harness then
 returns exit status 77 (`SKIP`). Fixture drivers are rejected unless
 `TERNAL_TRANSPORT_ALLOW_FIXTURE=1` is explicitly set by a self-test, so their
@@ -33,14 +33,14 @@ Production evidence is accepted only from driver ID
 `linux-netns-pigeons-v1`. Every state must report
 `network_state_verified=true` after re-reading live `iptables-save` output.
 Connected states must additionally report `ssh_banner=true` and
-`diagnostics_jsonl=true`; the selected path comes from the final valid patched
-pigeons JSONL event. A `/ping` response is readiness evidence only.
+`route_isolation_verified=true`; the selected path is the only route left by
+the verified firewall state. A `/ping` response is readiness evidence only.
 
-## Patched pigeons Linux driver
+## Pinned pigeons Linux driver
 
 [`drivers/linux-netns-pigeons.sh`](drivers/linux-netns-pigeons.sh) is the
 concrete Linux driver. It requires root, `ip`, `iptables`, `ss`, a local `sshd`,
-and a patched Linux `pigeons` binary. Local matrix mode additionally requires
+and the pinned Linux `pigeons` binary. Local matrix mode additionally requires
 Docker for its disposable relay. It creates an isolated client network
 namespace and physically applies these rules:
 
@@ -52,10 +52,8 @@ namespace and physically applies these rules:
 | `recovery` | blocked | restored | `relay` |
 
 The driver discovers the server's bound UDP port with `ss`, passes it through
-the patched repeated `--direct-address` option, enables
-`PIGEONS_TRANSPORT_DIAGNOSTICS=stderr`, and parses only JSONL events matching
-`pigeons.transport.v1`. The final event is authoritative; a
-final `unknown` event fails a connected scenario.
+the repeated `--direct-address` option, and attributes a real SSH banner to the
+only route allowed by the verified firewall state.
 
 ```sh
 sudo env \
@@ -65,7 +63,7 @@ sudo env \
 ```
 
 In vind, run the same command in a disposable privileged Linux workload with
-the patched binary and required networking tools. If the workload cannot create
+the pinned binary and required networking tools. If the workload cannot create
 network namespaces or enforce firewall rules, capability detection returns
 `SKIP` instead of producing evidence.
 
@@ -90,11 +88,11 @@ executable `TERNAL_TRANSPORT_REGISTER_ENDPOINT_CMD`. It receives:
 
 The hook owns Rauthy/Ternal credentials and removal of temporary participants;
 `TERNAL_TRANSPORT_MATRIX_WORK` is available for its state. Missing credentials,
-patched binary, root/CAP_NET_ADMIN, required commands, or endpoint-registration
+pinned binary, root/CAP_NET_ADMIN, required commands, or endpoint-registration
 hook return `SKIP 77` before data-path assertions.
 
 The external test runs only `relay-only`: the namespace's live
 `iptables-save` output must show all UDP rejected, the proxy must receive an SSH
-banner, and patched diagnostics must end at `transport=relay`. `/ping` may be
-used internally as a readiness prerequisite but never substitutes for these
-three assertions.
+banner, and verified route isolation must identify the path as `relay`.
+`/ping` may be used internally as a readiness prerequisite but never
+substitutes for these assertions.

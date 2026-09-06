@@ -15,7 +15,7 @@ function Read-PigeonsBuildConfig([string] $Path) {
         if ($trimmed -notmatch '^(?<name>[A-Z][A-Z0-9_]*)=(?<value>[^\r\n]*)$') { throw "invalid build config line: $line" }
         if ($values.ContainsKey($Matches.name)) { throw "duplicate build config key: $($Matches.name)" }; $values[$Matches.name] = $Matches.value
     }
-    foreach ($name in @('PIGEONS_VERSION', 'PIGEONS_COMMIT', 'PIGEONS_SOURCE_SHA256', 'PIGEONS_CARGO_LOCK_SHA256')) { if (-not $values.ContainsKey($name) -or [string]::IsNullOrWhiteSpace($values[$name])) { throw "missing build config key: $name" } }
+    foreach ($name in @('PIGEONS_REPOSITORY', 'PIGEONS_VERSION', 'PIGEONS_COMMIT', 'PIGEONS_SOURCE_SHA256', 'PIGEONS_CARGO_LOCK_SHA256')) { if (-not $values.ContainsKey($name) -or [string]::IsNullOrWhiteSpace($values[$name])) { throw "missing build config key: $name" } }
     if ($values.PIGEONS_COMMIT -notmatch '^[0-9a-f]{40}$') { throw 'PIGEONS_COMMIT must be a full lowercase Git commit' }
     foreach ($name in @('PIGEONS_SOURCE_SHA256', 'PIGEONS_CARGO_LOCK_SHA256')) { if ($values[$name] -notmatch '^[0-9a-f]{64}$') { throw "$name must be a lowercase SHA-256 digest" } }
     $values
@@ -26,9 +26,7 @@ function AbsolutePath([string] $Path) { if ([string]::IsNullOrWhiteSpace($Path))
 
 $platform = Get-NativeWindowsPlatform
 $config = Read-PigeonsBuildConfig (Join-Path $PSScriptRoot 'pigeons-build.env')
-$patchFile = Join-Path $PSScriptRoot "pigeons-$($config.PIGEONS_VERSION)-ternal.patch"
-if (-not (Test-Path -LiteralPath $patchFile -PathType Leaf)) { throw "missing Ternal pigeons patch: $patchFile" }
-Require-Command cargo; Require-Command git; Require-Command rustc; Require-Command tar
+Require-Command cargo; Require-Command rustc; Require-Command tar
 $output = AbsolutePath $(if ([string]::IsNullOrWhiteSpace($env:TERNAL_TRANSPORT_OUTPUT)) { "dist/pigeons-windows-$platform.exe" } else { $env:TERNAL_TRANSPORT_OUTPUT })
 $targetDirectory = AbsolutePath $(if ([string]::IsNullOrWhiteSpace($env:TERNAL_TRANSPORT_TARGET_DIR)) { "target/pigeons-windows-$platform" } else { $env:TERNAL_TRANSPORT_TARGET_DIR })
 if ([System.IO.Path]::GetExtension($output) -cne '.exe') { throw "pigeons Windows output must use .exe: $output" }
@@ -37,18 +35,17 @@ $archive = Join-Path $work 'pigeons.tar.gz'; $sourceDirectory = Join-Path $work 
 New-Item -ItemType Directory -Path $work | Out-Null
 try {
     $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri "https://codeload.github.com/n0-computer/pigeons/tar.gz/$($config.PIGEONS_COMMIT)" -OutFile $archive -MaximumRedirection 5
+    Invoke-WebRequest -Uri "https://codeload.github.com/$($config.PIGEONS_REPOSITORY)/tar.gz/$($config.PIGEONS_COMMIT)" -OutFile $archive -MaximumRedirection 5
     Assert-Sha256 $archive $config.PIGEONS_SOURCE_SHA256
     & tar -xzf $archive -C $work; if ($LASTEXITCODE -ne 0) { throw "tar failed to extract pinned pigeons source (exit $LASTEXITCODE)" }
     Assert-Sha256 (Join-Path $sourceDirectory 'Cargo.lock') $config.PIGEONS_CARGO_LOCK_SHA256
-    Push-Location $sourceDirectory; try { & git apply --check --whitespace=nowarn $patchFile; if ($LASTEXITCODE -ne 0) { throw 'Ternal pigeons patch check failed' }; & git apply --whitespace=nowarn $patchFile; if ($LASTEXITCODE -ne 0) { throw 'Ternal pigeons patch failed' } } finally { Pop-Location }
     New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
     $previousTarget = $env:CARGO_TARGET_DIR; $previousRustFlags = $env:RUSTFLAGS
     $env:CARGO_TARGET_DIR = $targetDirectory
     $env:RUSTFLAGS = if ([string]::IsNullOrWhiteSpace($previousRustFlags)) { '-C link-arg=/Brepro' } else { "$previousRustFlags -C link-arg=/Brepro" }
     try {
-        & cargo test --locked --manifest-path (Join-Path $sourceDirectory 'Cargo.toml'); if ($LASTEXITCODE -ne 0) { throw 'patched pigeons tests failed' }
-        & cargo build --locked --release --manifest-path (Join-Path $sourceDirectory 'Cargo.toml'); if ($LASTEXITCODE -ne 0) { throw 'cargo failed to build patched pigeons' }
+        & cargo test --locked --manifest-path (Join-Path $sourceDirectory 'Cargo.toml'); if ($LASTEXITCODE -ne 0) { throw 'pinned pigeons tests failed' }
+        & cargo build --locked --release --manifest-path (Join-Path $sourceDirectory 'Cargo.toml'); if ($LASTEXITCODE -ne 0) { throw 'cargo failed to build pinned pigeons' }
     } finally { $env:RUSTFLAGS = $previousRustFlags; $env:CARGO_TARGET_DIR = $previousTarget }
     $builtBinary = Join-Path $targetDirectory 'release/pigeons.exe'; if (-not (Test-Path -LiteralPath $builtBinary -PathType Leaf)) { throw "cargo did not produce expected binary: $builtBinary" }
     New-Item -ItemType Directory -Path (Split-Path -Parent $output) -Force | Out-Null; Copy-Item -LiteralPath $builtBinary -Destination $output -Force

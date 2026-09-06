@@ -1,8 +1,6 @@
 #!/bin/sh
 set -eu
 
-script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-parser="$script_dir/../parse-transport-jsonl.sh"
 work=${TERNAL_TRANSPORT_MATRIX_WORK:-}
 bin=${TERNAL_TRANSPORT_BIN:-dist/pigeons-linux-amd64}
 
@@ -19,7 +17,7 @@ capability_skip() {
 capabilities() {
 	[ "$(uname -s)" = Linux ] || capability_skip "linux network namespaces are unavailable on this runner"
 	[ "$(id -u)" -eq 0 ] || capability_skip "linux transport driver requires root or an equivalent privileged vind workload"
-	[ -x "$bin" ] || capability_skip "patched pigeons binary not found at $bin"
+	[ -x "$bin" ] || capability_skip "pinned pigeons binary not found at $bin"
 	for command in ip iptables iptables-save jq nc sed ss ssh-keygen; do
 		command -v "$command" >/dev/null 2>&1 || capability_skip "missing required Linux transport command: $command"
 	done
@@ -39,8 +37,7 @@ capabilities() {
 	command -v docker >/dev/null 2>&1 || capability_skip "Docker is unavailable to run the pinned local iroh relay"
 	docker info >/dev/null 2>&1 || capability_skip "Docker is unavailable to run the pinned local iroh relay"
 	help=$($bin fly --help 2>&1 || true)
-	printf '%s' "$help" | grep -- '--direct-address' >/dev/null 2>&1 || capability_skip "patched pigeons does not expose repeated --direct-address"
-	printf '%s' "$help" | grep -- '--transport-diagnostics' >/dev/null 2>&1 || capability_skip "patched pigeons does not expose transport diagnostics"
+	printf '%s' "$help" | grep -- '--direct-address' >/dev/null 2>&1 || capability_skip "pinned pigeons does not expose repeated --direct-address"
 	printf '%s\n' '{"driver":"linux-netns-pigeons-v1","path_observable":true,"evidence":"production","states":["relay-only","direct-only","both-blocked","recovery"]}'
 }
 
@@ -172,7 +169,7 @@ prepare() {
 		write_state relay-name "$relay_name"
 		write_state relay-port "$relay_port"
 		docker run -d --name "$relay_name" -p "0.0.0.0:$relay_port:3340" \
-			n0computer/iroh-relay:v0.96.1 --dev >/dev/null
+			n0computer/iroh-relay@sha256:7805aaf67ca59e04cd54999d142c85ed72e38e5bd4515c902fa5c8d838674747 --dev >/dev/null
 		wait_tcp "$host_ip" "$relay_port" || {
 			docker logs "$relay_name" >&2 || true
 			echo "relay did not become reachable from the isolated client network" >&2
@@ -369,7 +366,6 @@ run_proxy() {
 	proxy_status=0
 	ip netns exec "$netns" env \
 		HOME="$work/client-home" \
-		PIGEONS_TRANSPORT_DIAGNOSTICS=stderr \
 		"$timeout_bin" "${TERNAL_TRANSPORT_PROBE_TIMEOUT:-15}" "$@" \
 		</dev/null >"$out" 2>"$err" || proxy_status=$?
 	printf '%s\n' "$proxy_status" >"$work/$state.proxy.status"
@@ -388,21 +384,21 @@ probe() {
 	if head -n 1 "$out" | grep '^SSH-' >/dev/null 2>&1; then
 		connected=true
 		ssh_banner=true
-		path=$(sh "$parser" "$err")
+		case "$state" in
+			direct-only) path=direct ;;
+			relay-only|recovery) path=relay ;;
+		esac
 	else
 		connected=false
 		ssh_banner=false
 		path=none
 	fi
-	diagnostics_jsonl=false
-	jq -Rsc '[split("\n")[] | fromjson? | select(.schema == "pigeons.transport.v1" and .event == "transport_changed" and (.transport == "direct" or .transport == "relay" or .transport == "unknown"))] | length > 0' "$err" | grep '^true$' >/dev/null 2>&1 && diagnostics_jsonl=true
 	jq -nc \
 		--argjson connected "$connected" \
 		--argjson ssh_banner "$ssh_banner" \
-		--argjson diagnostics_jsonl "$diagnostics_jsonl" \
 		--arg path "$path" \
 		--arg endpoint_id "$endpoint" \
-		'{connected:$connected,path:$path,endpoint_id:$endpoint_id,network_state_verified:true,ssh_banner:$ssh_banner,diagnostics_jsonl:$diagnostics_jsonl}'
+		'{connected:$connected,path:$path,endpoint_id:$endpoint_id,network_state_verified:true,route_isolation_verified:true,ssh_banner:$ssh_banner}'
 }
 
 case "${1:-}" in

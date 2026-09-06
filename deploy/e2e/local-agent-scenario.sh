@@ -104,8 +104,8 @@ run_agent() (
 )
 
 run_agent device-keygen >"$work/device-keygen.out"
-first_endpoint=$(HOME="$agent_home" XDG_CONFIG_HOME="$config_home" "$transport" endpoint-id --roost | tr '[:upper:]' '[:lower:]')
-second_endpoint=$(HOME="$agent_home" XDG_CONFIG_HOME="$config_home" "$transport" endpoint-id --roost | tr '[:upper:]' '[:lower:]')
+first_endpoint=$(HOME="$agent_home" XDG_CONFIG_HOME="$config_home" "$transport" endpoint-id | tr '[:upper:]' '[:lower:]')
+second_endpoint=$(HOME="$agent_home" XDG_CONFIG_HOME="$config_home" "$transport" endpoint-id | tr '[:upper:]' '[:lower:]')
 [ "$first_endpoint" = "$second_endpoint" ]
 printf '%s' "$first_endpoint" | grep -Eq '^[[:xdigit:]]{64}$'
 
@@ -178,7 +178,9 @@ status=$(request GET /access/grants "$work/user.headers" '' "$work/grants.json")
 [ "$status" = 200 ]
 jq -e --arg host "$host_id" 'any(.[]; .host_id == $host and .key_installed == true)' "$work/grants.json" >/dev/null
 
-client_endpoint=$(HOME="$agent_home" XDG_CONFIG_HOME="$config_home" "$transport" endpoint-id | tr '[:upper:]' '[:lower:]')
+client_home="$state/client-home"
+mkdir -p "$client_home"
+client_endpoint=$(HOME="$client_home" "$transport" endpoint-id | tr '[:upper:]' '[:lower:]')
 grant_request=$(jq -nc --arg host "$host_id" --arg endpoint "$client_endpoint" '{host_id:$host,client_endpoint_id:$endpoint,ttl:300}')
 status=$(request POST /access/relay-grants "$work/user.headers" "$grant_request" "$work/relay-grant.json")
 [ "$status" = 201 ]

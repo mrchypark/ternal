@@ -23,8 +23,7 @@ if [ "$platform" != "$host_platform" ]; then echo "native build platform mismatc
 
 output=${TERNAL_TRANSPORT_OUTPUT:-dist/pigeons-$platform}
 target_dir=${TERNAL_TRANSPORT_TARGET_DIR:-target/pigeons-$platform}
-source_url="https://codeload.github.com/n0-computer/pigeons/tar.gz/$PIGEONS_COMMIT"
-patch_file="$script_dir/pigeons-$PIGEONS_VERSION-ternal.patch"
+source_url="https://codeload.github.com/$PIGEONS_REPOSITORY/tar.gz/$PIGEONS_COMMIT"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT INT TERM HUP
 
@@ -34,7 +33,7 @@ verify_sha256() {
 	if command -v sha256sum >/dev/null 2>&1; then printf '%s  %s\n' "$expected" "$file" | sha256sum -c - >/dev/null
 	else need shasum; printf '%s  %s\n' "$expected" "$file" | shasum -a 256 -c - >/dev/null; fi
 }
-need cargo; need curl; need patch; need tar
+need cargo; need curl; need tar
 archive="$work/pigeons.tar.gz"
 curl -fsSL -o "$archive" "$source_url"
 verify_sha256 "$PIGEONS_SOURCE_SHA256" "$archive"
@@ -42,7 +41,6 @@ tar -xzf "$archive" -C "$work"
 source_dir="$work/pigeons-$PIGEONS_COMMIT"
 test -d "$source_dir" || { echo "source archive did not contain expected directory: $source_dir" >&2; exit 1; }
 verify_sha256 "$PIGEONS_CARGO_LOCK_SHA256" "$source_dir/Cargo.lock"
-patch -s -d "$source_dir" -p1 < "$patch_file"
 cargo fmt --all --manifest-path "$source_dir/Cargo.toml" -- --check
 CARGO_TARGET_DIR="$target_dir" cargo test --locked --manifest-path "$source_dir/Cargo.toml"
 CARGO_TARGET_DIR="$target_dir" cargo build --locked --release --manifest-path "$source_dir/Cargo.toml"

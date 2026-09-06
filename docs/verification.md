@@ -17,7 +17,7 @@ Run `./scripts/run-all-tests.sh`. It verifies:
 - signed device requests, batch enrollment, authorized-key monotonic generation,
   exact current-snapshot acknowledgement, and agent rollback/equivocation state;
 - live-scenario entrypoint syntax, executability, and parent orchestration;
-- pinned pigeons source/patch checks, packaging, and transport result parsing;
+- pinned pigeons fork source/lock checks, packaging, and isolated-route evidence;
 - Helm lint/render checks when Helm is installed.
 
 ## Verification that remains environment-bound

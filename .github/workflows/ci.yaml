@@ -75,7 +75,6 @@ jobs:
           sh deploy/backup/local-backup-restore.test.sh
           sh deploy/k8s-secret-helpers.test.sh
           sh deploy/e2e/local-go-smoke.sh
-          sh deploy/pigeons-smoke/parse-transport-jsonl.test.sh
           sh deploy/pigeons-smoke/transport-matrix.test.sh
           python3 deploy/release/release-candidate-workflow.test.py
           python3 deploy/release/tag-release-workflow.test.py

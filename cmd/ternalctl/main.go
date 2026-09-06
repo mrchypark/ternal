@@ -625,7 +625,7 @@ func validateProxyInvocation(hostRef, endpointPort string, routeArgs []string) e
 	}
 	for i := 0; i < len(routeArgs); i += 2 {
 		switch routeArgs[i] {
-		case "--direct-address", "--relay-url", "--extra-relay-url":
+		case "--direct-address", "--relay-url":
 		default:
 			return fmt.Errorf("unsupported route flag")
 		}

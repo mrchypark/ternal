@@ -55,6 +55,8 @@ for required in (
     "contents: write",
     "needs:\n      - native\n      - release",
     "release-provenance.json",
+    '"pigeons_repository": build["PIGEONS_REPOSITORY"]',
+    '"pigeons_cargo_lock_sha256": build["PIGEONS_CARGO_LOCK_SHA256"]',
     "release-sha256.txt",
     'gh release create "$GITHUB_REF_NAME" release/*',
     'gh release edit "$GITHUB_REF_NAME" --draft=false',

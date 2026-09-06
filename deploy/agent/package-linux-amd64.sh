@@ -16,7 +16,7 @@ test -x "$agent_bin" || { echo "missing executable ternal-agent: $agent_bin" >&2
 need gzip
 need tar
 if [ -z "$pigeons_bin" ]; then pigeons_bin=dist/pigeons-$platform; sh "$script_dir/build-pigeons-native.sh" "$platform"; fi
-test -x "$pigeons_bin" || { echo "missing executable patched pigeons: $pigeons_bin" >&2; exit 1; }
+test -x "$pigeons_bin" || { echo "missing executable pinned pigeons: $pigeons_bin" >&2; exit 1; }
 tar_tmp=$archive.tmp
 rm -rf "$package_dir" "$archive" "$tar_tmp"
 mkdir -p "$package_dir" "$(dirname "$archive")"
@@ -32,12 +32,8 @@ printf '%s\n' \
 	'- pigeons' \
 	'- LICENSE.pigeons (upstream MIT license)' \
 	'' \
-	"Bundled pigeons: upstream $PIGEONS_VERSION ($PIGEONS_COMMIT), MIT licensed; Ternal compatibility patch" \
-	'Ternal patch divergence: persistent client endpoint identity, explicit direct/relay routes,' \
-	'  extra-relay composition, and redacted transport diagnostics for SSH ProxyCommand use.' \
-	'Enable redacted transport diagnostics without touching ProxyCommand stdout:' \
-	'  export PIGEONS_TRANSPORT_DIAGNOSTICS=stderr' \
-	'  # or set it to an append-only JSONL file path' \
+	"Bundled pigeons: $PIGEONS_REPOSITORY $PIGEONS_VERSION ($PIGEONS_COMMIT), MIT licensed" \
+	'Upstream proposals: n0-computer/pigeons#21 (stream lifecycle) and #22 (persistent identity and endpoint addresses).' \
 	'' \
 	'Print the persisted local client endpoint ID:' \
 	'  ./pigeons endpoint-id [--key-dir <DIR>]' \
