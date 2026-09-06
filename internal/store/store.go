@@ -376,8 +376,8 @@ func (s *Store) SessionRevoked(ctx context.Context, cookie string) (bool, error)
 	if cookie == "" {
 		return false, nil
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	// Rhiza orders this read against revocations; avoid a non-cancellable wait
+	// behind unrelated writes before entering the context-aware read barrier.
 	var count int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM revoked_sessions WHERE cookie_hash = ? AND expires_at > ?`,
