@@ -116,6 +116,33 @@ jobs:
           TERNAL_TRANSPORT_BIN="dist/pigeons-${{ matrix.platform }}" sh deploy/agent/package-linux-amd64.sh "${{ matrix.platform }}" >/dev/null
           cmp "$RUNNER_TEMP/first-$agent_archive" "dist/$agent_archive"
 
+      - name: Verify Linux archive runtime baseline
+        if: startsWith(matrix.platform, 'linux-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -v "$PWD/dist:/archives:ro" ubuntu:24.04 sh -ec '
+            test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.39"
+            mkdir /probe
+            cd /probe
+            tar -xzf /archives/ternalctl-${{ matrix.platform }}.tar.gz
+            tar -xzf /archives/ternal-agent-${{ matrix.platform }}.tar.gz
+            for bundle in ternalctl-${{ matrix.platform }} ternal-agent-${{ matrix.platform }}; do
+              grep -F "glibc 2.39 or newer" "$bundle/README.txt"
+              "$bundle/pigeons" --help >/dev/null
+            done
+            set +e
+            ./ternalctl-${{ matrix.platform }}/ternalctl >/tmp/cli-output 2>&1
+            cli_status=$?
+            ./ternal-agent-${{ matrix.platform }}/ternal-agent >/tmp/agent-output 2>&1
+            agent_status=$?
+            set -e
+            test "$cli_status" = 1
+            test "$agent_status" = 1
+            grep -i usage /tmp/cli-output
+            grep -i usage /tmp/agent-output
+          '
+
       - name: Build and package pinned pigeons bundle
         if: matrix.family == 'windows'
         shell: pwsh

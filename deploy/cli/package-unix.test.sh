@@ -76,7 +76,7 @@ grep 'ssh-keygen' "$work/dist/$bundle/README.txt" >/dev/null
 case "$platform" in
 	linux-*)
 		grep -F '  sudo install -m 755 ternalctl pigeons /usr/local/bin/' "$work/dist/$bundle/README.txt" >/dev/null
-		grep -F 'glibc 2.35 or newer' "$work/dist/$bundle/README.txt" >/dev/null
+		grep -F 'glibc 2.39 or newer' "$work/dist/$bundle/README.txt" >/dev/null
 		grep -F 'musl-only systems are not supported' "$work/dist/$bundle/README.txt" >/dev/null
 		;;
 	macos-*)

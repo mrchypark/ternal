@@ -26,13 +26,13 @@ case "$platform" in
 		os_label=Linux
 		arch_label='amd64 (x86_64)'
 		install_command='  sudo install -m 755 ternalctl pigeons /usr/local/bin/'
-		runtime_requirements='Runtime requirements: glibc 2.35 or newer; musl-only systems are not supported; ssh and ssh-keygen from OpenSSH must be available on PATH.'
+		runtime_requirements='Runtime requirements: glibc 2.39 or newer (Ubuntu 24.04 baseline); musl-only systems are not supported; ssh and ssh-keygen from OpenSSH must be available on PATH.'
 		;;
 	linux-arm64)
 		os_label=Linux
 		arch_label='arm64 (aarch64)'
 		install_command='  sudo install -m 755 ternalctl pigeons /usr/local/bin/'
-		runtime_requirements='Runtime requirements: glibc 2.35 or newer; musl-only systems are not supported; ssh and ssh-keygen from OpenSSH must be available on PATH.'
+		runtime_requirements='Runtime requirements: glibc 2.39 or newer (Ubuntu 24.04 baseline); musl-only systems are not supported; ssh and ssh-keygen from OpenSSH must be available on PATH.'
 		;;
 	macos-amd64)
 		os_label=macOS
