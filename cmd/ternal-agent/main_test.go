@@ -17,7 +17,7 @@ import (
 func TestRoostArgsPreserveManagedAndCustomRoutes(t *testing.T) {
 	args := roostArgs(config{SSHPort: 2222, RelayURLs: []string{"https://managed.example"}, ExtraRelayURLs: []string{"https://extra.example"}})
 	got := strings.Join(args, " ")
-	want := "roost --ssh-port 2222 --relay-url https://managed.example --extra-relay-url https://extra.example"
+	want := "roost --ssh-port 2222 --relay-url https://managed.example --relay-url https://extra.example"
 	if got != want {
 		t.Fatalf("args = %q, want %q", got, want)
 	}

@@ -30,7 +30,6 @@ sh deploy/e2e/scenario-scripts.test.sh
 sh deploy/agent/build-pigeons-native.test.sh
 sh deploy/agent/package-linux-amd64.test.sh
 sh deploy/cli/package-unix.test.sh
-sh deploy/pigeons-smoke/parse-transport-jsonl.test.sh
 sh deploy/pigeons-smoke/transport-matrix.test.sh
 python3 deploy/release/release-candidate-workflow.test.py
 if command -v helm >/dev/null 2>&1; then

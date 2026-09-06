@@ -69,7 +69,7 @@ transport:
     replicas: 1
     image:
       repository: n0computer/iroh-relay
-      tag: v0.96.1
+      tag: v1.1.0
       digest: ""
       pullPolicy: IfNotPresent
     port: 3340

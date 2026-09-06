@@ -1,74 +1,59 @@
-# Ternal Agent and Bundled pigeons
+# Ternal Agent and bundled pigeons
 
-## Decision
-
-Ternal uses one patched `pigeons` binary as its SSH data plane. `ternal-agent`
+Ternal uses one `pigeons` binary as its SSH data plane. `ternal-agent`
 supervises `pigeons roost`; OpenSSH reaches it through `pigeons fly --stdio`.
-Ternal owns inventory, policy, grants, audit, and SSH host-key trust. It does
-not reimplement SSH or the transport protocol.
+Ternal owns inventory, policy, 300-second grants, audit, route selection, and
+strict SSH host-key trust. None of that policy lives in pigeons.
 
-The pinned upstream source is pigeons `0.1.1` at commit
-`0ad18072f77a3ce64c093cab2686a3e99d73c944`. Its upstream `Cargo.toml` and
-`LICENSE` are MIT; treat the source license as MIT even where an upstream README
-badge describes a dual license.
+The bundle is built without a local patch file from
+`mrchypark/pigeons` commit `72686b05aebcaf7f5a6d879c9d91d94a8758ca13`.
+That commit is based on upstream `n0-computer/pigeons` main after release
+`v0.2.1` and contains only the two generic changes proposed upstream:
 
-## Runtime
+- [n0-computer/pigeons#21](https://github.com/n0-computer/pigeons/pull/21):
+  versioned `/pigeons/1` stream preface and bidirectional half-close/drain.
+- [n0-computer/pigeons#22](https://github.com/n0-computer/pigeons/pull/22):
+  caller-selected persistent client identity and a full remote
+  `EndpointAddr` assembled from relay/direct candidates.
+
+Both changes must live inside pigeons because it owns the iroh endpoint,
+connection, and QUIC stream. The old Ternal patch's config-file and key-mode
+fixes are already upstream. Extra relay inputs are composed by Ternal as
+repeated upstream `--relay-url` arguments; separate client/server homes provide
+separate identities; network-isolated tests prove route choice. Those do not
+need fork changes.
+
+## Runtime contract
 
 ```text
 systemd -> ternal-agent run -> pigeons roost
 OpenSSH -> ternalctl proxy -> pigeons fly --stdio -> pigeons roost -> sshd
 ```
 
-`ternal-agent` resolves the transport helper in this order: `TERNAL_TRANSPORT_BIN`, a
-bundled sibling, then `PATH`. It starts `pigeons roost` with the configured
-`--relay-url` and `--extra-relay-url` values, persists the device identity,
-sends signed heartbeats, and restarts a failed child with backoff. Ternal
-advertises validated direct addresses through endpoint discovery and supplies
-them to the client-side `fly`; they are not roost command-line inputs. Relay
-flags must match the issued client route.
+`ternal-agent` resolves the helper from `TERNAL_TRANSPORT_BIN`, a bundled
+sibling, then `PATH`. Server identity persists in its home. Client identity
+persists in the client's pigeons key directory. They must remain distinct
+because iroh rejects self-connections. Ternal rejects EndpointId-only SSH
+commands: every issued proxy command includes at least one validated relay or
+direct address.
 
-The client identity is persistent: `pigeons endpoint-id` and `pigeons fly
---stdio` use the same local key directory. That stable endpoint ID is necessary
-because capped relay grants are bound to the client identity; a new ephemeral
-identity cannot reuse a grant. Keep the private key only on the endpoint.
-The server identity is intentionally separate because iroh rejects
-self-connections. Device enrollment uses `pigeons endpoint-id --roost` so the
-registered inventory endpoint is derived from the same key that `pigeons
-roost` serves, and the agent treats the running roost's emitted ID as
-authoritative.
+The `/pigeons/1` ALPN is intentionally incompatible with `/pigeons/0`: the
+preface wakes lazy stream establishment before server-first SSH bytes, and the
+bridge propagates one side's EOF while draining the other side before exit.
 
-## Required Ternal patch hooks
+Ternal never invokes `pigeons add`, which disables SSH host-key checking.
+Managed SSH always uses Ternal-provided pinned trust with
+`StrictHostKeyChecking=yes`.
 
-Upstream already supplies `roost`, `fly --stdio`, and the original transport.
-The pinned patch versions that internal ALPN from `/pigeons/0` to
-`/pigeons/1` because it adds a wire preface; this intentionally rejects mixed
-patched/unpatched peers instead of silently consuming SSH bytes. The patch
-contains only the generic primitives below; grant, policy, route choice, SSH
-invocation, and user-facing errors remain in Ternal.
+The source archive and Cargo lockfile are SHA-256 pinned in
+`deploy/agent/pigeons-build.env`; native builders verify both before running
+upstream tests and producing the bundled binary. The selected MIT license is
+included in every archive.
 
-| Patch divergence | Why it cannot be composed outside pigeons |
-| --- | --- |
-| caller-selected client `--key-dir`, client `endpoint-id`, and `endpoint-id --roost` | `fly` otherwise creates an ephemeral secret inside the transport process; an external wrapper cannot make that identity stable or safely derive either the grant-bound client ID or the distinct key-backed roost ID required for pre-start enrollment. |
-| full remote relay/direct address inputs | iroh v1 needs an `EndpointAddr` containing the remote relay or direct candidates; configuring only the local relay map leaves a custom-relay connection with no addressing information. |
-| `--extra-relay-url` | Extending the endpoint's default relay map is an iroh builder operation unavailable to an external subprocess wrapper. |
-| redacted connection-path diagnostics | The selected iroh path is visible only on the live in-process connection; the generic sink exposes only `direct`, `relay`, or `unknown`. |
-| private-key permissions and separate client/roost keys | The transport process creates and reads the keys, so it must enforce `0600`; separate keys are required because iroh rejects self-connections. |
-| versioned stream preface, full-duplex half-close draining, and acknowledged clean shutdown | iroh opens streams lazily, so a server-first protocol such as SSH deadlocks until the client writes unless pigeons sends an internal preface. The bridge must propagate one side's EOF while continuing to drain the other side, then keep the handler alive until the peer acknowledges the finished stream; otherwise a successful SSH session can end as `closed by peer: 0`. These stream-lifetime rules cannot be controlled by the subprocess caller. |
-| readable config-file creation | Upstream opens its internally selected config path with `create(true)` but without write access, so the process always falls back when the file is missing. Only pigeons controls those open flags. |
+The production chart pins the official multi-architecture
+`n0computer/iroh-relay:v1.1.0` manifest by digest. Its HTTP access callout still
+authenticates the relay's outbound request to Ternal; it is not a client relay
+token.
 
-Ternal never invokes upstream `pigeons add`: it disables SSH host-key checking.
-For managed hosts, `ternalctl` receives Ternal-controlled host-key trust
-material and uses strict OpenSSH verification. Trust-on-first-use and
-`StrictHostKeyChecking=no` are forbidden.
-
-## Safety and failure behavior
-
-The agent reports selected binary mode and child state, but not tokens, private
-keys, endpoint IDs, authorization headers, direct addresses, or relay URLs in
-unbounded logs. A missing binary or failed child is a visible unhealthy state;
-a revoked device identity stops the supervised transport after the control
-plane rejects it. A changed device endpoint ID or SSH host-key fingerprint
-quarantines the device rather than rotating trust.
-
-For the machine-readable output and diagnostics contract, see
+Route verification is described in
 [pigeons-transport-diagnostics.md](pigeons-transport-diagnostics.md).

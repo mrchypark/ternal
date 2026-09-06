@@ -69,14 +69,6 @@ ssh_key_id=""
 grant_callback_verified=0
 banner_file=""
 
-assert_patched_route_guard() {
-	patch=${TERNAL_TRANSPORT_PATCH_FILE:-deploy/agent/pigeons-0.1.1-ternal.patch}
-	grep -F 'custom relay routes require a remote relay or direct address' "$patch" >/dev/null || {
-		echo "patched pigeons route guard is missing: $patch" >&2
-		exit 1
-	}
-}
-
 api_request() {
 	method=$1
 	path=$2
@@ -150,13 +142,13 @@ EOF
 		--add-host host.docker.internal:host-gateway \
 		-p "127.0.0.1:${relay_port}:3340" \
 		-e IROH_RELAY_HTTP_BEARER_TOKEN="$TERNAL_RELAY_ACCESS_TOKEN" \
-		n0computer/iroh-relay:v0.96.1 --config-path /relay.toml >/dev/null
+		n0computer/iroh-relay@sha256:7805aaf67ca59e04cd54999d142c85ed72e38e5bd4515c902fa5c8d838674747 --config-path /relay.toml >/dev/null
 	docker cp "$work/relay.toml" "$relay_name:/relay.toml"
 	docker start "$relay_name" >/dev/null
 else
 	docker run -d --name "$relay_name" \
 		-p "127.0.0.1:${relay_port}:3340" \
-		n0computer/iroh-relay:v0.96.1 --dev >/dev/null
+		n0computer/iroh-relay@sha256:7805aaf67ca59e04cd54999d142c85ed72e38e5bd4515c902fa5c8d838674747 --dev >/dev/null
 fi
 
 i=0
@@ -172,7 +164,7 @@ if ! nc -z 127.0.0.1 "$relay_port" >/dev/null 2>&1; then
 fi
 relay_url="http://127.0.0.1:${relay_port}"
 
-bin=${TERNAL_TRANSPORT_BIN:?set TERNAL_TRANSPORT_BIN to the patched transport binary}
+bin=${TERNAL_TRANSPORT_BIN:?set TERNAL_TRANSPORT_BIN to the pinned transport binary}
 test -x "$bin" || { echo "pigeons binary is not executable: $bin" >&2; exit 1; }
 
 ssh_port=${TERNAL_SMOKE_SSH_PORT:-40226}
@@ -342,7 +334,6 @@ if [ -n "$api_url" ]; then
 	fi
 
 	if [ -n "$ternalctl_bin" ] && [ "$managed_relay" -eq 1 ]; then
-		assert_patched_route_guard
 		client_key_dir="$work/client-key-dir"
 		mkdir -p "$client_key_dir"
 		cat >"$work/pigeons-wrapper" <<EOF

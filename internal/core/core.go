@@ -305,7 +305,7 @@ func appendRouteArgs(command string, relayConfig *RelayConfig, directAddresses [
 		command += " --relay-url " + url
 	}
 	for _, url := range relayConfig.ExtraRelayURLs {
-		command += " --extra-relay-url " + url
+		command += " --relay-url " + url
 	}
 	return command, nil
 }
@@ -361,7 +361,7 @@ func validateRouteArgs(parts []string) error {
 			if !validDirectAddress(value) {
 				return ErrInvalidDirectAddress
 			}
-		case "--relay-url", "--extra-relay-url":
+		case "--relay-url":
 			if !validRelayURL(value) {
 				return ErrInvalidRelayURL
 			}

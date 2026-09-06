@@ -197,7 +197,7 @@ if [ "$build_pigeons" = true ]; then
 fi
 
 test -x "$pigeons_bin" || {
-	echo "missing executable patched pigeons: $pigeons_bin" >&2
+	echo "missing executable pinned pigeons: $pigeons_bin" >&2
 	exit 1
 }
 
@@ -222,7 +222,8 @@ printf '%s\n' \
 	'- pigeons' \
 	'- LICENSE.pigeons (upstream MIT license)' \
 	'' \
-	"Bundled pigeons: upstream $PIGEONS_VERSION ($PIGEONS_COMMIT), Ternal transport diagnostics patch" \
+	"Bundled pigeons: $PIGEONS_REPOSITORY $PIGEONS_VERSION ($PIGEONS_COMMIT)" \
+	'Upstream proposals: n0-computer/pigeons#21 and #22.' \
 	'' \
 	'Install both files together:' \
 	"$install_command" \

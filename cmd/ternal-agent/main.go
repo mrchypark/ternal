@@ -427,7 +427,7 @@ func loadDevice(cfg config) (ed25519.PrivateKey, deviceauth.Identity, string, er
 }
 
 func roostEndpointID(cfg config) (string, error) {
-	output, err := exec.Command(cfg.Pigeons, "endpoint-id", "--roost").Output()
+	output, err := exec.Command(cfg.Pigeons, "endpoint-id").Output()
 	if err != nil {
 		return "", fmt.Errorf("read persistent roost identity: %w", err)
 	}
@@ -444,7 +444,7 @@ func roostArgs(cfg config) []string {
 		args = append(args, "--relay-url", value)
 	}
 	for _, value := range cfg.ExtraRelayURLs {
-		args = append(args, "--extra-relay-url", value)
+		args = append(args, "--relay-url", value)
 	}
 	return args
 }

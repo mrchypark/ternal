@@ -92,7 +92,7 @@ jobs:
           New-Item -ItemType Directory -Path dist/bin -Force | Out-Null
           go build -trimpath -buildvcs=false '-ldflags=-s -w -buildid=' -o dist/bin/ternalctl.exe ./cmd/ternalctl
 
-      - name: Build and package patched pigeons bundle
+      - name: Build and package pinned pigeons bundle
         if: matrix.family == 'unix'
         shell: bash
         run: |
@@ -116,7 +116,7 @@ jobs:
           TERNAL_TRANSPORT_BIN="dist/pigeons-${{ matrix.platform }}" sh deploy/agent/package-linux-amd64.sh "${{ matrix.platform }}" >/dev/null
           cmp "$RUNNER_TEMP/first-$agent_archive" "dist/$agent_archive"
 
-      - name: Build and package patched pigeons bundle
+      - name: Build and package pinned pigeons bundle
         if: matrix.family == 'windows'
         shell: pwsh
         run: |

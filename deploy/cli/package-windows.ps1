@@ -183,7 +183,7 @@ if ($null -eq $pigeonsBinary) {
     }
 }
 if (-not (Test-Path -LiteralPath $pigeonsBinary -PathType Leaf)) {
-    throw "missing patched pigeons.exe: $pigeonsBinary"
+    throw "missing pinned pigeons.exe: $pigeonsBinary"
 }
 Assert-PeMachine $cliBinary $platform 'ternalctl.exe'
 Assert-PeMachine $pigeonsBinary $platform 'pigeons.exe'
@@ -213,7 +213,8 @@ Files:
 - pigeons.exe
 - LICENSE.pigeons (upstream MIT license)
 
-Bundled pigeons: upstream $($config.PIGEONS_VERSION) ($($config.PIGEONS_COMMIT)), Ternal transport diagnostics patch
+Bundled pigeons: $($config.PIGEONS_REPOSITORY) $($config.PIGEONS_VERSION) ($($config.PIGEONS_COMMIT))
+Upstream proposals: n0-computer/pigeons#21 and #22.
 
 Keep both executables in the same directory.
 

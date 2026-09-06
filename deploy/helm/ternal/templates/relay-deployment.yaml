@@ -6,7 +6,7 @@
 {{- end -}}
 {{- $relayImage := default dict $managedRelay.image -}}
 {{- $repository := required "transport.managedRelay.image.repository is required" $relayImage.repository -}}
-{{- $tag := default "v0.96.1" $relayImage.tag -}}
+{{- $tag := default "v1.1.0" $relayImage.tag -}}
 {{- $digest := default "" $relayImage.digest -}}
 {{- if and (not $digest) (eq $tag "latest") -}}
 {{- fail "transport.managedRelay.image.tag must not be latest unless a digest is set" -}}

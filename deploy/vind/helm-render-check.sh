@@ -215,6 +215,7 @@ grep -q 'name: ternal-runtime' "$tmp/production.yaml"
 grep -q 'TERNAL_RELAY_BIND: 0.0.0.0:3001' "$tmp/production.yaml"
 grep -q 'name: ternal-internal' "$tmp/production.yaml"
 grep -q 'access.http.url = "http://ternal-internal:3001/internal/iroh-relay/access"' "$tmp/production.yaml"
+grep -q 'image: "n0computer/iroh-relay@sha256:7805aaf67ca59e04cd54999d142c85ed72e38e5bd4515c902fa5c8d838674747"' "$tmp/production.yaml"
 
 helm install ternal-notes "$chart" --dry-run=client \
 	--set image.tag=render-check \

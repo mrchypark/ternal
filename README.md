@@ -170,8 +170,9 @@ Cloud Build is not supported.
 - pinned OIDC issuer, endpoint origin, audience, nonce, and state validation;
 - no CLI persistence of provider access or refresh tokens.
 
-Ternal owns policy and grant behavior. Its pinned pigeons patch contains only
-generic transport capabilities required to supply identity and full route data.
+Ternal owns policy and grant behavior. Its pinned pigeons fork contains only
+the generic stream-lifecycle, persistent-identity, and endpoint-address changes
+that cannot be composed outside pigeons; both changes are proposed upstream.
 
 ## Documentation
 

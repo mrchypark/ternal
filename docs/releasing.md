@@ -14,12 +14,12 @@ is implemented and reviewed.
 1. Merge an exact reviewed Go commit after GitHub Actions is green.
 2. Build and qualify the Go CLI/agent candidate archives from that commit with
    the manual candidate workflow. It builds the pinned pigeons transport from
-   its checked source and patch.
+   its content-addressed fork source.
 3. Push the intended `v*` tag for that exact commit. The tag workflow rebuilds
    the same native archives, publishes the API image, packages the Helm chart,
    and creates a GitHub Release only after every asset is present and verified.
-4. Record archive, image, chart, source commit, pigeons source/patch, and
-   generated frontend asset digests without recording credentials.
+4. Record archive, image, chart, source commit, pigeons repository/source/lock,
+   and generated frontend asset digests without recording credentials.
 5. Require the tag-built archives to match the qualified candidate bytes.
 6. Qualify the exact release bytes and tagged image digest in a disposable
    greenfield target with the
@@ -31,7 +31,7 @@ GitHub Actions is the only supported hosted build path. The manual
 uses only read-only repository permission, builds every CLI platform natively,
 and uploads a tagless candidate capsule. It rebuilds each archive from the same
 native binaries and requires byte equality before binding archive, source,
-pigeons source, and pigeons patch digests in the capsule provenance. It does
+pigeons repository, source, and lockfile digests in the capsule provenance. It does
 not authenticate to a cloud provider, publish a GitHub release, create a tag,
 or deploy anything.
 
