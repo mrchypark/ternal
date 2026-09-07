@@ -204,6 +204,7 @@ $readme = @"
 Ternal CLI Windows $platform bundle
 
 Supported platform: native Windows on $platform.
+Qualification status: Windows functional tests are deferred. Build, PE architecture, and archive integrity checks do not qualify runtime behavior.
 Runtime requirement: the Windows OpenSSH Client must be installed, with ssh.exe and ssh-keygen.exe available on PATH.
 Install it from an elevated PowerShell prompt when needed:
   Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0

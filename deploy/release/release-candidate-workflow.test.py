@@ -49,6 +49,19 @@ if native.count("-buildvcs=false") != 3:
     raise SystemExit("every native Go release build must disable ref-dependent VCS stamping")
 if windows_pigeons.count("-C link-arg=/Brepro") != 2:
     raise SystemExit("Windows pigeons builds must disable PE timestamp stamping")
+if re.search(r"\bcargo\s+test\b", windows_pigeons):
+    raise SystemExit("deferred Windows functional tests must not block release packaging")
+for required in (
+    "cargo build --locked --release",
+    "Assert-Sha256 $archive $config.PIGEONS_SOURCE_SHA256",
+    "Assert-Sha256 (Join-Path $sourceDirectory 'Cargo.lock') $config.PIGEONS_CARGO_LOCK_SHA256",
+):
+    if required not in windows_pigeons:
+        raise SystemExit(f"Windows build integrity guard is missing: {required}")
+if "cargo test --locked" not in pathlib.Path("deploy/agent/build-pigeons-native.sh").read_text():
+    raise SystemExit("Linux/macOS upstream tests must remain mandatory")
+if "Windows functional tests are deferred" not in pathlib.Path("deploy/cli/package-windows.ps1").read_text():
+    raise SystemExit("Windows bundles must disclose deferred functional qualification")
 
 archives = (
     "ternal-agent-linux-amd64.tar.gz",
