@@ -528,7 +528,12 @@ func cmdProxy(client *http.Client, apiURL, hostRef, endpointPort string, routeAr
 		fmt.Fprintf(os.Stderr, "pigeons binary not found\n")
 		os.Exit(1)
 	}
-	clientEndpointID, err := persistentEndpointID(pigeonsPath)
+	keyDir, err := homeSSHKeyDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "could not read persistent pigeons identity: %v\n", err)
+		os.Exit(1)
+	}
+	clientEndpointID, err := persistentEndpointID(pigeonsPath, keyDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "could not read persistent pigeons identity: %v\n", err)
 		os.Exit(1)
@@ -552,7 +557,7 @@ func cmdProxy(client *http.Client, apiURL, hostRef, endpointPort string, routeAr
 		port = parts[1]
 	}
 
-	args := []string{"fly", "--stdio", endpointID}
+	args := []string{"fly", "--stdio", endpointID, "--key-dir", keyDir}
 	args = append(args, routeArgs...)
 
 	cmd := exec.Command(pigeonsPath, args...)
@@ -595,8 +600,19 @@ func writeKnownHostKey(w io.Writer, expected string, args []string) error {
 	return err
 }
 
-func persistentEndpointID(pigeonsPath string) (string, error) {
-	out, err := exec.Command(pigeonsPath, "endpoint-id").Output()
+func homeSSHKeyDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(home) {
+		return "", fmt.Errorf("home directory is not absolute")
+	}
+	return filepath.Join(home, ".ssh"), nil
+}
+
+func persistentEndpointID(pigeonsPath, keyDir string) (string, error) {
+	out, err := exec.Command(pigeonsPath, "endpoint-id", "--key-dir", keyDir).Output()
 	if err != nil {
 		return "", err
 	}
