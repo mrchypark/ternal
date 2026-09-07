@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -455,6 +456,63 @@ func TestOIDCLoginUsesBoundS256PKCE(t *testing.T) {
 	}
 	if claims, err := client.CompleteLogin(t.Context(), "code", saved.State, mismatchedState, signingKey); err == nil || claims != nil {
 		t.Fatal("mismatched PKCE verifier was accepted")
+	}
+}
+
+func TestOIDCInvalidStateRejectedBeforeProviderRequest(t *testing.T) {
+	var requests atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.Error(w, "provider boundary reached", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(provider.Close)
+	client, err := NewOIDCClient(OIDCConfig{
+		Issuer: provider.URL, ClientID: "ternal", ClientSecret: "test-client-secret",
+		RedirectURL: provider.URL + "/callback", AdminGroup: "admins", GroupsClaim: "groups",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := strings.Repeat("k", 32)
+	valid := loginState{State: "expected-state", Nonce: "nonce", CodeVerifier: strings.Repeat("v", 43), ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	for _, name := range []string{"missing signature", "tampered signature", "wrong signing key", "wrong state", "expired", "short verifier", "long verifier"} {
+		t.Run(name, func(t *testing.T) {
+			saved, state, signingKey := valid, valid.State, key
+			switch name {
+			case "wrong signing key":
+				signingKey = strings.Repeat("x", 32)
+			case "wrong state":
+				state = "unrelated-state"
+			case "expired":
+				saved.ExpiresAt = 1
+			case "short verifier":
+				saved.CodeVerifier = strings.Repeat("v", 42)
+			case "long verifier":
+				saved.CodeVerifier = strings.Repeat("v", 129)
+			}
+			signed, err := signValue(saved, signingKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "missing signature" {
+				signed = ""
+			} else if name == "tampered signature" {
+				signed += "x"
+			}
+			claims, err := client.CompleteLogin(t.Context(), "code", state, signed, key)
+			if err == nil || !strings.HasPrefix(err.Error(), "invalid OIDC state") || claims != nil || requests.Load() != 0 {
+				t.Fatal("invalid state did not fail before the provider boundary")
+			}
+		})
+	}
+	// A valid signed state must reach the boundary, ruling out a broken fixture.
+	signed, err := signValue(valid, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CompleteLogin(t.Context(), "code", valid.State, signed, key)
+	if err == nil || requests.Load() == 0 {
+		t.Fatal("valid state did not reach the failing provider control")
 	}
 }
 
