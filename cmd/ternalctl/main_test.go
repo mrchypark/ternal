@@ -5,8 +5,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +76,70 @@ func TestProxyRequiresExplicitRoute(t *testing.T) {
 	}
 	if err := validateProxyInvocation("host-1", endpoint, []string{"--relay-url", "https://relay.example"}); err != nil {
 		t.Fatalf("explicit relay rejected: %v", err)
+	}
+}
+
+func TestProxyUsesGrantedHomeIdentityForEndpointAndFly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake pigeons uses the repository's POSIX shell test convention")
+	}
+	home := filepath.Join(t.TempDir(), "home with spaces")
+	keyDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TERNAL_SESSION_COOKIE", "")
+	t.Setenv("TERNAL_CSRF_TOKEN", "")
+
+	logPath := filepath.Join(t.TempDir(), "pigeons-args")
+	pigeonsPath := filepath.Join(t.TempDir(), "pigeons")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$PIGEONS_ARGS_LOG\"\nprintf '%s\\n' -- >> \"$PIGEONS_ARGS_LOG\"\nif [ \"$1\" = endpoint-id ]; then mkdir -p \"$3\"; printf '%s\\n' '" + strings.Repeat("a", 64) + "'; fi\n"
+	if err := os.WriteFile(pigeonsPath, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TERNAL_TRANSPORT_BIN", pigeonsPath)
+	t.Setenv("PIGEONS_ARGS_LOG", logPath)
+	t.Setenv("TERNAL_DEV_HEADERS", "1")
+
+	endpointID := strings.Repeat("a", 64)
+	grantSeen := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/access/relay-grants" {
+			http.NotFound(w, r)
+			return
+		}
+		var grant struct {
+			ClientEndpointID string `json:"client_endpoint_id"`
+			TTL              int    `json:"ttl"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&grant); err != nil {
+			t.Error(err)
+		}
+		if grant.ClientEndpointID != endpointID || grant.TTL != 300 {
+			t.Errorf("grant = %#v", grant)
+		}
+		grantSeen = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	cmdProxy(server.Client(), server.URL, "host-1", endpointID+":22", []string{"--relay-url", "https://relay.example"})
+	if !grantSeen {
+		t.Fatal("relay grant was not posted")
+	}
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "endpoint-id\n--key-dir\n" + keyDir + "\n--\nfly\n--stdio\n" + endpointID + "\n--key-dir\n" + keyDir + "\n--relay-url\nhttps://relay.example\n--\n"
+	if string(got) != want {
+		t.Fatalf("pigeons argv = %q, want %q", got, want)
+	}
+	if info, err := os.Stat(keyDir); err != nil || !info.IsDir() {
+		t.Fatalf("pigeons did not create fresh key directory: info=%v err=%v", info, err)
 	}
 }
 
