@@ -22,6 +22,14 @@ Run `./scripts/run-all-tests.sh`. It verifies:
 
 ## Verification that remains environment-bound
 
+Windows functional qualification is deferred by user decision. Windows release
+packaging does not run the upstream pigeons test suite. Both Windows ZIPs remain
+required, with pinned source/lock checks, locked release builds, PE architecture
+validation, reproducible archives and checksums. The bundled README discloses
+the unqualified runtime status. Linux/macOS upstream tests remain mandatory.
+Restore Windows test execution when Windows functional qualification resumes;
+successful Windows packaging alone is not a functional pass.
+
 These checks require an isolated provider, relay, SSH server, and cluster. They
 must be run against artifacts built from the exact reviewed commit:
 
