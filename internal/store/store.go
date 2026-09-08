@@ -1223,6 +1223,10 @@ func (s *Store) CreateManufacturingToken(ctx context.Context, batchID string, ex
 	if actor == "" {
 		return nil, fmt.Errorf("audit actor is required")
 	}
+	now := nowUnix()
+	if expiresAt != nil && *expiresAt <= now {
+		return nil, fmt.Errorf("manufacturing token expired")
+	}
 	id := newID()
 	random := make([]byte, 32)
 	if _, err := rand.Read(random); err != nil {
@@ -1230,8 +1234,14 @@ func (s *Store) CreateManufacturingToken(ctx context.Context, batchID string, ex
 	}
 	token := base64.RawURLEncoding.EncodeToString(random)
 	tokenHash := hashSecret(token)
-	now := nowUnix()
 	statement := rhiza.SQLStatement{SQL: `INSERT INTO manufacturing_tokens (id, token_hash, batch_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`, Args: []any{id, tokenHash, batchID, expiresAt, now}}
+	expectedOne := int64(1)
+	if batchID != "" {
+		statement = rhiza.SQLStatement{SQL: `INSERT INTO manufacturing_tokens (id, token_hash, batch_id, expires_at, created_at)
+			SELECT ?, ?, ?, ?, ? WHERE EXISTS (
+				SELECT 1 FROM manufacturing_batches WHERE id = ? AND status = 'open' AND expires_at > ? AND used_count < max_devices
+			)`, Args: []any{id, tokenHash, batchID, expiresAt, now, batchID, now}, ExpectedRowsAffected: &expectedOne}
+	}
 	_, err := s.db.ExecTransactionResult(ctx, statement,
 		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) VALUES (?, 'manufacturing.token.created', 'manufacturing_token', ?, ?, ?)`, Args: []any{newID(), id, actor, now}})
 	if err != nil {
@@ -1339,14 +1349,27 @@ func (s *Store) EnrollDevice(ctx context.Context, token, endpointID, serialNumbe
 	if err != nil {
 		return nil, err
 	}
-	batch, err := s.getManufacturingBatchByToken(ctx, token)
-	if err != nil {
-		return nil, err
+	var batch *ManufacturingBatch
+	if mt != nil {
+		if mt.BatchID != "" {
+			batch, err = s.getManufacturingBatchByID(ctx, mt.BatchID)
+			if err != nil {
+				return nil, err
+			}
+			if batch == nil {
+				return nil, fmt.Errorf("manufacturing token batch is unavailable")
+			}
+		}
+	} else {
+		batch, err = s.getManufacturingBatchByToken(ctx, token)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if mt == nil && batch == nil {
 		return nil, fmt.Errorf("invalid manufacturing token")
 	}
-	if mt != nil && mt.ExpiresAt != nil && *mt.ExpiresAt < nowUnix() {
+	if mt != nil && mt.ExpiresAt != nil && *mt.ExpiresAt <= nowUnix() {
 		return nil, fmt.Errorf("manufacturing token expired")
 	}
 	if devicePublicKey == "" {
@@ -1354,7 +1377,7 @@ func (s *Store) EnrollDevice(ctx context.Context, token, endpointID, serialNumbe
 	}
 	expectedOne := int64(1)
 	now := nowUnix()
-	var consume rhiza.SQLStatement
+	var consume []rhiza.SQLStatement
 	if batch != nil {
 		if batch.Status != "open" || batch.ExpiresAt <= now || batch.UsedCount >= batch.MaxDevices {
 			return nil, fmt.Errorf("manufacturing batch is closed")
@@ -1364,20 +1387,23 @@ func (s *Store) EnrollDevice(ctx context.Context, token, endpointID, serialNumbe
 			return nil, fmt.Errorf("serial does not match manufacturing batch")
 		}
 		serialNumber = expectedSerial
-		consume = rhiza.SQLStatement{
+		consume = append(consume, rhiza.SQLStatement{
 			SQL:                  `UPDATE manufacturing_batches SET used_count = used_count + 1, status = CASE WHEN used_count + 1 >= max_devices THEN 'closed' ELSE status END, closed_at = CASE WHEN used_count + 1 >= max_devices THEN ? ELSE closed_at END WHERE id = ? AND status = 'open' AND expires_at > ? AND used_count = ? AND used_count < max_devices`,
 			Args:                 []any{now, batch.ID, now, batch.UsedCount},
 			ExpectedRowsAffected: &expectedOne,
+		})
+		if mt != nil {
+			consume = append(consume, rhiza.SQLStatement{SQL: `DELETE FROM manufacturing_tokens WHERE id = ? AND token_hash = ? AND (expires_at IS NULL OR expires_at > ?)`, Args: []any{mt.ID, hashSecret(token), now}, ExpectedRowsAffected: &expectedOne})
 		}
 	} else {
 		if serialNumber == "" {
 			return nil, fmt.Errorf("serial number is required")
 		}
-		consume = rhiza.SQLStatement{
-			SQL:                  `DELETE FROM manufacturing_tokens WHERE id = ?`,
-			Args:                 []any{mt.ID},
+		consume = append(consume, rhiza.SQLStatement{
+			SQL:                  `DELETE FROM manufacturing_tokens WHERE id = ? AND token_hash = ? AND (expires_at IS NULL OR expires_at > ?)`,
+			Args:                 []any{mt.ID, hashSecret(token), now},
 			ExpectedRowsAffected: &expectedOne,
-		}
+		})
 	}
 	id := newID()
 	hostID := newID()
@@ -1388,8 +1414,7 @@ func (s *Store) EnrollDevice(ctx context.Context, token, endpointID, serialNumbe
 		sshPort = 22
 	}
 	tagsJSON, _ := json.Marshal(tags)
-	_, err = s.db.ExecTransactionResult(ctx,
-		consume,
+	statements := append(consume,
 		rhiza.SQLStatement{
 			SQL:                  `INSERT INTO hosts (id, name, endpoint_id, ssh_user, tags, ssh_port, status, owner, last_seen, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'manufactured', 'manufacturing', NULL, ?, ?)`,
 			Args:                 []any{hostID, serialNumber, endpointID, sshUser, string(tagsJSON), sshPort, now, now},
@@ -1401,6 +1426,7 @@ func (s *Store) EnrollDevice(ctx context.Context, token, endpointID, serialNumbe
 			ExpectedRowsAffected: &expectedOne,
 		},
 	)
+	_, err = s.db.ExecTransactionResult(ctx, statements...)
 	if err != nil {
 		return nil, fmt.Errorf("enroll device atomically: %w", err)
 	}
@@ -1412,6 +1438,20 @@ func (s *Store) getManufacturingBatchByToken(ctx context.Context, token string) 
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, name, serial_prefix, status, expires_at, max_devices, used_count, closed_at, created_at FROM manufacturing_batches WHERE token_hash = ?`,
 		hashSecret(token),
+	).Scan(&b.ID, &b.Name, &b.SerialPrefix, &b.Status, &b.ExpiresAt, &b.MaxDevices, &b.UsedCount, &b.ClosedAt, &b.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+func (s *Store) getManufacturingBatchByID(ctx context.Context, id string) (*ManufacturingBatch, error) {
+	var b ManufacturingBatch
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, serial_prefix, status, expires_at, max_devices, used_count, closed_at, created_at FROM manufacturing_batches WHERE id = ?`, id,
 	).Scan(&b.ID, &b.Name, &b.SerialPrefix, &b.Status, &b.ExpiresAt, &b.MaxDevices, &b.UsedCount, &b.ClosedAt, &b.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil

@@ -7,6 +7,12 @@ batch. Tokens are random, stored only as hashes, and returned once. A batch has
 an expiry, serial prefix, device limit, and close state. Batch serials are
 allocated by the server (`PREFIX-000001`, …); the batch closes at its limit.
 
+To issue a separate one-use credential for each device in a batch, send the
+batch's `id` as `batch_id` to `POST /manufacturing/tokens`. Each credential is
+consumed on successful enrollment, and the same transaction advances the batch
+serial and quota. A missing, expired, or closed batch cannot issue or enroll
+these tokens. The original batch credential remains reusable up to its limit.
+
 On the device:
 
 ```sh
@@ -17,7 +23,8 @@ TERNAL_MANUFACTURING_TOKEN_FILE=/run/secrets/ternal-enrollment \
   ternal-agent enroll SHA256:<ssh-host-key-fingerprint>
 ```
 
-For a one-device token, append the explicit serial. The secret is read from the
+For a one-device token without `batch_id`, append the explicit serial. For a
+batch-linked token, omit it so the server assigns the next serial. The secret is read from the
 file and never placed in process arguments. Enrollment binds the device Ed25519
 public key, persistent pigeons roost endpoint ID, SSH host-key fingerprint,
 serial, and Ternal host in one server operation.
