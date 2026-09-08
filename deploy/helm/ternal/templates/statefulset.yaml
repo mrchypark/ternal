@@ -5,6 +5,7 @@
 {{- $dataMode := default "standalone" $data.mode -}}
 {{- $haMode := eq $dataMode "ha" -}}
 {{- $ha := default dict $data.ha -}}
+{{- $trustAnchor := default "" $data.trustAnchorConfigMap -}}
 {{- $dataIdentity := include "ternal.dataIdentity" . -}}
 {{- with (lookup "apps/v1" "StatefulSet" .Release.Namespace .Release.Name) -}}
 {{- $currentIdentity := index .spec.selector.matchLabels "ternal.dev/data-identity" -}}
@@ -52,6 +53,9 @@ spec:
     spec:
       {{- with .Values.serviceAccountName }}
       serviceAccountName: {{ . | quote }}
+      {{- end }}
+      {{- if $trustAnchor }}
+      automountServiceAccountToken: true
       {{- end }}
       securityContext:
         fsGroup: 65532
@@ -114,8 +118,15 @@ spec:
                 name: {{ include "ternal.dataConfigMapName" . }}
             - secretRef:
                 name: {{ $secretName }}
-          {{- if $haMode }}
+          {{- if or $haMode $trustAnchor }}
           env:
+            {{- if $trustAnchor }}
+            - name: TERNAL_TRUST_ANCHOR_CONFIGMAP
+              value: {{ $trustAnchor | quote }}
+            - name: TERNAL_TRUST_ANCHOR_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            {{- end }}
+            {{- if $haMode }}
             - name: TERNAL_DATA_MULTI_NODE
               value: "1"
             - name: TERNAL_DATA_NODE_ID
@@ -133,6 +144,7 @@ spec:
                 secretKeyRef:
                   name: {{ $secretName }}
                   key: TERNAL_DATA_CLUSTER_MEMBERS
+            {{- end }}
           {{- end }}
           volumeMounts:
             - name: data

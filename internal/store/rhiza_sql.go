@@ -10,13 +10,18 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/mrchypark/rhiza"
 )
 
-type rhizaSQL struct{ db *rhiza.DB }
+type rhizaSQL struct {
+	db      *rhiza.DB
+	trust   *trustAnchor
+	trustMu sync.Mutex
+}
 
 type rhizaRows struct {
 	rows  [][]any
@@ -69,6 +74,11 @@ func (d *rhizaSQL) Migrate(ctx context.Context, migrations []rhiza.Migration) er
 	})
 }
 
+func (d *rhizaSQL) execRaw(ctx context.Context, request rhiza.ExecuteRequest) (rhiza.ExecuteResponse, error) {
+	response, err := d.db.Execute(ctx, request)
+	return committedResponse(response, err)
+}
+
 func retryRhizaStartup(ctx context.Context, operation func(context.Context) error) error {
 	for {
 		attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -90,8 +100,7 @@ func retryRhizaStartup(ctx context.Context, operation func(context.Context) erro
 }
 
 func (d *rhizaSQL) ExecContext(ctx context.Context, statement string, args ...any) (rhiza.ExecuteResponse, error) {
-	response, err := d.db.Execute(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), SQL: statement, Args: normalizeArgs(args)})
-	return committedResponse(response, err)
+	return d.execute(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), SQL: statement, Args: normalizeArgs(args)}, 1)
 }
 
 func (d *rhizaSQL) ExecTransaction(ctx context.Context, statements ...rhiza.SQLStatement) error {
@@ -100,11 +109,13 @@ func (d *rhizaSQL) ExecTransaction(ctx context.Context, statements ...rhiza.SQLS
 }
 
 func (d *rhizaSQL) ExecTransactionResult(ctx context.Context, statements ...rhiza.SQLStatement) (rhiza.ExecuteResponse, error) {
+	if len(statements) == 0 {
+		return rhiza.ExecuteResponse{}, fmt.Errorf("transaction requires at least one statement")
+	}
 	for i := range statements {
 		statements[i].Args = normalizeArgs(statements[i].Args)
 	}
-	response, err := d.db.Execute(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), Statements: statements})
-	return committedResponse(response, err)
+	return d.execute(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), Statements: statements}, len(statements))
 }
 
 func committedResponse(response rhiza.ExecuteResponse, err error) (rhiza.ExecuteResponse, error) {
@@ -115,11 +126,146 @@ func committedResponse(response rhiza.ExecuteResponse, err error) (rhiza.Execute
 }
 
 func (d *rhizaSQL) QueryContext(ctx context.Context, statement string, args ...any) (*rhizaRows, error) {
+	if d.trust == nil {
+		return d.queryRaw(ctx, statement, args...)
+	}
+	// The query is intentionally between the two external reads: returning a
+	// result after a restore or anchor change would otherwise leak stale state.
+	first, rv, err := d.trust.get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if first.PendingEpoch != nil {
+		return nil, fmt.Errorf("trust anchor has unresolved pending write")
+	}
+	rows, err := d.queryRaw(ctx, statement, args...)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.verifyDBTrust(ctx, first.Epoch, first.Token); err != nil {
+		return nil, err
+	}
+	second, rv2, err := d.trust.get(ctx)
+	if err != nil || rv != rv2 || second.PendingEpoch != nil || second.Epoch != first.Epoch || second.Token != first.Token {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("trust anchor changed during read")
+	}
+	return rows, nil
+}
+
+func (d *rhizaSQL) queryRaw(ctx context.Context, statement string, args ...any) (*rhizaRows, error) {
 	response, err := d.db.Query(ctx, rhiza.QueryRequest{SQL: statement, Args: normalizeArgs(args), Consistency: rhiza.ConsistencyLinearizable})
 	if err != nil {
 		return nil, err
 	}
 	return &rhizaRows{rows: response.Rows, index: -1}, nil
+}
+
+// enableTrust is called only after startup has established the durable pair.
+func (d *rhizaSQL) enableTrust(anchor *trustAnchor) { d.trust = anchor }
+
+func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, originalStatements int) (rhiza.ExecuteResponse, error) {
+	if d.trust == nil {
+		response, err := d.db.Execute(ctx, request)
+		return committedResponse(response, err)
+	}
+	d.trustMu.Lock()
+	defer d.trustMu.Unlock()
+	current, rv, err := d.trust.get(ctx)
+	if err != nil {
+		return rhiza.ExecuteResponse{}, err
+	}
+	if current.PendingEpoch != nil {
+		return rhiza.ExecuteResponse{}, fmt.Errorf("trust anchor has unresolved pending write")
+	}
+	if err := d.verifyDBTrust(ctx, current.Epoch, current.Token); err != nil {
+		return rhiza.ExecuteResponse{}, err
+	}
+	// Validate the immutable original request before exposing a pending state.
+	request.RequestID = uuid.NewString()
+	if request.SQL != "" {
+		request.Statements = []rhiza.SQLStatement{{SQL: request.SQL, Args: request.Args, WantRows: request.WantRows}}
+		request.SQL = ""
+		request.Args = nil
+	}
+	if originalStatements == 0 {
+		originalStatements = len(request.Statements)
+	}
+	returnRows := request.WantRows
+	for _, statement := range request.Statements {
+		returnRows = returnRows || statement.WantRows
+	}
+	nextEpoch := current.Epoch + 1
+	nextToken := request.RequestID
+	one := int64(1)
+	// Request statement results solely so the wrapper can remove this tail from
+	// the public receipt; callers retain the pre-fence projection below.
+	request.Statements = append(request.Statements, rhiza.SQLStatement{SQL: `UPDATE trust_state SET epoch=?, token=? WHERE id=1 AND epoch=? AND token=? RETURNING last_insert_rowid()`, Args: []any{nextEpoch, nextToken, current.Epoch, current.Token}, WantRows: true, ExpectedReturnedRows: &one})
+	if err := rhiza.ValidateExecuteRequest(request); err != nil {
+		return rhiza.ExecuteResponse{}, fmt.Errorf("validate fenced write: %w", err)
+	}
+	pending := current
+	pending.PendingEpoch = &nextEpoch
+	pending.PendingID = request.RequestID
+	pendingRV, err := d.trust.cas(ctx, rv, pending)
+	if err != nil {
+		return rhiza.ExecuteResponse{}, err
+	}
+	response, err := d.db.Execute(ctx, request)
+	if err == nil && response.Status == rhiza.MutationCommitted {
+		final := trustAnchorRecord{Format: current.Format, ClusterID: current.ClusterID, StorageID: current.StorageID, Epoch: nextEpoch, Token: nextToken}
+		if _, casErr := d.trust.cas(ctx, pendingRV, final); casErr != nil {
+			return rhiza.ExecuteResponse{}, fmt.Errorf("finalize trust anchor after committed write: %w", casErr)
+		}
+		if len(response.Statements) != originalStatements+1 {
+			return rhiza.ExecuteResponse{}, fmt.Errorf("trust write result projection is unavailable")
+		}
+		response.RowsAffected = 0
+		for _, statement := range response.Statements[:originalStatements] {
+			response.RowsAffected += statement.RowsAffected
+		}
+		response.LastInsertID = response.Statements[originalStatements-1].LastInsertID
+		if returnRows {
+			response.Statements = response.Statements[:originalStatements]
+		} else {
+			response.Statements = nil
+		}
+		return response, nil
+	}
+	if err == nil {
+		err = fmt.Errorf("SQL mutation was rejected: %s", response.ErrorCode)
+	}
+	// Only a known rejected mutation can safely clear the pending fence.
+	if response.Status == rhiza.MutationRejected && d.verifyDBTrust(ctx, current.Epoch, current.Token) == nil {
+		final := current
+		final.PendingEpoch = nil
+		final.PendingID = ""
+		if _, casErr := d.trust.cas(ctx, pendingRV, final); casErr != nil {
+			return rhiza.ExecuteResponse{}, fmt.Errorf("clear rejected trust write: %w", casErr)
+		}
+	}
+	return response, err
+}
+
+func (d *rhizaSQL) verifyDBTrust(ctx context.Context, epoch int64, token string) error {
+	rows, err := d.queryRaw(ctx, `SELECT epoch, token FROM trust_state WHERE id=1`)
+	if err != nil {
+		return fmt.Errorf("read database trust state: %w", err)
+	}
+	if !rows.Next() {
+		return fmt.Errorf("missing database trust state")
+	}
+	var actualEpoch int64
+	var actualToken string
+	if err := rows.Scan(&actualEpoch, &actualToken); err != nil {
+		return err
+	}
+	if rows.Next() || actualEpoch != epoch || actualToken != token {
+		return fmt.Errorf("database trust state does not match trust anchor")
+	}
+	return nil
 }
 
 func normalizeArgs(args []any) []any {

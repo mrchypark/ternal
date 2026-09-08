@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestOpenRejectsMismatchedSchemaVersion(t *testing.T) {
@@ -51,6 +53,16 @@ func TestRhizaRestoresIntoEmptyCacheFromObjectStore(t *testing.T) {
 	t.Setenv("TERNAL_OBJECT_STORE_DIR", objectStore)
 	t.Setenv("TERNAL_OBJECT_STORE_PREFIX", "clusters/empty-cache-recovery")
 	t.Setenv("TERNAL_OBJECT_STORE_DURABILITY", "before-ack")
+	t.Setenv("TERNAL_TRUST_ANCHOR_CONFIGMAP", "test-anchor")
+	t.Setenv("TERNAL_TRUST_ANCHOR_NAMESPACE", "test")
+	binding := storageBindingFromEnv()
+	record := binding
+	record.Token = uuid.NewString()
+	record.Bootstrap = true
+	anchor := &memoryAnchor{record: record}
+	previous := kubernetesAnchorBackend
+	kubernetesAnchorBackend = func(string, string) trustAnchorBackend { return anchor }
+	t.Cleanup(func() { kubernetesAnchorBackend = previous })
 
 	s, err := Open(ctx, t.TempDir())
 	if err != nil {

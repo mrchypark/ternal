@@ -165,9 +165,42 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		return nil, fmt.Errorf("wait for database readiness: %w", err)
 	}
 	s := &Store{db: db, path: dbPath}
+	anchor, err := trustAnchorFromEnv()
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	var migrationFence *trustAnchorRecord
+	if anchor != nil {
+		if err := s.prepareTrustAnchor(startupCtx, anchor); err != nil {
+			db.Close()
+			return nil, err
+		}
+		fence, err := s.beginMigrationFence(startupCtx, anchor)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		migrationFence = &fence
+		if err := s.prepareMigrationTrustState(startupCtx, *migrationFence); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	if err := s.migrate(startupCtx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	if anchor != nil {
+		if err := s.completeMigrationFence(startupCtx, anchor, *migrationFence); err != nil {
+			db.Close()
+			return nil, err
+		}
+		if err := s.finishTrustStartup(startupCtx, anchor); err != nil {
+			db.Close()
+			return nil, err
+		}
+		db.enableTrust(anchor)
 	}
 	return s, nil
 }
@@ -193,6 +226,163 @@ func (s *Store) Ready(ctx context.Context) error {
 		return fmt.Errorf("readiness query returned %d", value)
 	}
 	return nil
+}
+
+// prepareTrustAnchor runs before migrations and normal writes.  The anchor is
+// pre-created by deployment; this process never creates or deletes it.
+func (s *Store) prepareTrustAnchor(ctx context.Context, anchor *trustAnchor) error {
+	record, rv, err := anchor.get(ctx)
+	if err != nil {
+		return err
+	}
+	if record.PendingEpoch != nil {
+		return s.recoverPendingTrust(ctx, anchor, record, rv)
+	}
+	return nil
+}
+
+func (s *Store) finishTrustStartup(ctx context.Context, anchor *trustAnchor) error {
+	record, rv, err := anchor.get(ctx)
+	if err != nil {
+		return err
+	}
+	if record.PendingEpoch != nil {
+		if err := s.recoverPendingTrust(ctx, anchor, record, rv); err != nil {
+			return err
+		}
+		record, rv, err = anchor.get(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	return s.db.verifyDBTrust(ctx, record.Epoch, record.Token)
+}
+
+func (s *Store) trustStateExists(ctx context.Context) (bool, error) {
+	rows, err := s.db.queryRaw(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='trust_state'`)
+	if err != nil {
+		return false, err
+	}
+	if !rows.Next() {
+		return false, fmt.Errorf("inspect trust state")
+	}
+	var count int
+	if err := rows.Scan(&count); err != nil {
+		return false, err
+	}
+	return count == 1, nil
+}
+
+func (s *Store) prepareMigrationTrustState(ctx context.Context, pending trustAnchorRecord) error {
+	exists, err := s.trustStateExists(ctx)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return s.db.verifyDBTrust(ctx, pending.Epoch, pending.Token)
+	}
+	if !pending.Bootstrap {
+		return fmt.Errorf("database trust state is missing")
+	}
+	request := rhiza.ExecuteRequest{RequestID: uuid.NewString(), Statements: []rhiza.SQLStatement{{SQL: `CREATE TABLE trust_state (id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL, token TEXT NOT NULL)`}, {SQL: `INSERT INTO trust_state (id, epoch, token) VALUES (1, ?, ?)`, Args: []any{pending.Epoch, pending.Token}}}}
+	if err := rhiza.ValidateExecuteRequest(request); err != nil {
+		return err
+	}
+	if _, err := s.db.execRaw(ctx, request); err != nil {
+		return fmt.Errorf("bootstrap trust state: %w", err)
+	}
+	return s.db.verifyDBTrust(ctx, pending.Epoch, pending.Token)
+}
+
+func (s *Store) beginMigrationFence(ctx context.Context, anchor *trustAnchor) (trustAnchorRecord, error) {
+	record, rv, err := anchor.get(ctx)
+	if err != nil {
+		return trustAnchorRecord{}, err
+	}
+	if record.PendingEpoch != nil {
+		return trustAnchorRecord{}, fmt.Errorf("trust anchor has unresolved pending write")
+	}
+	exists, err := s.trustStateExists(ctx)
+	if err != nil {
+		return trustAnchorRecord{}, err
+	}
+	if exists {
+		if err := s.db.verifyDBTrust(ctx, record.Epoch, record.Token); err != nil {
+			return trustAnchorRecord{}, err
+		}
+	} else if !record.Bootstrap {
+		return trustAnchorRecord{}, fmt.Errorf("database trust state is missing")
+	}
+	next := record.Epoch + 1
+	pending := record
+	pending.PendingEpoch = &next
+	pending.PendingID = uuid.NewString()
+	one := int64(1)
+	if err := rhiza.ValidateExecuteRequest(rhiza.ExecuteRequest{RequestID: pending.PendingID, Statements: []rhiza.SQLStatement{{SQL: `UPDATE trust_state SET epoch=?, token=? WHERE id=1 AND epoch=? AND token=?`, Args: []any{next, pending.PendingID, record.Epoch, record.Token}, ExpectedRowsAffected: &one}}}); err != nil {
+		return trustAnchorRecord{}, err
+	}
+	if _, err := anchor.cas(ctx, rv, pending); err != nil {
+		return trustAnchorRecord{}, err
+	}
+	return pending, nil
+}
+
+func (s *Store) completeMigrationFence(ctx context.Context, anchor *trustAnchor, pending trustAnchorRecord) error {
+	if pending.PendingEpoch == nil {
+		return fmt.Errorf("missing migration trust fence")
+	}
+	one := int64(1)
+	request := rhiza.ExecuteRequest{RequestID: pending.PendingID, Statements: []rhiza.SQLStatement{{SQL: `UPDATE trust_state SET epoch=?, token=? WHERE id=1 AND epoch=? AND token=?`, Args: []any{*pending.PendingEpoch, pending.PendingID, pending.Epoch, pending.Token}, ExpectedRowsAffected: &one}}}
+	if err := rhiza.ValidateExecuteRequest(request); err != nil {
+		return err
+	}
+	if _, err := s.db.execRaw(ctx, request); err != nil {
+		return fmt.Errorf("commit migration trust tail: %w", err)
+	}
+	// Re-read the anchor so a competing process cannot finalize an unrelated state.
+	current, rv, err := anchor.get(ctx)
+	if err != nil {
+		return err
+	}
+	if current.PendingEpoch == nil || *current.PendingEpoch != *pending.PendingEpoch || current.PendingID != pending.PendingID {
+		return fmt.Errorf("migration trust fence changed")
+	}
+	if err := s.db.verifyDBTrust(ctx, *pending.PendingEpoch, pending.PendingID); err != nil {
+		return err
+	}
+	final := current
+	final.Epoch = *current.PendingEpoch
+	final.Token = current.PendingID
+	final.PendingEpoch = nil
+	final.PendingID = ""
+	final.Bootstrap = false
+	_, err = anchor.cas(ctx, rv, final)
+	return err
+}
+
+func (s *Store) recoverPendingTrust(ctx context.Context, anchor *trustAnchor, pending trustAnchorRecord, rv string) error {
+	status, err := s.db.db.RequestStatus(ctx, rhiza.RequestStatusRequest{Kind: rhiza.RequestKindSQL, RequestID: pending.PendingID})
+	if err != nil {
+		return fmt.Errorf("read pending trust request: %w", err)
+	}
+	if status.State == string(rhiza.MutationCommitted) && pending.PendingEpoch != nil && s.db.verifyDBTrust(ctx, *pending.PendingEpoch, pending.PendingID) == nil {
+		final := pending
+		final.Epoch = *pending.PendingEpoch
+		final.Token = pending.PendingID
+		final.PendingEpoch = nil
+		final.PendingID = ""
+		final.Bootstrap = false
+		_, err := anchor.cas(ctx, rv, final)
+		return err
+	}
+	if status.State == string(rhiza.MutationRejected) && s.db.verifyDBTrust(ctx, pending.Epoch, pending.Token) == nil {
+		final := pending
+		final.PendingEpoch = nil
+		final.PendingID = ""
+		_, err := anchor.cas(ctx, rv, final)
+		return err
+	}
+	return fmt.Errorf("trust anchor has unresolved pending write")
 }
 
 func (s *Store) migrate(ctx context.Context) error {

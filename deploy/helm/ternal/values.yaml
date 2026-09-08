@@ -22,6 +22,9 @@ data:
   # Production sets this true. HA implies it. When false, standalone is an
   # explicitly ephemeral development mode.
   requireObjectStore: false
+  # Pre-created outside this Helm release by deploy/security. Required for
+  # object storage so restoring the bucket cannot restore revoked trust.
+  trustAnchorConfigMap: ""
   # Must match the binary; changes require a new greenfield data identity.
   schemaVersion: 1
   # Durable standalone and HA require a unique, stable lowercase DNS label.

@@ -70,6 +70,8 @@ helm template ternal "$chart" \
 	--set-string 'oidc.policyClaims[1]=department' \
 	--set-string data.clusterID=ternal-standalone-a1 \
 	--set data.objectStore.provider=s3 \
+	--set-string data.trustAnchorConfigMap=ternal-trust-floor \
+	--set-string serviceAccountName=ternal-trust-runtime \
 	--set-string data.objectStore.endpoint=object-store.example.invalid:9000 \
 	--set-string data.objectStore.bucket=ternal-standalone \
 	--set data.objectStore.insecure=true \
@@ -87,6 +89,8 @@ helm template ternal "$chart" \
 	--set data.mode=ha \
 	--set-string data.clusterID=ternal-ha-a1 \
 	--set data.objectStore.provider=s3 \
+	--set-string data.trustAnchorConfigMap=ternal-trust-floor \
+	--set-string serviceAccountName=ternal-trust-runtime \
 	--set-string data.objectStore.endpoint=object-store.example.invalid:9000 \
 	--set-string data.objectStore.bucket=ternal-ha \
 	--set data.objectStore.insecure=true \
@@ -120,6 +124,10 @@ for required in \
 done
 
 for rendered in "$tmp/standalone-durable.yaml" "$tmp/ha.yaml"; do
+	grep -q 'name: TERNAL_TRUST_ANCHOR_CONFIGMAP' "$rendered"
+	grep -q 'value: "ternal-trust-floor"' "$rendered"
+	grep -q 'name: TERNAL_TRUST_ANCHOR_NAMESPACE' "$rendered"
+	grep -q 'automountServiceAccountToken: true' "$rendered"
 	if grep -Eq 'kind: PersistentVolumeClaim|volumeClaimTemplates:|claimName:' "$rendered"; then
 		echo "durable render contains a PVC: $rendered" >&2
 		exit 1
@@ -135,6 +143,8 @@ helm template ternal "$chart" \
 	--set data.mode=ha \
 	--set-string data.clusterID=ternal-ha-a1 \
 	--set data.objectStore.provider=s3 \
+	--set-string data.trustAnchorConfigMap=ternal-trust-floor \
+	--set-string serviceAccountName=ternal-trust-runtime \
 	--set-string data.objectStore.endpoint=object-store.example.invalid:9000 \
 	--set-string data.objectStore.bucket=ternal-ha \
 	--set data.objectStore.insecure=true \
@@ -147,6 +157,8 @@ helm template ternal "$chart" \
 	--set data.mode=ha \
 	--set-string data.clusterID=ternal-ha-a1 \
 	--set data.objectStore.provider=s3 \
+	--set-string data.trustAnchorConfigMap=ternal-trust-floor \
+	--set-string serviceAccountName=ternal-trust-runtime \
 	--set-string data.objectStore.bucket=ternal-ha \
 	--set-string data.objectStore.prefix=clusters/other \
 	--set-string secrets.existingSecret=ternal-runtime \
@@ -162,6 +174,8 @@ helm template ternal "$chart" \
 	--set data.mode=ha \
 	--set-string data.clusterID=ternal-gcs-a1 \
 	--set data.objectStore.provider=gcs \
+	--set-string data.trustAnchorConfigMap=ternal-trust-floor \
+	--set-string serviceAccountName=ternal-trust-runtime \
 	--set-string data.objectStore.bucket=ternal-ha \
 	--set-string serviceAccountName=ternal-gcs \
 	--set-string secrets.existingSecret=ternal-runtime \
@@ -180,7 +194,7 @@ for invalid in \
 	'--set-string data.clusterID=ternal-a1 --set data.objectStore.provider=s3 --set data.objectStore.bucket=ternal --set data.objectStore.durability=async' \
 	'--set persistence.enabled=true'; do
 	# shellcheck disable=SC2086
-	if helm template ternal "$chart" --set image.tag=render-check $invalid >"$tmp/invalid.yaml" 2>/dev/null; then
+	if helm template ternal "$chart" --set image.tag=render-check --set-string data.trustAnchorConfigMap=ternal-trust-floor --set-string serviceAccountName=ternal-trust-runtime $invalid >"$tmp/invalid.yaml" 2>/dev/null; then
 		echo "invalid storage render accepted: $invalid" >&2
 		exit 1
 	fi
@@ -206,6 +220,8 @@ helm template ternal "$chart" \
 	--set-string secrets.existingSecret=ternal-runtime \
 	--set-string data.clusterID=ternal-production-a1 \
 	--set data.objectStore.provider=gcs \
+	--set-string data.trustAnchorConfigMap=ternal-trust-floor \
+	--set-string serviceAccountName=ternal-trust-runtime \
 	--set-string data.objectStore.bucket=ternal-production \
 	>"$tmp/production.yaml"
 
@@ -232,6 +248,8 @@ helm install ternal-notes "$chart" --dry-run=client \
 	--set image.tag=render-check \
 	--set-string data.clusterID=ternal-production-a1 \
 	--set data.objectStore.provider=gcs \
+	--set-string data.trustAnchorConfigMap=ternal-trust-floor \
+	--set-string serviceAccountName=ternal-trust-runtime \
 	--set-string data.objectStore.bucket=ternal-production \
 	--set-string secrets.existingSecret=ternal-runtime \
 	>"$tmp/production-notes.txt"
@@ -242,5 +260,16 @@ if grep -q 'test-oidc-secret' "$tmp/production.yaml"; then
 	echo "production render contains an inline test credential" >&2
 	exit 1
 fi
+
+for missing in data.trustAnchorConfigMap serviceAccountName; do
+	if helm template ternal "$chart" --set image.tag=render-check \
+		--set-string data.clusterID=ternal-guard-check --set data.objectStore.provider=gcs \
+		--set data.objectStore.bucket=ternal-guard-check --set-string secrets.existingSecret=ternal-runtime \
+		--set-string data.trustAnchorConfigMap=ternal-trust-floor --set-string serviceAccountName=ternal-trust-runtime \
+		--set-string "$missing=" >"$tmp/missing-anchor.yaml" 2>"$tmp/missing-anchor.err"; then
+		echo "durable render accepted missing $missing" >&2; exit 1
+	fi
+	grep -q "$missing is required" "$tmp/missing-anchor.err"
+done
 
 echo "Helm render checks passed"
