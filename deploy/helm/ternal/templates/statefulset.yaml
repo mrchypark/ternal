@@ -1,4 +1,12 @@
-{{- $imageTag := required "image.tag is required" .Values.image.tag -}}
+{{- $imageTag := default "" .Values.image.tag -}}
+{{- $imageDigest := default "" .Values.image.digest -}}
+{{- if $imageDigest -}}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" $imageDigest) -}}
+{{- fail "image.digest must be a sha256 digest" -}}
+{{- end -}}
+{{- else -}}
+{{- $imageTag = required "image.tag is required" $imageTag -}}
+{{- end -}}
 {{- $secretName := .Values.secrets.existingSecret | default .Release.Name -}}
 {{- $managedRelay := default dict .Values.transport.managedRelay -}}
 {{- $data := default dict .Values.data -}}
@@ -13,7 +21,7 @@
 {{- fail "data mode, cluster identity, membership, and object storage are immutable; create a new Helm release for a greenfield cluster" -}}
 {{- end -}}
 {{- end -}}
-{{- if eq $imageTag "latest" -}}
+{{- if and (not $imageDigest) (eq $imageTag "latest") -}}
 {{- fail "image.tag must not be latest; use an immutable build tag" -}}
 {{- end -}}
 {{- if .Values.persistence.enabled -}}
@@ -77,7 +85,7 @@ spec:
       {{- end }}
       containers:
         - name: ternal-api
-          image: "{{ .Values.image.repository }}:{{ $imageTag }}"
+          image: "{{ .Values.image.repository }}{{ if $imageDigest }}@{{ $imageDigest }}{{ else }}:{{ $imageTag }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false

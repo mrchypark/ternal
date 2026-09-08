@@ -1,6 +1,8 @@
 image:
   repository: ghcr.io/mrchypark/ternal
   tag: ""
+  # When set, use repository@digest; the digest takes precedence over tag.
+  digest: ""
   pullPolicy: IfNotPresent
   pullSecrets: []
 

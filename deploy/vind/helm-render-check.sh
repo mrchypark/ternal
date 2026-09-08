@@ -50,6 +50,15 @@ helm template ternal "$chart" \
 grep -q '^kind: StatefulSet$' "$tmp/default.yaml"
 grep -q '^kind: Service$' "$tmp/default.yaml"
 grep -q 'image: "ghcr.io/mrchypark/ternal:render-check"' "$tmp/default.yaml"
+digest=sha256:1111111111111111111111111111111111111111111111111111111111111111
+for tag in '' render-check; do
+	helm template ternal "$chart" --set-string secrets.existingSecret=fixture --set-string "image.tag=$tag" --set-string "image.digest=$digest" >"$tmp/digest.yaml"
+	grep -q "image: \"ghcr.io/mrchypark/ternal@$digest\"" "$tmp/digest.yaml"
+done
+if helm template ternal "$chart" --set-string secrets.existingSecret=fixture --set image.tag=render-check --set image.digest=sha256:invalid >"$tmp/digest.yaml" 2>"$tmp/digest.err"; then
+	echo "invalid API image digest accepted" >&2; exit 1
+fi
+grep -q 'image.digest must be a sha256 digest' "$tmp/digest.err"
 grep -q 'TERNAL_OIDC_ISSUER: "https://auth.ternal.example.invalid/auth/v1/"' "$tmp/default.yaml"
 grep -q 'TERNAL_OIDC_POLICY_CLAIMS: ""' "$tmp/default.yaml"
 grep -q '^  replicas: 1$' "$tmp/default.yaml"
