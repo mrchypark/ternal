@@ -96,7 +96,18 @@ The Helm chart exposes two explicit storage modes:
 Durable standalone sets `data.requireObjectStore=true`. HA implies that setting.
 Every configured object store requires `before-ack` durability; durable
 standalone and HA also require a unique, stable `data.clusterID`, shared
-S3-compatible or GCS storage, and `secrets.existingSecret`. HA's Secret
+S3-compatible or GCS storage, `secrets.existingSecret`, an existing
+`serviceAccountName`, and `data.trustAnchorConfigMap`. The external ConfigMap
+records a monotonic trust epoch independently of object storage. Restoring an
+old bucket snapshot cannot restore a logged-out session or revoked device:
+the database and external epoch must match before reads or writes succeed.
+Provision the anchor and release admission guard outside Helm using
+[`deploy/security/render_trustguard.py`](../deploy/security/render_trustguard.py).
+Public releases include the same helper as `ternal-trustguard.py`, covered by
+their checksum and provenance inventory.
+The API service account needs only `get` and `update` on that exact anchor.
+The chart projects its service-account token when the anchor is configured.
+HA's Secret
 must contain the normal Ternal keys plus
 `TERNAL_DATA_CLUSTER_MEMBERS`. That key is a JSON array for `ternal-0`,
 `ternal-1`, and `ternal-2`; each member needs its matching
@@ -116,10 +127,12 @@ Storage values are shared by standalone and HA and contain only non-secret
 routing metadata:
 
 ```yaml
+serviceAccountName: ternal-data
 data:
   mode: ha
   clusterID: ternal-production-a1
   requireObjectStore: true
+  trustAnchorConfigMap: ternal-trust-floor
   checkpointInterval: 15m
   objectStore:
     provider: s3
@@ -143,6 +156,7 @@ serviceAccountName: ternal-data
 data:
   mode: ha
   clusterID: ternal-production-a1
+  trustAnchorConfigMap: ternal-trust-floor
   objectStore:
     provider: gcs
     bucket: ternal-checkpoints
@@ -170,6 +184,42 @@ of an HA cluster.
 The chart never creates a PVC. Each pod rebuilds its local cache from Rhiza's
 certified object-store state. `persistence.enabled=true` is retained only as a
 fail-closed guard for the retired setting and is rejected during rendering.
+
+The trust anchor must not be restored with the bucket or managed by a Helm
+rollback. Its one-time bootstrap permit binds the initial database to the
+external epoch. An unresolved write keeps the anchor pending and readiness
+fails closed; restart can recover only a durably proven result. Do not clear
+pending state or re-enable bootstrap to force an old snapshot online.
+The separately installed admission guard allows only explicitly approved API
+image digests and the configured anchor binding, preventing rollback to an
+older binary that does not enforce this check. Operators controlling these
+external guards remain trusted. Local development without object storage
+does not require an anchor.
+
+After verifying the public release assets and image signature, render the guard
+with the exact effective object-store prefix (including the chart's default
+`clusters/<clusterID>` when no prefix was supplied):
+
+```sh
+python3 ternal-trustguard.py \
+  --namespace ternal --service-account ternal-data \
+  --anchor-configmap ternal-trust-floor --cluster-id ternal-production-a1 \
+  --provider gcs --bucket YOUR_BUCKET --prefix clusters/ternal-production-a1 \
+  --approved-api-image ghcr.io/mrchypark/ternal@sha256:VERIFIED_DIGEST \
+  > trustguard.json
+kubectl apply --dry-run=server -f trustguard.json
+kubectl apply -f trustguard.json
+```
+
+The helper prints resources only; it neither creates a bucket nor applies them.
+It requires Kubernetes ValidatingAdmissionPolicy v1 support. Create the named
+service account separately and grant its object-store access. Review the
+generated namespace label and cluster-scoped policy names before applying.
+Each initial render generates a fresh bootstrap token: retain the original
+manifest, and never reapply its initial anchor over an advanced epoch. For a
+release upgrade, update only the separate image-allowlist ConfigMap with the
+new verified digest before upgrading Helm. Removing a disposable installation
+requires deleting its admission bindings before its protected ConfigMaps.
 
 The current schema is version 1 and is unchanged by this storage-mode work.
 Changing the schema version is deliberately not a rolling upgrade: the chart

@@ -66,6 +66,7 @@ jobs:
           go test -race -count=1 -timeout=10m ./...
           go vet ./...
           python3 deploy/release/tag-release-workflow.test.py
+          python3 deploy/security/render_trustguard_test.py
           sh deploy/vind/helm-render-check.sh
           sh deploy/k8s-secret-helpers.test.sh
 
@@ -82,6 +83,8 @@ jobs:
           test "$(helm show chart "$chart" | awk '/^version:/ { print $2 }')" = "$version"
           test "$(helm show chart "$chart" | awk '/^appVersion:/ { gsub(/\"/, "", $2); print $2 }')" = "$version"
           (cd "$(dirname "$chart")" && sha256sum "$(basename "$chart")") > helm-chart-sha256.txt
+          install -m 0755 deploy/security/render_trustguard.py dist/release/ternal-trustguard.py
+          python3 dist/release/ternal-trustguard.py --help >/dev/null
 
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -155,6 +158,7 @@ jobs:
             image-digest.txt
             helm-chart-sha256.txt
             dist/release/ternal-*.tgz
+            dist/release/ternal-trustguard.py
             sbom-amd64.spdx.json
             sbom-arm64.spdx.json
             signature-verification.json
@@ -244,6 +248,7 @@ jobs:
           cp staged/release/sbom-arm64.spdx.json release/
           cp staged/release/signature-verification.json release/
           cp "staged/release/dist/release/ternal-$version.tgz" release/
+          cp staged/release/dist/release/ternal-trustguard.py release/
           cp staged/native/* release/
           expected='helm-chart-sha256.txt
           image-digest.txt
@@ -253,6 +258,7 @@ jobs:
           ternal-'"$version"'.tgz
           ternal-agent-linux-amd64.tar.gz
           ternal-agent-linux-arm64.tar.gz
+          ternal-trustguard.py
           ternalctl-linux-amd64.tar.gz
           ternalctl-linux-arm64.tar.gz
           ternalctl-macos-amd64.tar.gz
@@ -353,6 +359,7 @@ jobs:
           ternal-'"${GITHUB_REF_NAME#v}"'.tgz
           ternal-agent-linux-amd64.tar.gz
           ternal-agent-linux-arm64.tar.gz
+          ternal-trustguard.py
           ternalctl-linux-amd64.tar.gz
           ternalctl-linux-arm64.tar.gz
           ternalctl-macos-amd64.tar.gz

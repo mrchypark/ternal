@@ -40,6 +40,10 @@
 {{- fail "Rhiza object storage requires data.objectStore.durability=before-ack" -}}
 {{- end -}}
 {{- end -}}
+{{- if $objectStoreProvider -}}
+{{- $_ := required "data.trustAnchorConfigMap is required with object storage; provision the external trust guard first" $data.trustAnchorConfigMap -}}
+{{- $_ := required "serviceAccountName is required with the external trust guard" .Values.serviceAccountName -}}
+{{- end -}}
 {{- $relayUrls := .Values.transport.relayUrls -}}
 {{- if and ($managedRelay.enabled | default false) (not $relayUrls) ($gateway.enabled | default false) -}}
 {{- $relayUrls = printf "%s://%s" ($gateway.scheme | default "https") (required "gateway.host is required when gateway is enabled" $gateway.host) -}}

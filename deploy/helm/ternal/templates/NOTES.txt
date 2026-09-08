@@ -15,6 +15,9 @@ DATA PERSISTENCE:
 {{- if .Values.data.objectStore.provider }}
   Rhiza-certified object storage is authoritative. A replacement pod rebuilds
   its disposable local cache from the configured cluster prefix.
+  External trust anchor: {{ .Values.data.trustAnchorConfigMap }}
+  Keep this ConfigMap and its admission guards outside Helm and object-store
+  restores. An old snapshot or unresolved write fails readiness closed.
 {{- else }}
 DATA SAFETY WARNING:
   This is ephemeral standalone development mode: no object store is configured,

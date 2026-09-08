@@ -29,6 +29,7 @@ transport:
         drainingTimeoutSec: 300
 
 data:
-  # Production must supply data.clusterID and data.objectStore metadata.
+  # Production must supply data.clusterID, data.objectStore metadata,
+  # data.trustAnchorConfigMap and an existing serviceAccountName.
   # Rhiza-certified object storage is authoritative; /data remains emptyDir.
   requireObjectStore: true

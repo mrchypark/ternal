@@ -32,6 +32,7 @@ sh deploy/agent/package-linux-amd64.test.sh
 sh deploy/cli/package-unix.test.sh
 sh deploy/pigeons-smoke/transport-matrix.test.sh
 python3 deploy/release/release-candidate-workflow.test.py
+python3 deploy/security/render_trustguard_test.py
 if command -v helm >/dev/null 2>&1; then
 	sh deploy/vind/helm-check.sh
 else
