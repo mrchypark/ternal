@@ -54,6 +54,7 @@ jq -e '
 	and (.[0].redirect_uris | index("http://127.0.0.1:3000/auth/callback") != null)
 	and (.[0].flows_enabled | index("authorization_code") != null)
 	and (.[0].flows_enabled | index("urn:ietf:params:oauth:grant-type:device_code") != null)
+	and .[0].challenges == ["S256"]
 	and (.[0].scopes | index("openid") != null)
 	and (.[0].scopes | index("groups") != null)
 ' "$here/bootstrap/clients.json" >/dev/null
