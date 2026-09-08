@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -27,6 +28,8 @@ import (
 	"github.com/mrchypark/ternal/internal/web"
 	"golang.org/x/crypto/ssh"
 )
+
+var errDeviceStoreUnavailable = errors.New("device state unavailable")
 
 type Server struct {
 	store      *store.Store
@@ -1065,7 +1068,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	device, err := s.verifyDevice(r, req.Serial, req.EndpointID, req.Fingerprint, req.Timestamp, req.Signature,
 		deviceauth.HeartbeatPayload(req.Serial, req.EndpointID, req.Fingerprint, req.Timestamp, req.Status, req.Discovery))
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "device authentication failed")
+		writeDeviceVerificationError(w, err)
 		return
 	}
 	var direct, relays []string
@@ -1073,7 +1076,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		direct, relays = req.Discovery.DirectAddresses, req.Discovery.RelayURLs
 	}
 	if err := s.store.TouchDevice(r.Context(), device.ID, device.HostID, req.EndpointID, req.Fingerprint, req.Status, direct, relays); err != nil {
-		writeError(w, http.StatusUnauthorized, "device authentication failed")
+		writeError(w, http.StatusServiceUnavailable, "device state unavailable")
 		return
 	}
 	if req.Status == "healthy" {
@@ -1098,7 +1101,7 @@ func (s *Server) handleAgentAuthorizedKeys(w http.ResponseWriter, r *http.Reques
 	signature := r.Header.Get("X-Ternal-Device-Signature")
 	device, err := s.verifyDevice(r, serial, endpointID, fingerprint, timestamp, signature, deviceauth.AuthorizedKeysPayload(serial, endpointID, fingerprint, timestamp, sshUser))
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "device authentication failed")
+		writeDeviceVerificationError(w, err)
 		return
 	}
 	keys, grants, err := s.store.AuthorizedKeysSnapshotForHost(r.Context(), device.HostID, sshUser)
@@ -1146,7 +1149,7 @@ func (s *Server) handleAgentAuthorizedKeysAck(w http.ResponseWriter, r *http.Req
 	payload := deviceauth.AuthorizedKeysAckPayload(serial, endpointID, fingerprint, timestamp, req.SSHUser, req.Generation, req.SHA256)
 	device, err := s.verifyDevice(r, serial, endpointID, fingerprint, timestamp, signature, payload)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "device authentication failed")
+		writeDeviceVerificationError(w, err)
 		return
 	}
 	if err := s.store.AcknowledgeAuthorizedKeys(r.Context(), device.HostID, req.SSHUser, req.Generation, req.SHA256); err != nil {
@@ -1156,12 +1159,23 @@ func (s *Server) handleAgentAuthorizedKeysAck(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func writeDeviceVerificationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errDeviceStoreUnavailable) {
+		writeError(w, http.StatusServiceUnavailable, "device state unavailable")
+		return
+	}
+	writeError(w, http.StatusUnauthorized, "device authentication failed")
+}
+
 func (s *Server) verifyDevice(r *http.Request, serial, endpointID, fingerprint string, timestamp int64, signature, payload string) (*store.Device, error) {
 	if !deviceauth.Fresh(timestamp, time.Now()) {
 		return nil, fmt.Errorf("stale signature")
 	}
 	device, err := s.store.GetDeviceBySerial(r.Context(), serial)
-	if err != nil || device == nil || device.State == "revoked" || device.EndpointID != endpointID || device.SSHHostKeyFingerprint != fingerprint {
+	if err != nil {
+		return nil, errDeviceStoreUnavailable
+	}
+	if device == nil || device.State == "revoked" || device.EndpointID != endpointID || device.SSHHostKeyFingerprint != fingerprint {
 		return nil, fmt.Errorf("device identity mismatch")
 	}
 	if err := deviceauth.Verify(device.DevicePublicKey, payload, signature); err != nil {

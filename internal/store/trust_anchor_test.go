@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/mrchypark/rhiza"
@@ -18,6 +19,36 @@ type memoryAnchor struct {
 	mu     sync.Mutex
 	record trustAnchorRecord
 	rv     int64
+}
+
+type cancelOnPendingAnchor struct {
+	trustAnchorBackend
+	cancel func()
+	once   sync.Once
+}
+
+func (a *cancelOnPendingAnchor) CAS(ctx context.Context, rv string, next trustAnchorRecord) (string, error) {
+	updated, err := a.trustAnchorBackend.CAS(ctx, rv, next)
+	if err == nil && next.PendingEpoch != nil {
+		a.once.Do(a.cancel)
+	}
+	return updated, err
+}
+
+type blockingPendingAnchor struct {
+	trustAnchorBackend
+	pending chan<- struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (a *blockingPendingAnchor) CAS(ctx context.Context, rv string, next trustAnchorRecord) (string, error) {
+	updated, err := a.trustAnchorBackend.CAS(ctx, rv, next)
+	if err == nil && next.PendingEpoch != nil {
+		a.once.Do(func() { close(a.pending) })
+		<-a.release
+	}
+	return updated, err
 }
 
 func (m *memoryAnchor) Get(context.Context) (trustAnchorRecord, string, error) {
@@ -80,6 +111,55 @@ func TestTrustAnchorFencesWritesAndRejectsRestoredPair(t *testing.T) {
 	}
 	if err := s.Ready(ctx); err == nil {
 		t.Fatal("ready accepted a database pair below external anchor")
+	}
+}
+
+func TestTrustAnchorFencedWriteSurvivesCallerCancellation(t *testing.T) {
+	s, backend := anchoredStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	s.db.trust.backend = &cancelOnPendingAnchor{trustAnchorBackend: backend, cancel: cancel}
+	defer cancel()
+
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO ssh_keys (id,user_id,public_key,fingerprint,created_at) VALUES (?,?,?,?,?)`, uuid.NewString(), "u", "key", "fp", 1); err != nil {
+		t.Fatalf("fenced write after caller cancellation: %v", err)
+	}
+	current, _, err := backend.Get(context.Background())
+	if err != nil || current.PendingEpoch != nil || current.Epoch != 1 {
+		t.Fatalf("canceled write left anchor unresolved: epoch=%d pending=%t err=%v", current.Epoch, current.PendingEpoch != nil, err)
+	}
+	if _, err := s.db.QueryContext(context.Background(), `SELECT 1`); err != nil {
+		t.Fatalf("read after canceled write: %v", err)
+	}
+}
+
+func TestTrustAnchorReadWaitsForLocalFencedWrite(t *testing.T) {
+	s, backend := anchoredStore(t)
+	pending := make(chan struct{})
+	release := make(chan struct{})
+	s.db.trust.backend = &blockingPendingAnchor{trustAnchorBackend: backend, pending: pending, release: release}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := s.db.ExecContext(context.Background(), `INSERT INTO ssh_keys (id,user_id,public_key,fingerprint,created_at) VALUES (?,?,?,?,?)`, uuid.NewString(), "u", "key", "fp", 1)
+		writeDone <- err
+	}()
+	<-pending
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := s.db.QueryContext(context.Background(), `SELECT 1`)
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		t.Fatalf("read observed local pending fence: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-writeDone; err != nil {
+		t.Fatalf("fenced write: %v", err)
+	}
+	if err := <-readDone; err != nil {
+		t.Fatalf("read after fenced write: %v", err)
 	}
 }
 

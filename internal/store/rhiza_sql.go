@@ -20,7 +20,7 @@ import (
 type rhizaSQL struct {
 	db      *rhiza.DB
 	trust   *trustAnchor
-	trustMu sync.Mutex
+	trustMu sync.RWMutex
 }
 
 type rhizaRows struct {
@@ -129,6 +129,8 @@ func (d *rhizaSQL) QueryContext(ctx context.Context, statement string, args ...a
 	if d.trust == nil {
 		return d.queryRaw(ctx, statement, args...)
 	}
+	d.trustMu.RLock()
+	defer d.trustMu.RUnlock()
 	// The query is intentionally between the two external reads: returning a
 	// result after a restore or anchor change would otherwise leak stale state.
 	first, rv, err := d.trust.get(ctx)
@@ -173,14 +175,22 @@ func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, or
 	}
 	d.trustMu.Lock()
 	defer d.trustMu.Unlock()
-	current, rv, err := d.trust.get(ctx)
+	if err := ctx.Err(); err != nil {
+		return rhiza.ExecuteResponse{}, err
+	}
+	// Once we start fencing a write, the fence has to be resolved even if the
+	// caller disconnects.  Otherwise a canceled HTTP request can leave the
+	// independent anchor permanently pending after its CAS succeeds.
+	fencedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	current, rv, err := d.trust.get(fencedCtx)
 	if err != nil {
 		return rhiza.ExecuteResponse{}, err
 	}
 	if current.PendingEpoch != nil {
 		return rhiza.ExecuteResponse{}, fmt.Errorf("trust anchor has unresolved pending write")
 	}
-	if err := d.verifyDBTrust(ctx, current.Epoch, current.Token); err != nil {
+	if err := d.verifyDBTrust(fencedCtx, current.Epoch, current.Token); err != nil {
 		return rhiza.ExecuteResponse{}, err
 	}
 	// Validate the immutable original request before exposing a pending state.
@@ -209,14 +219,14 @@ func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, or
 	pending := current
 	pending.PendingEpoch = &nextEpoch
 	pending.PendingID = request.RequestID
-	pendingRV, err := d.trust.cas(ctx, rv, pending)
+	pendingRV, err := d.trust.cas(fencedCtx, rv, pending)
 	if err != nil {
 		return rhiza.ExecuteResponse{}, err
 	}
-	response, err := d.db.Execute(ctx, request)
+	response, err := d.db.Execute(fencedCtx, request)
 	if err == nil && response.Status == rhiza.MutationCommitted {
 		final := trustAnchorRecord{Format: current.Format, ClusterID: current.ClusterID, StorageID: current.StorageID, Epoch: nextEpoch, Token: nextToken}
-		if _, casErr := d.trust.cas(ctx, pendingRV, final); casErr != nil {
+		if _, casErr := d.trust.cas(fencedCtx, pendingRV, final); casErr != nil {
 			return rhiza.ExecuteResponse{}, fmt.Errorf("finalize trust anchor after committed write: %w", casErr)
 		}
 		if len(response.Statements) != originalStatements+1 {
@@ -238,11 +248,11 @@ func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, or
 		err = fmt.Errorf("SQL mutation was rejected: %s", response.ErrorCode)
 	}
 	// Only a known rejected mutation can safely clear the pending fence.
-	if response.Status == rhiza.MutationRejected && d.verifyDBTrust(ctx, current.Epoch, current.Token) == nil {
+	if response.Status == rhiza.MutationRejected && d.verifyDBTrust(fencedCtx, current.Epoch, current.Token) == nil {
 		final := current
 		final.PendingEpoch = nil
 		final.PendingID = ""
-		if _, casErr := d.trust.cas(ctx, pendingRV, final); casErr != nil {
+		if _, casErr := d.trust.cas(fencedCtx, pendingRV, final); casErr != nil {
 			return rhiza.ExecuteResponse{}, fmt.Errorf("clear rejected trust write: %w", casErr)
 		}
 	}
