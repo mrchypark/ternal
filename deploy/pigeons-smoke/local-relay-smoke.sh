@@ -334,36 +334,18 @@ if [ -n "$api_url" ]; then
 	fi
 
 	if [ -n "$ternalctl_bin" ] && [ "$managed_relay" -eq 1 ]; then
-		client_key_dir="$work/client-key-dir"
-		mkdir -p "$client_key_dir"
-		cat >"$work/pigeons-wrapper" <<EOF
-#!/bin/sh
-case "\${1:-}" in
-	endpoint-id)
-		exec '$bin' endpoint-id --key-dir '$client_key_dir'
-		;;
-	fly)
-		shift
-		exec '$bin' fly --key-dir '$client_key_dir' "\$@"
-		;;
-	*)
-		exit 64
-		;;
-esac
-EOF
-		chmod +x "$work/pigeons-wrapper"
 
 		set +e
 		TERNAL_API_URL="$api_url" \
 		TERNAL_DEV_HEADERS="$cli_dev_headers" \
 		HOME="$work/home" \
-		XDG_CONFIG_HOME="$work/config" \
+		TERNAL_CONFIG_DIR="$work/config" \
 		TERNAL_SESSION_COOKIE="${TERNAL_SESSION_COOKIE:-}" \
 		TERNAL_CSRF_TOKEN="$csrf_token" \
 		TERNAL_USER="${TERNAL_USER:-local-admin}" \
 		TERNAL_GROUPS="${TERNAL_GROUPS:-ternal-admins}" \
 		TERNAL_CLAIMS="${TERNAL_CLAIMS:-role=ssh-admin}" \
-		TERNAL_TRANSPORT_BIN="$work/pigeons-wrapper" \
+		TERNAL_TRANSPORT_BIN="$bin" \
 			"$timeout_bin" 30 "$ternalctl_bin" proxy "$host_id" "$endpoint:$ssh_port" --relay-url "$relay_url" \
 			</dev/null >"$work/ternalctl-proxy.out" 2>"$work/ternalctl-proxy.err"
 		proxy_status=$?
@@ -387,13 +369,13 @@ EOF
 		TERNAL_API_URL="$api_url" \
 		TERNAL_DEV_HEADERS="$cli_dev_headers" \
 		HOME="$work/home" \
-		XDG_CONFIG_HOME="$work/config" \
+		TERNAL_CONFIG_DIR="$work/config" \
 		TERNAL_SESSION_COOKIE="${TERNAL_SESSION_COOKIE:-}" \
 		TERNAL_CSRF_TOKEN="$csrf_token" \
 		TERNAL_USER="${TERNAL_USER:-local-admin}" \
 		TERNAL_GROUPS="${TERNAL_GROUPS:-ternal-admins}" \
 		TERNAL_CLAIMS="${TERNAL_CLAIMS:-role=ssh-admin}" \
-		TERNAL_TRANSPORT_BIN="$work/pigeons-wrapper" \
+		TERNAL_TRANSPORT_BIN="$bin" \
 			"$timeout_bin" 30 ssh -F /dev/null -p "$ssh_port" \
 			-o BatchMode=yes \
 			-o IdentitiesOnly=yes \
@@ -422,13 +404,13 @@ EOF
 		TERNAL_API_URL="$api_url" \
 		TERNAL_DEV_HEADERS="$cli_dev_headers" \
 		HOME="$work/home" \
-		XDG_CONFIG_HOME="$work/config" \
+		TERNAL_CONFIG_DIR="$work/config" \
 		TERNAL_SESSION_COOKIE="${TERNAL_SESSION_COOKIE:-}" \
 		TERNAL_CSRF_TOKEN="$csrf_token" \
 		TERNAL_USER="${TERNAL_USER:-local-admin}" \
 		TERNAL_GROUPS="${TERNAL_GROUPS:-ternal-admins}" \
 		TERNAL_CLAIMS="${TERNAL_CLAIMS:-role=ssh-admin}" \
-		TERNAL_TRANSPORT_BIN="$work/pigeons-wrapper" \
+		TERNAL_TRANSPORT_BIN="$bin" \
 			"$timeout_bin" 30 ssh -F /dev/null -p "$ssh_port" \
 			-o BatchMode=yes \
 			-o IdentitiesOnly=yes \
