@@ -22,7 +22,7 @@ key="$state/cli-key"
 
 run_cli() (
 	unset TERNAL_SESSION_COOKIE TERNAL_CSRF_TOKEN TERNAL_DEV_HEADERS TERNAL_USER TERNAL_GROUPS TERNAL_CLAIMS
-	XDG_CONFIG_HOME="$config" TERNAL_API_URL="$api_url" "$cli" "$@"
+	TERNAL_CONFIG_DIR="$config" TERNAL_API_URL="$api_url" "$cli" "$@"
 )
 
 [ ! -e "$session" ] || { echo 'CLI session path was not greenfield' >&2; exit 1; }

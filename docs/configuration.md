@@ -52,6 +52,13 @@ Changing the issuer creates new local principals and invalidates existing
 issuer-bound sessions. See the optional [GoAuthy integration](goauthy.md) for a
 concrete standards-based provider example and its current Device Flow limit.
 
+## CLI
+
+`ternalctl` stores its local session at `ternal/session.json` below the native
+user configuration directory. Set `TERNAL_CONFIG_DIR` to use a different
+configuration root, such as an isolated test directory; the session remains at
+`$TERNAL_CONFIG_DIR/ternal/session.json`.
+
 ## Data
 
 | Variable | Default | Purpose |
