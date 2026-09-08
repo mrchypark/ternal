@@ -45,6 +45,9 @@ func TestPortalRendersHTMXAndEscapesData(t *testing.T) {
 	body := res.Body.String()
 	for _, expected := range []string{
 		`src="/assets/htmx.min.js"`,
+		`rel="icon" type="image/png" sizes="214x256" href="/assets/ternal-icon-256.png"`,
+		`aria-label="Ternal home"`,
+		`src="/assets/ternal-logo-640.png" alt="Ternal logo" width="640" height="251"`,
 		`hx-get="/?view=policies"`,
 		`hx-target="#workspace"`,
 		`id="workspace" tabindex="-1"`,
@@ -123,6 +126,14 @@ func TestPinnedAssetsAndHTMXV4Attributes(t *testing.T) {
 	}
 	if !bytes.Contains(css, []byte(".bg-ink-900")) {
 		t.Fatal("Tailwind did not scan gomponents classes")
+	}
+	for _, asset := range []string{"ternal-logo-640.png", "ternal-icon-256.png"} {
+		request := httptest.NewRequest(http.MethodGet, "/assets/"+asset, nil)
+		response := httptest.NewRecorder()
+		Assets().ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/png" || !bytes.HasPrefix(response.Body.Bytes(), []byte("\x89PNG\r\n\x1a\n")) {
+			t.Errorf("asset %s response = status=%d content-type=%q png=%t", asset, response.Code, response.Header().Get("Content-Type"), bytes.HasPrefix(response.Body.Bytes(), []byte("\x89PNG\r\n\x1a\n")))
+		}
 	}
 
 	var rendered bytes.Buffer

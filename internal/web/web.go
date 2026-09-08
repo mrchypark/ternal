@@ -190,6 +190,7 @@ func document(title string, body g.Node) g.Node {
 			h.Meta(h.Name("description"), h.Content("Secure SSH access for managed devices")),
 			h.Meta(h.Name("htmx-config"), h.Content(`{"noSwap":[204,304,"4xx","5xx"]}`)),
 			h.TitleEl(g.Text(title)),
+			h.Link(h.Rel("icon"), h.Type("image/png"), h.Sizes("214x256"), h.Href("/assets/ternal-icon-256.png")),
 			h.Link(h.Rel("stylesheet"), h.Href("/assets/app.css")),
 			h.Script(h.Src("/assets/htmx.min.js"), h.Defer()),
 		),
@@ -198,9 +199,8 @@ func document(title string, body g.Node) g.Node {
 }
 
 func brand() g.Node {
-	return h.A(h.Href("/"), h.Class("inline-flex items-baseline gap-2 text-ink-50 no-underline"),
-		h.Span(h.Class("text-2xl font-semibold tracking-[-0.045em]"), g.Text("Ternal")),
-		h.Span(h.Class("text-[0.65rem] font-bold tracking-[0.18em] text-forest-100"), g.Text("SSH")),
+	return h.A(h.Href("/"), h.Aria("label", "Ternal home"), h.Class("inline-flex max-w-full rounded-sm bg-ink-50 p-2 no-underline"),
+		h.Img(h.Src("/assets/ternal-logo-640.png"), h.Alt("Ternal logo"), h.Width("640"), h.Height("251"), h.Class("h-auto w-36 max-w-full sm:w-40")),
 	)
 }
 
