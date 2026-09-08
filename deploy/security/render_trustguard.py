@@ -70,12 +70,12 @@ def metadata(name, labels=None, namespace=None):
     return value
 
 
-def env_ok(container_path):
+def env_ok(container_path, anchor_name, namespace):
     return (
         "{c}.env.filter(e, e.name == 'TERNAL_TRUST_ANCHOR_CONFIGMAP').size() == 1 && "
-        "{c}.env.exists(e, e.name == 'TERNAL_TRUST_ANCHOR_CONFIGMAP' && e.value == params.data['anchorConfigMap']) && "
+        "{c}.env.exists(e, e.name == 'TERNAL_TRUST_ANCHOR_CONFIGMAP' && e.value == '" + anchor_name + "') && "
         "{c}.env.filter(e, e.name == 'TERNAL_TRUST_ANCHOR_NAMESPACE').size() == 1 && "
-        "{c}.env.exists(e, e.name == 'TERNAL_TRUST_ANCHOR_NAMESPACE' && e.value == params.data['namespace'])"
+        "{c}.env.exists(e, e.name == 'TERNAL_TRUST_ANCHOR_NAMESPACE' && e.value == '" + namespace + "')"
     ).format(c=container_path)
 
 
@@ -87,7 +87,7 @@ def api_container_expr(container_path="c"):
             "{c}.image.startsWith('" + OFFICIAL_IMAGE + "@'))").format(c=container_path)
 
 
-def api_policy(name, binding_name, namespace_selector, params_name, target):
+def api_policy(name, binding_name, namespace_selector, namespace, service_account_name, anchor_name, image_list, target):
     containers = "object.spec.containers" if target == "pod" else "object.spec.template.spec.containers"
     service = "object.spec.serviceAccountName" if target == "pod" else "object.spec.template.spec.serviceAccountName"
     resources = ["pods"] if target == "pod" else ["deployments", "statefulsets", "replicasets"]
@@ -97,19 +97,16 @@ def api_policy(name, binding_name, namespace_selector, params_name, target):
         "metadata": metadata(name),
         "spec": {
             "failurePolicy": "Fail",
-            "paramKind": {"apiVersion": "v1", "kind": "ConfigMap"},
             "matchConstraints": {"resourceRules": [{"apiGroups": ["" if target == "pod" else "apps"],
                 "apiVersions": ["v1"], "operations": ["CREATE", "UPDATE"], "resources": resources,
                 "scope": "Namespaced"}]},
             "variables": [{"name": "apiContainers", "expression": containers + ".filter(c, " + api_container_expr() + ")"}],
             "validations": [
-                {"expression": "['format', 'namespace', 'serviceAccount', 'anchorConfigMap', 'approvedAPIImages'].all(k, k in params.data) && params.data['format'] == '1'",
-                 "message": "trustguard parameters are incomplete"},
-                {"expression": "variables.apiContainers.size() == 0 || " + service + " == params.data['serviceAccount']",
+                {"expression": "variables.apiContainers.size() == 0 || " + service + " == '" + service_account_name + "'",
                  "message": "Ternal API workloads must use the protected service account"},
-                {"expression": "variables.apiContainers.all(c, params.data['approvedAPIImages'].contains(',' + c.image + ','))",
+                {"expression": "variables.apiContainers.all(c, '" + image_list + "'.contains(',' + c.image + ','))",
                  "message": "Ternal API image is not approved by the external trustguard"},
-                {"expression": "variables.apiContainers.all(c, " + env_ok("c") + ")",
+                {"expression": "variables.apiContainers.all(c, " + env_ok("c", anchor_name, namespace) + ")",
                  "message": "Ternal API must directly bind the external trust-anchor ConfigMap and namespace"},
             ],
         },
@@ -121,7 +118,6 @@ def api_policy(name, binding_name, namespace_selector, params_name, target):
         "spec": {
             "policyName": name,
             "validationActions": ["Deny"],
-            "paramRef": {"name": params_name, "parameterNotFoundAction": "Deny"},
             "matchResources": {"namespaceSelector": namespace_selector},
         },
     }
@@ -171,30 +167,6 @@ def anchor_policy(name, binding_name, namespace_selector, anchor_name, cluster_i
     return [policy, binding]
 
 
-def params_policy(name, binding_name, namespace_selector, params_name, namespace, service_account_name, protected_label):
-    """RBAC is the normal boundary; this also denies a pre-existing broad SA grant."""
-    principal = "system:serviceaccount:%s:%s" % (namespace, service_account_name)
-    policy = {
-        "apiVersion": "admissionregistration.k8s.io/v1",
-        "kind": "ValidatingAdmissionPolicy",
-        "metadata": metadata(name),
-        "spec": {
-            "failurePolicy": "Fail",
-            "matchConstraints": {"resourceRules": [{"apiGroups": [""], "apiVersions": ["v1"],
-                "operations": ["CREATE", "UPDATE", "DELETE"], "resources": ["configmaps"], "scope": "Namespaced"}]},
-            "matchConditions": [{"name": "exact-parameters", "expression": "request.name == '" + params_name + "'"}],
-            "validations": [
-                {"expression": "request.operation != 'DELETE'", "message": "trustguard parameters cannot be deleted"},
-                {"expression": "object.metadata.labels['ternal.dev/trustguard-params'] == '" + protected_label + "'", "message": "trustguard parameters must retain their protected label"},
-                {"expression": "request.userInfo.username != '" + principal + "'", "message": "the Ternal API service account cannot modify trustguard parameters"},
-            ],
-        },
-    }
-    binding = {"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingAdmissionPolicyBinding", "metadata": metadata(binding_name),
-               "spec": {"policyName": name, "validationActions": ["Deny"], "matchResources": {"namespaceSelector": namespace_selector}}}
-    return [policy, binding]
-
-
 def render(namespace, service_account_name, anchor_name, cluster_id, storage_identity, images, token=None):
     namespace = dns_label(namespace, "namespace")
     service_account_name = service_account(service_account_name)
@@ -209,31 +181,24 @@ def render(namespace, service_account_name, anchor_name, cluster_id, storage_ide
     suffix = cluster_id[-35:]
     anchor_label = "anchor-" + suffix
     scope_label = "scope-" + suffix
-    params_name = "ternal-trustguard-params-" + suffix
     names = {"anchor": "ternal-trustguard-anchor-" + suffix, "api_pods": "ternal-trustguard-api-pods-" + suffix,
-             "api_workloads": "ternal-trustguard-api-workloads-" + suffix, "anchor_policy": "ternal-trustguard-anchor-policy-" + suffix,
-             "params_policy": "ternal-trustguard-params-policy-" + suffix}
+             "api_workloads": "ternal-trustguard-api-workloads-" + suffix, "anchor_policy": "ternal-trustguard-anchor-policy-" + suffix}
     selector = {"matchLabels": {"ternal.dev/trustguard-scope": scope_label}}
     operator_labels = {"app.kubernetes.io/managed-by": "ternal-trustguard-operator", "ternal.dev/trustguard-scope": scope_label}
     anchor_labels = dict(operator_labels, **{"ternal.dev/trustguard-anchor": anchor_label})
-    params_labels = dict(operator_labels, **{"ternal.dev/trustguard-params": "params-" + suffix})
     anchor = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": metadata(anchor_name, anchor_labels, namespace), "data":
               {"format": FORMAT, "clusterID": cluster_id, "storageID": storage_identity, "epoch": "0", "token": token,
                "pendingEpoch": "", "pendingID": "", "bootstrap": "true"}}
-    params = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": metadata(params_name, params_labels, namespace), "data":
-              {"format": FORMAT, "namespace": namespace, "serviceAccount": service_account_name, "anchorConfigMap": anchor_name,
-               "clusterID": cluster_id, "storageID": storage_identity, "approvedAPIImages": image_list}}
     role = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": metadata("ternal-trustguard-runtime-" + suffix, operator_labels, namespace),
             "rules": [{"apiGroups": [""], "resources": ["configmaps"], "resourceNames": [anchor_name], "verbs": ["get", "update"]}]}
     binding = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": metadata("ternal-trustguard-runtime-" + suffix, operator_labels, namespace),
                "subjects": [{"kind": "ServiceAccount", "name": service_account_name, "namespace": namespace}],
                "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": role["metadata"]["name"]}}
     namespace_resource = {"apiVersion": "v1", "kind": "Namespace", "metadata": metadata(namespace, {"ternal.dev/trustguard-scope": scope_label, "app.kubernetes.io/managed-by": "ternal-trustguard-operator"})}
-    items = [namespace_resource, anchor, params, role, binding]
-    items += api_policy(names["api_pods"], names["api_pods"] + "-binding", selector, params_name, "pod")
-    items += api_policy(names["api_workloads"], names["api_workloads"] + "-binding", selector, params_name, "workload")
+    items = [namespace_resource, anchor, role, binding]
+    items += api_policy(names["api_pods"], names["api_pods"] + "-binding", selector, namespace, service_account_name, anchor_name, image_list, "pod")
+    items += api_policy(names["api_workloads"], names["api_workloads"] + "-binding", selector, namespace, service_account_name, anchor_name, image_list, "workload")
     items += anchor_policy(names["anchor_policy"], names["anchor_policy"] + "-binding", selector, anchor_name, cluster_id, storage_identity, anchor_label)
-    items += params_policy(names["params_policy"], names["params_policy"] + "-binding", selector, params_name, namespace, service_account_name, "params-" + suffix)
     return {"apiVersion": "v1", "kind": "List", "items": items}
 
 

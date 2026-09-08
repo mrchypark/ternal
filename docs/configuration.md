@@ -217,12 +217,31 @@ service account separately and grant its object-store access. Review the
 generated namespace label and cluster-scoped policy names before applying.
 Each initial render generates a fresh bootstrap token: retain the original
 manifest, and never reapply its initial anchor over an advanced epoch. For a
-release upgrade, update only the separate image-allowlist ConfigMap with the
-new verified digest before upgrading Helm. Set the chart's `image.digest` to
-the same verified digest; this
-renders `repository@digest` and takes precedence over `image.tag`.
-Removing a disposable installation
-requires deleting its admission bindings before its protected ConfigMaps.
+release upgrade, render with both the current and candidate verified digests
+by repeating `--approved-api-image`. Apply **only the two API admission
+policies**, leaving the anchor ConfigMap and its epoch unchanged. The guard
+embeds these values directly in its CEL expressions; it does not depend on a
+ConfigMap parameter cache.
+
+Extract the two API policies from that rendered manifest with the standard
+Python JSON library:
+
+```sh
+python3 -c 'import json,sys; d=json.load(sys.stdin); d["items"]=[x for x in d["items"] if x["kind"]=="ValidatingAdmissionPolicy" and x["metadata"]["name"].startswith("ternal-trustguard-api-")]; print(json.dumps(d))' \
+  < trustguard.json > api-policies.json
+kubectl apply --dry-run=server -f api-policies.json
+kubectl apply -f api-policies.json
+```
+
+Verify a server dry-run accepts the candidate StatefulSet, then upgrade Helm
+with `image.digest` set to that same verified digest. It renders
+`repository@digest` and takes precedence over `image.tag`. Once the candidate
+is Ready and its running image digest matches, repeat the policy-only update
+with just the candidate digest and verify the former image is rejected. Keep
+the existing and candidate digests admitted while a rollout is incomplete;
+never admit an image that does not enforce the external trust floor.
+Removing a disposable installation requires deleting its admission bindings
+before its protected anchor ConfigMap.
 
 The current schema is version 1 and is unchanged by this storage-mode work.
 Changing the schema version is deliberately not a rolling upgrade: the chart

@@ -48,9 +48,11 @@ class TrustGuardRendererTest(unittest.TestCase):
     def test_api_and_anchor_guards_are_fail_closed(self):
         result = self.render()
         policies = self.by_kind(result, "ValidatingAdmissionPolicy")
-        self.assertEqual(len(policies), 4)
+        self.assertEqual(len(policies), 3)
         rendered = json.dumps(result, sort_keys=True)
-        self.assertIn("parameterNotFoundAction", rendered)
+        self.assertNotIn("paramKind", rendered)
+        self.assertNotIn("paramRef", rendered)
+        self.assertNotIn("parameters", rendered)
         self.assertIn("TER NAL", rendered.replace("TERNAL", "TER NAL"))
         self.assertIn("request.operation != 'DELETE'", rendered)
         self.assertIn("pendingEpoch", rendered)
@@ -64,7 +66,7 @@ class TrustGuardRendererTest(unittest.TestCase):
         result = self.render()
         configmap_policies = [p for p in self.by_kind(result, "ValidatingAdmissionPolicy")
                                if p["spec"]["matchConstraints"]["resourceRules"][0]["resources"] == ["configmaps"]]
-        self.assertEqual(len(configmap_policies), 2)
+        self.assertEqual(len(configmap_policies), 1)
         for policy in configmap_policies:
             condition = policy["spec"]["matchConditions"][0]["expression"]
             self.assertTrue(condition.startswith("request.name == "))
@@ -86,6 +88,16 @@ class TrustGuardRendererTest(unittest.TestCase):
             trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, ["ghcr.io/mrchypark/ternal:old"], token=TOKEN)
         with self.assertRaises(ValueError):
             trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, [], token=TOKEN)
+
+    def test_api_guard_inlines_exact_current_and_candidate_images(self):
+        candidate = "ghcr.io/mrchypark/ternal@sha256:" + "c" * 64
+        result = trustguard.render("ternal-test", "ternal-data", "ternal-trust-anchor",
+                                   "ternal-cluster-a1", "b" * 64, [IMAGE, candidate], token=TOKEN)
+        rendered = json.dumps(result, sort_keys=True)
+        self.assertIn("," + IMAGE + "," + candidate + ",", rendered)
+        self.assertNotIn("params.data", rendered)
+        for binding in self.by_kind(result, "ValidatingAdmissionPolicyBinding"):
+            self.assertNotIn("paramRef", binding["spec"])
 
 
 if __name__ == "__main__":
