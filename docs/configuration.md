@@ -190,6 +190,10 @@ rollback. Its one-time bootstrap permit binds the initial database to the
 external epoch. An unresolved write keeps the anchor pending and readiness
 fails closed; restart can recover only a durably proven result. Do not clear
 pending state or re-enable bootstrap to force an old snapshot online.
+Once a fenced write starts, it has a 30-second internal deadline independent
+of client disconnects. Local reads wait for that write to finalize; uncertain
+commit outcomes still fail closed. Device state lookup failures return 503,
+while invalid or revoked device credentials return 401.
 The separately installed admission guard allows only explicitly approved API
 image digests and the configured anchor binding, preventing rollback to an
 older binary that does not enforce this check. Operators controlling these
