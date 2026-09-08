@@ -66,7 +66,7 @@ func TestRouterSetsBrowserSecurityHeaders(t *testing.T) {
 	for name, expected := range map[string]string{
 		"Cache-Control":           "no-store",
 		"Content-Security-Policy": "script-src 'self'",
-		"Referrer-Policy":         "no-referrer",
+		"Referrer-Policy":         "strict-origin",
 		"X-Content-Type-Options":  "nosniff",
 	} {
 		if got := w.Header().Get(name); !strings.Contains(got, expected) {
