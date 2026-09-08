@@ -105,7 +105,7 @@ func page(identity *auth.AuthContext, active string, workspace g.Node) g.Node {
 				h.Aside(h.Class("border-b border-ink-200 bg-ink-900 px-5 py-6 text-ink-100 lg:fixed lg:inset-y-0 lg:w-[17rem] lg:border-b-0 lg:border-r lg:border-ink-700"),
 					brand(),
 					navigation(identity, active, false),
-					h.Div(h.Class("mt-8 hidden border-t border-ink-700 pt-5 text-sm lg:block"),
+					h.Div(h.Class("mt-8 border-t border-ink-700 pt-5 text-sm"),
 						h.P(h.Class("font-semibold text-ink-100"), g.Text(identity.User.Subject)),
 						h.P(h.Class("mt-1 text-xs text-ink-400"), g.Text(role(identity))),
 						h.Form(h.Method("post"), h.Action("/auth/logout"), h.Class("mt-4"),

@@ -89,7 +89,7 @@ func TestProxyUsesGrantedHomeIdentityForEndpointAndFly(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TERNAL_CONFIG_DIR", t.TempDir())
 	t.Setenv("TERNAL_SESSION_COOKIE", "")
 	t.Setenv("TERNAL_CSRF_TOKEN", "")
 
@@ -187,8 +187,44 @@ func TestSessionCanBeSuppliedWithoutPersistentState(t *testing.T) {
 	}
 }
 
+func TestConfigDirOverrideIsolatesSessionLifecycle(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("TERNAL_CONFIG_DIR", configDir)
+	t.Setenv("TERNAL_SESSION_COOKIE", "")
+
+	path, err := sessionPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(configDir, "ternal", sessionFile); path != want {
+		t.Fatalf("session path = %q, want %q", path, want)
+	}
+	session := &Session{Cookie: "isolated-session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	if err := saveSession(session); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := loadSession(); err != nil || got.Cookie != session.Cookie {
+		t.Fatalf("loaded session = %#v, err=%v", got, err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie("ternal_session")
+		if err != nil || cookie.Value != session.Cookie {
+			t.Errorf("logout cookie=%v err=%v", cookie, err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := logout(server.Client(), server.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("isolated session remained after logout: %v", err)
+	}
+}
+
 func TestLogoutRevokesServerBeforeClearingSession(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TERNAL_CONFIG_DIR", t.TempDir())
 	t.Setenv("TERNAL_SESSION_COOKIE", "")
 	session := &Session{Cookie: "signed-session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix()}
 	if err := saveSession(session); err != nil {
@@ -211,7 +247,7 @@ func TestLogoutRevokesServerBeforeClearingSession(t *testing.T) {
 }
 
 func TestLogoutRetainsSessionWhenRevocationFails(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TERNAL_CONFIG_DIR", t.TempDir())
 	t.Setenv("TERNAL_SESSION_COOKIE", "")
 	session := &Session{Cookie: "signed-session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix()}
 	if err := saveSession(session); err != nil {
@@ -230,7 +266,7 @@ func TestLogoutRetainsSessionWhenRevocationFails(t *testing.T) {
 }
 
 func TestLogoutRetainsSessionWhenServerReturnsUnauthorized(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TERNAL_CONFIG_DIR", t.TempDir())
 	t.Setenv("TERNAL_SESSION_COOKIE", "")
 	session := &Session{Cookie: "signed-session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix()}
 	if err := saveSession(session); err != nil {
@@ -250,7 +286,7 @@ func TestLogoutRetainsSessionWhenServerReturnsUnauthorized(t *testing.T) {
 }
 
 func TestLogoutSubmitsLocallyExpiredSession(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TERNAL_CONFIG_DIR", t.TempDir())
 	t.Setenv("TERNAL_SESSION_COOKIE", "")
 	session := &Session{Cookie: "server-still-valid", CSRFToken: "csrf", ExpiresAt: time.Now().Add(-time.Hour).Unix()}
 	if err := saveSession(session); err != nil {
@@ -275,7 +311,7 @@ func TestLogoutSubmitsLocallyExpiredSession(t *testing.T) {
 }
 
 func TestLogoutOfEnvironmentSessionPreservesDiskSession(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TERNAL_CONFIG_DIR", t.TempDir())
 	diskSession := &Session{Cookie: "disk-session", CSRFToken: "disk-csrf", ExpiresAt: time.Now().Add(time.Hour).Unix()}
 	if err := saveSession(diskSession); err != nil {
 		t.Fatal(err)

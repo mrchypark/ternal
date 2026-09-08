@@ -750,9 +750,13 @@ func addSession(req *http.Request, session *Session) {
 }
 
 func sessionPath() (string, error) {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
+	configDir := os.Getenv("TERNAL_CONFIG_DIR")
+	if configDir == "" {
+		var err error
+		configDir, err = os.UserConfigDir()
+		if err != nil {
+			return "", err
+		}
 	}
 	return filepath.Join(configDir, "ternal", sessionFile), nil
 }
