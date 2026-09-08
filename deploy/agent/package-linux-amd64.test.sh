@@ -31,7 +31,7 @@ for platform in linux-amd64 linux-arm64; do
 	tar -tzf "$archive" | grep "^ternal-agent-$platform/ternal-agent$" >/dev/null
 	grep "Ternal agent $platform bundle" "$package/README.txt" >/dev/null
 	grep -F 'glibc 2.39 or newer (Ubuntu 24.04 baseline)' "$package/README.txt" >/dev/null
-	grep 'mrchypark/pigeons 0.2.1 (72686b05aebcaf7f5a6d879c9d91d94a8758ca13), MIT licensed' "$package/README.txt" >/dev/null
+	grep 'mrchypark/pigeons 0.2.1 (37d169cc88765a7d3e2569e6d1bb79056d4ab18c), MIT licensed' "$package/README.txt" >/dev/null
 	grep 'Permission is hereby granted, free of charge' "$package/LICENSE.pigeons" >/dev/null
 
 	cp "$archive" "$work/first-$platform.tar.gz"

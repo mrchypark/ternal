@@ -6,19 +6,24 @@ Ternal owns inventory, policy, 300-second grants, audit, route selection, and
 strict SSH host-key trust. None of that policy lives in pigeons.
 
 The bundle is built without a local patch file from
-`mrchypark/pigeons` commit `72686b05aebcaf7f5a6d879c9d91d94a8758ca13`.
+`mrchypark/pigeons` commit `37d169cc88765a7d3e2569e6d1bb79056d4ab18c`.
 That commit is based on upstream `n0-computer/pigeons` main after release
-`v0.2.1` and contains only the two generic changes proposed upstream:
+`v0.2.1` and contains the following generic changes proposed upstream:
 
 - [n0-computer/pigeons#21](https://github.com/n0-computer/pigeons/pull/21):
   versioned `/pigeons/1` stream preface and bidirectional half-close/drain.
 - [n0-computer/pigeons#22](https://github.com/n0-computer/pigeons/pull/22):
   caller-selected persistent client identity and a full remote
   `EndpointAddr` assembled from relay/direct candidates.
+- [n0-computer/pigeons#23](https://github.com/n0-computer/pigeons/pull/23):
+  await pending config-file writes before returning from storage. This fixes
+  immediate reloads observing empty settings; it does not promise crash durability.
 
-Both changes must live inside pigeons because it owns the iroh endpoint,
+The transport changes must live inside pigeons because it owns the iroh endpoint,
 connection, and QUIC stream. The old Ternal patch's config-file and key-mode
-fixes are already upstream. Extra relay inputs are composed by Ternal as
+fixes are already upstream. The write-completion fix belongs in pigeons' shared
+config writer so every caller receives the same guarantee. Extra relay inputs
+are composed by Ternal as
 repeated upstream `--relay-url` arguments; separate client/server homes provide
 separate identities; network-isolated tests prove route choice. Those do not
 need fork changes.
