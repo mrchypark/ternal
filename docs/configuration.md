@@ -218,7 +218,10 @@ generated namespace label and cluster-scoped policy names before applying.
 Each initial render generates a fresh bootstrap token: retain the original
 manifest, and never reapply its initial anchor over an advanced epoch. For a
 release upgrade, update only the separate image-allowlist ConfigMap with the
-new verified digest before upgrading Helm. Removing a disposable installation
+new verified digest before upgrading Helm. Set the chart's `image.digest` to
+the same verified digest; this
+renders `repository@digest` and takes precedence over `image.tag`.
+Removing a disposable installation
 requires deleting its admission bindings before its protected ConfigMaps.
 
 The current schema is version 1 and is unchanged by this storage-mode work.
