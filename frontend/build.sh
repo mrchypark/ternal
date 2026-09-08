@@ -28,3 +28,5 @@ printf '%s  %s\n' e484d9171a9db30a39c8f16e3d709d4137f3211c659f8e6125816635033d59
 
 "$work/tailwindcss" -i "$root/frontend/src/input.css" -o "$out/app.css" --minify
 cp "$work/htmx.min.js" "$out/htmx.min.js"
+cp "$root/frontend/src/assets/brand/ternal-logo-640.png" "$out/ternal-logo-640.png"
+cp "$root/frontend/src/assets/brand/ternal-icon-256.png" "$out/ternal-icon-256.png"
