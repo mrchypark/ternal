@@ -100,7 +100,7 @@ mkdir -p "$work/extracted"
 tar -xzf "$work/dist/$bundle.tar.gz" -C "$work/extracted"
 if (
 	unset TERNAL_TRANSPORT_BIN
-	HOME="$work/home" \
+	HOME="$work/home" TERNAL_CONFIG_DIR="$work/config" \
 	TERNALCTL_TEST_TRANSPORT_LOG="$work/pigeons.log" \
 	TERNAL_API_URL=http://127.0.0.1:1 \
 	TERNAL_USER=package-test \
