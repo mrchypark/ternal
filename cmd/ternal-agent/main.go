@@ -333,6 +333,24 @@ func readAuthorizedKeysState(path string) (*authorizedKeysState, error) {
 	return &state, nil
 }
 
+const childShutdownGrace = 5 * time.Second
+
+// stopChild asks the roost to close its router before forcibly terminating it.
+// exit is owned by the sole child.Wait goroutine and is consumed exactly once.
+func stopChild(child *exec.Cmd, exit <-chan error, grace time.Duration) error {
+	if child.Process == nil {
+		return nil
+	}
+	_ = child.Process.Signal(os.Interrupt)
+	select {
+	case err := <-exit:
+		return err
+	case <-time.After(grace):
+		_ = child.Process.Kill()
+		return <-exit
+	}
+}
+
 func supervise(parent context.Context, cfg config) error {
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -345,7 +363,7 @@ func supervise(parent context.Context, cfg config) error {
 		return err
 	}
 	for {
-		child := exec.CommandContext(ctx, cfg.Pigeons, roostArgs(cfg)...)
+		child := exec.Command(cfg.Pigeons, roostArgs(cfg)...)
 		child.Stdout, child.Stderr = os.Stderr, os.Stderr
 		if err := child.Start(); err != nil {
 			return err
@@ -356,8 +374,7 @@ func supervise(parent context.Context, cfg config) error {
 		ticker := time.NewTicker(cfg.HeartbeatEvery)
 		if err := syncControlPlane(ctx, cfg, "healthy"); isUnauthorized(err) {
 			ticker.Stop()
-			_ = child.Process.Kill()
-			<-exit
+			_ = stopChild(child, exit, childShutdownGrace)
 			_ = writeStatus(cfg.StatusFile, runtimeStatus{Service: "revoked", EndpointID: endpointID, Child: "stopped", LastError: "device authorization revoked", UpdatedAt: time.Now().Unix()})
 			return err
 		}
@@ -365,11 +382,7 @@ func supervise(parent context.Context, cfg config) error {
 			select {
 			case <-ctx.Done():
 				ticker.Stop()
-				select {
-				case <-exit:
-				case <-time.After(10 * time.Second):
-					_ = child.Process.Kill()
-				}
+				_ = stopChild(child, exit, childShutdownGrace)
 				_ = writeStatus(cfg.StatusFile, runtimeStatus{Service: "stopped", EndpointID: endpointID, Child: "stopped", UpdatedAt: time.Now().Unix()})
 				return nil
 			case childErr := <-exit:
@@ -385,8 +398,7 @@ func supervise(parent context.Context, cfg config) error {
 				heartbeatErr := syncControlPlane(ctx, cfg, "healthy")
 				if isUnauthorized(heartbeatErr) {
 					ticker.Stop()
-					_ = child.Process.Kill()
-					<-exit
+					_ = stopChild(child, exit, childShutdownGrace)
 					_ = writeStatus(cfg.StatusFile, runtimeStatus{Service: "revoked", EndpointID: endpointID, Child: "stopped", LastError: "device authorization revoked", UpdatedAt: time.Now().Unix()})
 					return heartbeatErr
 				}

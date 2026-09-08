@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -190,6 +191,9 @@ func TestUnauthorizedControlPlaneResponseIsFatal(t *testing.T) {
 }
 
 func TestSupervisorStopsTransportWhenDeviceIsRevoked(t *testing.T) {
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "pigeons-ready")
+	t.Setenv("PIGEONS_READY", ready)
 	heartbeats := make(chan string, 4)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -203,6 +207,17 @@ func TestSupervisorStopsTransportWhenDeviceIsRevoked(t *testing.T) {
 			heartbeats <- body.Status
 			w.WriteHeader(http.StatusServiceUnavailable)
 		case "/agents/authorized-keys":
+			for deadline := time.Now().Add(time.Second); ; {
+				if _, err := os.Stat(ready); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Error("pigeons did not install SIGINT trap before revocation")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
 			w.WriteHeader(http.StatusUnauthorized)
 		default:
 			http.NotFound(w, r)
@@ -210,9 +225,10 @@ func TestSupervisorStopsTransportWhenDeviceIsRevoked(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	dir := t.TempDir()
 	pigeons := filepath.Join(dir, "pigeons")
-	script := "#!/bin/sh\nif [ \"$1\" = endpoint-id ]; then printf '%s\\n' '" + strings.Repeat("a", 64) + "'; exit 0; fi\nexec sleep 60\n"
+	interrupted := filepath.Join(dir, "pigeons-interrupted")
+	t.Setenv("PIGEONS_INTERRUPTED", interrupted)
+	script := "#!/bin/sh\nif [ \"$1\" = \"endpoint-id\" ]; then printf '%s\\n' '" + strings.Repeat("a", 64) + "'; exit 0; fi\ntrap 'printf interrupted > \"$PIGEONS_INTERRUPTED\"; exit 0' INT\nprintf ready > \"$PIGEONS_READY\"\nwhile :; do sleep 1; done\n"
 	if err := os.WriteFile(pigeons, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -235,9 +251,55 @@ func TestSupervisorStopsTransportWhenDeviceIsRevoked(t *testing.T) {
 	if first, second := <-heartbeats, <-heartbeats; first != "starting" || second != "healthy" {
 		t.Fatalf("supervisor heartbeat states = %q, %q", first, second)
 	}
+	if _, err := os.Stat(interrupted); err != nil {
+		t.Fatalf("revoked supervisor did not deliver SIGINT to pigeons: %v", err)
+	}
 	var status runtimeStatus
 	data, err := os.ReadFile(cfg.StatusFile)
 	if err != nil || json.Unmarshal(data, &status) != nil || status.Service != "revoked" || status.Child != "stopped" {
 		t.Fatalf("revoked status=%#v read error=%v", status, err)
+	}
+}
+
+func TestStopChildFallsBackToKillAfterGrace(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("POSIX shell unavailable")
+	}
+	ready := filepath.Join(t.TempDir(), "pigeons-ready")
+	t.Setenv("PIGEONS_READY", ready)
+	child := exec.Command("/bin/sh", "-c", "trap '' INT; printf ready > \"$PIGEONS_READY\"; exec sleep 60")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exit := make(chan error, 1)
+	waitDone := make(chan struct{})
+	go func() { exit <- child.Wait(); close(waitDone) }()
+	t.Cleanup(func() {
+		select {
+		case <-waitDone:
+			return
+		default:
+			_ = child.Process.Kill()
+			<-waitDone
+		}
+	})
+	for deadline := time.Now().Add(time.Second); ; {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("INT-ignoring child did not become ready")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	grace := 10 * time.Millisecond
+	started := time.Now()
+	exitErr := stopChild(child, exit, grace)
+	elapsed := time.Since(started)
+	if elapsed < grace || elapsed > time.Second {
+		t.Fatalf("fallback shutdown took %s", elapsed)
+	}
+	if exitErr == nil {
+		t.Fatal("fallback child was not killed and reaped")
 	}
 }
