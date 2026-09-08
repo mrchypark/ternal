@@ -1,5 +1,5 @@
 @import "tailwindcss" source(none);
-@source "../../internal/web";
+@source "../../internal/web/*.go";
 
 @theme {
   --font-sans: "Avenir Next", "Segoe UI", sans-serif;
