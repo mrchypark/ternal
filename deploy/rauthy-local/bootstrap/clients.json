@@ -16,6 +16,7 @@
       "authorization_code",
       "urn:ietf:params:oauth:grant-type:device_code"
     ],
+    "challenges": ["S256"],
     "access_token_alg": "RS256",
     "id_token_alg": "RS256",
     "auth_code_lifetime": 300,
