@@ -38,7 +38,13 @@ jq -e '
 	      | select(test("(^|_)(access|refresh|id|device)_?token($|_)"))] | length == 0)
 ' "$session" >/dev/null
 
-mode=$(stat -f '%Lp' "$session" 2>/dev/null || stat -c '%a' "$session")
+# GNU stat first: on Linux, `stat -f` succeeds and prints filesystem
+# information rather than a mode, so the BSD form must never be tried first.
+if stat -c '%a' "$session" >/dev/null 2>&1; then
+	mode=$(stat -c '%a' "$session")
+else
+	mode=$(stat -f '%Lp' "$session")
+fi
 [ "$mode" = 600 ] || { echo "CLI session mode is $mode, want 600" >&2; exit 1; }
 run_cli whoami | grep -q '^User: '
 if run_cli hosts | grep -Eq '(^|[[:space:]])[[:xdigit:]]{64}($|[[:space:]])'; then
