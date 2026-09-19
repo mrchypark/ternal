@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -56,7 +59,7 @@ func TestAuthorizedKeysStateRejectsInvalidAndLockSerializes(t *testing.T) {
 }
 
 func TestAuthorizedKeysAreValidatedAndWrittenWithStrictMode(t *testing.T) {
-	body := []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D test\n")
+	body := []byte("expiry-time=\"20330101000000\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n")
 	if err := validateAuthorizedKeys(body); err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +80,8 @@ func TestAuthorizedKeysAreValidatedAndWrittenWithStrictMode(t *testing.T) {
 }
 
 func TestSyncAuthorizedKeysRejectsRollbackAndEquivocation(t *testing.T) {
-	oldKeys := []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D old\n")
-	newKeys := []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D new\n")
+	oldKeys := []byte("expiry-time=\"20330101000000\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D old\n")
+	newKeys := []byte("expiry-time=\"20330101000000\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D new\n")
 	digest := func(body []byte) string { sum := sha256.Sum256(body); return hex.EncodeToString(sum[:]) }
 	for _, test := range []struct {
 		name       string
@@ -301,5 +304,150 @@ func TestStopChildFallsBackToKillAfterGrace(t *testing.T) {
 	}
 	if exitErr == nil {
 		t.Fatal("fallback child was not killed and reaped")
+	}
+}
+
+func TestAuthorizedKeysRequireExpiryTime(t *testing.T) {
+	good := []byte("expiry-time=\"20330101000000\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n")
+	if err := validateAuthorizedKeys(good); err != nil {
+		t.Fatalf("expiry-time line rejected: %v", err)
+	}
+	for _, bad := range []string{
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n",
+		"expiry-time=20330101000000 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n",
+		"expiry-time=\"notatime\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n",
+		"command=\"evil\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n",
+	} {
+		if err := validateAuthorizedKeys([]byte(bad)); err == nil {
+			t.Errorf("line without valid expiry-time accepted: %q", bad)
+		}
+	}
+}
+
+func TestSyncAuthorizedKeysRejectsOversizedSnapshot(t *testing.T) {
+	body := bytes.Repeat([]byte("x"), authorizedKeysMaxBytes+1)
+	sum := sha256.Sum256(body)
+	digestHex := hex.EncodeToString(sum[:])
+	acks := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agents/authorized-keys":
+			w.Header().Set("X-Ternal-Authorized-Keys-Generation", "7")
+			w.Header().Set("X-Ternal-Authorized-Keys-Sha256", digestHex)
+			_, _ = w.Write(body)
+		case "/agents/authorized-keys/ack":
+			acks++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "authorized_keys")
+	pigeons := filepath.Join(dir, "pigeons")
+	if err := os.WriteFile(pigeons, []byte("#!/bin/sh\nprintf '%s\\n' '"+strings.Repeat("a", 64)+"'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "device.key")
+	if _, err := deviceauth.GenerateKey(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	identityPath := filepath.Join(dir, "device.json")
+	if err := deviceauth.WriteIdentity(identityPath, deviceauth.Identity{Serial: "TEST-HUGE", HostKeyFingerprint: "SHA256:" + strings.Repeat("A", 43)}); err != nil {
+		t.Fatal(err)
+	}
+	err := syncAuthorizedKeys(context.Background(), config{APIURL: server.URL, Pigeons: pigeons, DeviceKey: keyPath, IdentityFile: identityPath, SSHUser: "ops"}, path)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") || acks != 0 {
+		t.Fatalf("oversized snapshot err = %v acks = %d", err, acks)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatal("oversized snapshot was installed")
+	}
+}
+
+func TestEnsureUserOwnedAssignsTargetAccount(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("chown behavior requires root")
+	}
+	target, err := user.Lookup("nobody")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), ".ssh", "authorized_keys")
+	if err := atomicWrite(path, []byte("test\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureUserOwned(path, "nobody"); err != nil {
+		t.Fatal(err)
+	}
+	uid, _ := strconv.Atoi(target.Uid)
+	gid, _ := strconv.Atoi(target.Gid)
+	if !fileOwnedBy(path, uid, gid) {
+		t.Fatal("authorized_keys not owned by target account after ensure")
+	}
+	if !fileOwnedBy(filepath.Dir(path), uid, gid) {
+		t.Fatal("fresh parent dir not owned by target account after ensure")
+	}
+}
+
+func TestEnsureUserOwnedIsNoopUnprivileged(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("unprivileged behavior only")
+	}
+	if err := ensureUserOwned(filepath.Join(t.TempDir(), "keys"), "nobody"); err != nil {
+		t.Fatalf("unprivileged ensure = %v, want nil", err)
+	}
+}
+
+func TestRoostEndpointIDHasDeadlineAndCache(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake pigeons uses the repository's POSIX shell test convention")
+	}
+	oldTimeout := endpointIDTimeout
+	endpointIDTimeout = 3 * time.Second
+	t.Cleanup(func() { endpointIDTimeout = oldTimeout })
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	slow := filepath.Join(dir, "pigeons")
+	script := "#!/bin/sh\necho x >> \"" + calls + "\"\nsleep 10\nprintf '%s\\n' '" + strings.Repeat("b", 64) + "'\n"
+	if err := os.WriteFile(slow, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := roostEndpointID(config{Pigeons: slow}); err == nil {
+		t.Fatal("hung endpoint-id helper was not bounded")
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("endpoint-id took %v without deadline", took)
+	}
+	fast := filepath.Join(dir, "fast-pigeons")
+	fastScript := "#!/bin/sh\necho x >> \"" + calls + "\"\nprintf '%s\\n' '" + strings.Repeat("c", 64) + "'\n"
+	if err := os.WriteFile(fast, []byte(fastScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config{Pigeons: fast}
+	first, err := roostEndpointID(cfg)
+	if err != nil || first != strings.Repeat("c", 64) {
+		t.Fatalf("endpoint = %q, err=%v", first, err)
+	}
+	before, _ := os.ReadFile(calls)
+	if _, err := roostEndpointID(cfg); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(calls)
+	if len(after) != len(before) {
+		t.Fatal("immutable endpoint identity was re-executed instead of cached")
+	}
+}
+
+func TestPigeonsFileNameIsPlatformAware(t *testing.T) {
+	if got := pigeonsFileName("windows"); got != "pigeons.exe" {
+		t.Fatalf("windows binary = %q, want pigeons.exe", got)
+	}
+	for _, goos := range []string{"linux", "darwin"} {
+		if got := pigeonsFileName(goos); got != "pigeons" {
+			t.Fatalf("%s binary = %q, want pigeons", goos, got)
+		}
 	}
 }
