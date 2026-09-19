@@ -15,7 +15,9 @@ func TestSessionRevokedCanceledReadDoesNotWaitForWriter(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	s.mu.Lock()
+	if !s.mu.Lock(context.Background()) {
+		t.Fatal("test lock not acquired")
+	}
 	done := make(chan error, 1)
 	go func() {
 		_, err := s.SessionRevoked(ctx, "test-session")

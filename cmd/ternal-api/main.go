@@ -22,6 +22,20 @@ func main() {
 	}
 }
 
+// newHTTPServer applies the single timeout policy for all listeners:
+// headers fast, bodies bounded (1 MiB endpoints), handlers given room for
+// upstream OIDC round trips. No endpoint streams, so WriteTimeout is safe.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
 func run() error {
 	s, err := store.OpenFromEnv(context.Background())
 	if err != nil {
@@ -37,12 +51,7 @@ func run() error {
 	if err := apiServer.ValidateRuntime(bind); err != nil {
 		return err
 	}
-	server := &http.Server{
-		Addr:              bind,
-		Handler:           apiServer.Router(),
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
+	server := newHTTPServer(bind, apiServer.Router())
 	listener, err := net.Listen("tcp", bind)
 	if err != nil {
 		return err
@@ -55,12 +64,7 @@ func run() error {
 			_ = listener.Close()
 			return err
 		}
-		servers = append(servers, &http.Server{
-			Addr:              relayBind,
-			Handler:           apiServer.RelayRouter(),
-			ReadHeaderTimeout: 5 * time.Second,
-			IdleTimeout:       60 * time.Second,
-		})
+		servers = append(servers, newHTTPServer(relayBind, apiServer.RelayRouter()))
 		listeners = append(listeners, relayListener)
 	}
 

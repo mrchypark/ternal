@@ -1,0 +1,18 @@
+{
+  "tag": "v0.3.15-rc.8",
+  "source_commit": "299147e9827de718d8fd1191937e8162978faa2e",
+  "workflow_run_id": 34263785910,
+  "checksums_verified": 16,
+  "archives_verified": [
+    "ternal-agent-linux-amd64.tar.gz",
+    "ternal-agent-linux-arm64.tar.gz",
+    "ternalctl-linux-amd64.tar.gz",
+    "ternalctl-linux-arm64.tar.gz",
+    "ternalctl-macos-amd64.tar.gz",
+    "ternalctl-macos-arm64.tar.gz",
+    "ternalctl-windows-amd64.zip",
+    "ternalctl-windows-arm64.zip"
+  ],
+  "signed_image": "ghcr.io/mrchypark/ternal@sha256:437df0868a6ab56665a7564e6b38c923dfe8e2d77fae1aea87f86fd9df638b1e",
+  "guard_verified": true
+}

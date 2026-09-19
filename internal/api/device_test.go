@@ -110,7 +110,7 @@ func TestSignedDeviceHeartbeatAndAuthorizedKeys(t *testing.T) {
 	keysReq.Header.Set("X-Ternal-Device-Signature", deviceauth.Sign(private, keysPayload))
 	keysRes := httptest.NewRecorder()
 	router.ServeHTTP(keysRes, keysReq)
-	if keysRes.Code != http.StatusOK || keysRes.Body.String() != key+"\n" {
+	if keysRes.Code != http.StatusOK || !strings.HasPrefix(keysRes.Body.String(), "expiry-time=\"") || !strings.HasSuffix(keysRes.Body.String(), " "+key+"\n") {
 		t.Fatalf("keys status=%d body=%q", keysRes.Code, keysRes.Body.String())
 	}
 	generation := keysRes.Header().Get("X-Ternal-Authorized-Keys-Generation")

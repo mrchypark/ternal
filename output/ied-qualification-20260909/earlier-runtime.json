@@ -1,0 +1,72 @@
+{
+  "images": [
+    {
+      "image": "sha256:c6f07aaed4a22be88824935aac1a09609e80e4f7a93b3b705c006c02ce567a9f",
+      "imageID": "ghcr.io/mrchypark/ternal@sha256:0b708a5cbdf0fc973ebec15dea7a32fec647da6bddee40bf372600228b253bf8"
+    }
+  ],
+  "volumes": [
+    {
+      "emptyDir": {},
+      "name": "data"
+    },
+    {
+      "name": "kube-api-access-j65mc",
+      "projected": {
+        "defaultMode": 420,
+        "sources": [
+          {
+            "serviceAccountToken": {
+              "expirationSeconds": 3607,
+              "path": "token"
+            }
+          },
+          {
+            "configMap": {
+              "items": [
+                {
+                  "key": "ca.crt",
+                  "path": "ca.crt"
+                }
+              ],
+              "name": "kube-root-ca.crt"
+            }
+          },
+          {
+            "downwardAPI": {
+              "items": [
+                {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "metadata.namespace"
+                  },
+                  "path": "namespace"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "serviceAccount": "ternal-rc-data",
+  "securityContext": {
+    "fsGroup": 65532,
+    "seccompProfile": {
+      "type": "RuntimeDefault"
+    }
+  },
+  "containerSecurity": [
+    {
+      "allowPrivilegeEscalation": false,
+      "capabilities": {
+        "drop": [
+          "ALL"
+        ]
+      },
+      "readOnlyRootFilesystem": true,
+      "runAsNonRoot": true,
+      "runAsUser": 65532
+    }
+  ]
+}

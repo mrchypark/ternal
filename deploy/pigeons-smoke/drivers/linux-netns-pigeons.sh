@@ -164,11 +164,12 @@ prepare() {
 		setup_external_egress "$netns" "$host_if" "$host_ip" "$subnet" "$relay_url"
 	else
 		relay_port=${TERNAL_TRANSPORT_RELAY_PORT:-3340}
-		while nc -z 127.0.0.1 "$relay_port" >/dev/null 2>&1; do relay_port=$((relay_port + 1)); done
+		while nc -z "$host_ip" "$relay_port" >/dev/null 2>&1; do relay_port=$((relay_port + 1)); done
 		relay_name="ternal-transport-relay-$suffix"
 		write_state relay-name "$relay_name"
 		write_state relay-port "$relay_port"
-		docker run -d --name "$relay_name" -p "0.0.0.0:$relay_port:3340" \
+		# Isolated veth address only; the fixture client uses host_ip.
+		docker run -d --name "$relay_name" -p "$host_ip:$relay_port:3340" \
 			n0computer/iroh-relay@sha256:7805aaf67ca59e04cd54999d142c85ed72e38e5bd4515c902fa5c8d838674747 --dev >/dev/null
 		wait_tcp "$host_ip" "$relay_port" || {
 			docker logs "$relay_name" >&2 || true

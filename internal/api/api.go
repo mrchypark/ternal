@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -653,11 +652,14 @@ func (s *Server) handleIssueSSHCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "register an SSH public key before requesting access")
 		return
 	}
-	if err := s.store.IssueSSHAccess(r.Context(), principalID, host.ID, req.SSHUser, time.Now().Add(5*time.Minute).Unix()); err != nil {
+	grantID, err := s.store.IssueSSHAccess(r.Context(), principalID, host.ID, req.SSHUser, time.Now().Add(5*time.Minute).Unix())
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not issue access grant")
 		return
 	}
-	writeJSON(w, http.StatusOK, cmd)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"program": cmd.Program, "args": cmd.Args, "grant_id": grantID,
+	})
 }
 
 func (s *Server) handleSSHConfig(w http.ResponseWriter, r *http.Request) {
@@ -697,16 +699,31 @@ func (s *Server) handleSSHConfig(w http.ResponseWriter, r *http.Request) {
 				options = append(options, "  "+strings.Replace(cmd.Args[i+1], "=", " ", 1))
 			}
 		}
-		configs = append(configs, fmt.Sprintf("Host %s\n  HostName %s\n  Port %d\n  User %s\n%s",
-			h.Name, h.EndpointID, h.SSHPort, h.SSHUser, strings.Join(options, "\n")))
+		entry, ok := sshConfigEntry(h.Name, h.EndpointID, h.SSHPort, h.SSHUser, options)
+		if !ok {
+			continue
+		}
+		configs = append(configs, entry)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"configs": configs})
+}
+
+// sshConfigEntry renders one SSH config block. It reports false for host
+// names outside the strict alias grammar so legacy rows can never inject
+// additional directives; writers reject such names at enrollment time.
+func sshConfigEntry(name, endpointID string, sshPort uint16, sshUser string, options []string) (string, bool) {
+	if !core.ValidHostName(name) || !core.ValidSSHUser(sshUser) {
+		return "", false
+	}
+	return fmt.Sprintf("Host %s\n  HostName %s\n  Port %d\n  User %s\n%s",
+		name, endpointID, sshPort, sshUser, strings.Join(options, "\n")), true
 }
 
 func (s *Server) handleIssueRelayGrant(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		HostID           string `json:"host_id"`
 		ClientEndpointID string `json:"client_endpoint_id"`
+		SSHUser          string `json:"ssh_user"`
 		TTL              int64  `json:"ttl"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -748,8 +765,15 @@ func (s *Server) handleIssueRelayGrant(w http.ResponseWriter, r *http.Request) {
 		}
 		claims := authClaims(identity)
 		allowed := false
+		// Authorize the account this connection will actually use, not the
+		// host default: a policy for ops on a root-default host must carry
+		// through the transport step. Absent means the historical default.
+		account := req.SSHUser
+		if account == "" {
+			account = host.SSHUser
+		}
 		for i := range policies {
-			if core.PolicyAllowsSSHUser(claims, host, &policies[i], host.SSHUser) {
+			if core.PolicyAllowsSSHUser(claims, host, &policies[i], account) {
 				allowed = true
 				break
 			}
@@ -825,39 +849,33 @@ func (s *Server) handleKeyStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAccessGrants(w http.ResponseWriter, r *http.Request) {
-	grants, err := s.store.ListAccessGrants(r.Context())
+	identity := auth.GetAuth(r)
+	var grants []store.AccessGrant
+	var err error
+	if identity.IsAdmin {
+		grants, err = s.store.ListAccessGrants(r.Context())
+	} else {
+		grants, err = s.store.ListUserAccessGrants(r.Context(), identity.User.PrincipalID())
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	identity := auth.GetAuth(r)
-	if !identity.IsAdmin {
-		filtered := grants[:0]
-		for _, grant := range grants {
-			if grant.UserID == identity.User.PrincipalID() {
-				filtered = append(filtered, grant)
-			}
-		}
-		grants = filtered
 	}
 	writeJSON(w, http.StatusOK, grants)
 }
 
 func (s *Server) handleListAccessRequests(w http.ResponseWriter, r *http.Request) {
-	requests, err := s.store.ListAccessRequests(r.Context())
+	identity := auth.GetAuth(r)
+	var requests []store.AccessRequest
+	var err error
+	if identity.IsAdmin {
+		requests, err = s.store.ListAccessRequests(r.Context())
+	} else {
+		requests, err = s.store.ListUserAccessRequests(r.Context(), identity.User.PrincipalID())
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	identity := auth.GetAuth(r)
-	if !identity.IsAdmin {
-		filtered := requests[:0]
-		for _, request := range requests {
-			if request.UserID == identity.User.PrincipalID() {
-				filtered = append(filtered, request)
-			}
-		}
-		requests = filtered
 	}
 	writeJSON(w, http.StatusOK, requests)
 }
@@ -1104,18 +1122,7 @@ func (s *Server) handleAgentAuthorizedKeys(w http.ResponseWriter, r *http.Reques
 		writeDeviceVerificationError(w, err)
 		return
 	}
-	keys, grants, err := s.store.AuthorizedKeysSnapshotForHost(r.Context(), device.HostID, sshUser)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	body := strings.Join(keys, "\n")
-	if body != "" {
-		body += "\n"
-	}
-	digest := sha256.Sum256([]byte(body))
-	digestHex := hex.EncodeToString(digest[:])
-	generation, err := s.store.AuthorizedKeysGeneration(r.Context(), device.HostID, sshUser, digestHex, grants)
+	body, digestHex, generation, err := s.store.PublishAuthorizedKeysSnapshot(r.Context(), device.HostID, sshUser)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return

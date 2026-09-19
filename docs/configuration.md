@@ -237,6 +237,11 @@ kubectl apply --dry-run=server -f api-policies.json
 kubectl apply -f api-policies.json
 ```
 
+Guard resource names embed a readable cluster prefix plus a hash of the full
+cluster ID. Manifests rendered before this naming change use the raw ID
+suffix and no longer match: delete those guard resources before applying a
+re-rendered manifest.
+
 Verify a server dry-run accepts the candidate StatefulSet, then upgrade Helm
 with `image.digest` set to that same verified digest. It renders
 `repository@digest` and takes precedence over `image.tag`. Once the candidate

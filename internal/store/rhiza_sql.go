@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,7 +19,25 @@ import (
 type rhizaSQL struct {
 	db      *rhiza.DB
 	trust   *trustAnchor
-	trustMu sync.RWMutex
+	trustMu ctxRWMutex
+}
+
+// acquireTrustRead blocks for the trust read lock like RLock, but abandons
+// the wait when ctx expires (same reaper pattern as Store.acquireRead).
+func (d *rhizaSQL) acquireTrustRead(ctx context.Context) (release func(), ok bool) {
+	if !d.trustMu.RLock(ctx) {
+		return nil, false
+	}
+	return d.trustMu.RUnlock, true
+}
+
+// acquireTrustWrite blocks for the trust write lock like Lock, but abandons
+// the wait when ctx expires (same reaper pattern as Store.acquireWrite).
+func (d *rhizaSQL) acquireTrustWrite(ctx context.Context) (release func(), ok bool) {
+	if !d.trustMu.Lock(ctx) {
+		return nil, false
+	}
+	return d.trustMu.Unlock, true
 }
 
 type rhizaRows struct {
@@ -129,8 +146,11 @@ func (d *rhizaSQL) QueryContext(ctx context.Context, statement string, args ...a
 	if d.trust == nil {
 		return d.queryRaw(ctx, statement, args...)
 	}
-	d.trustMu.RLock()
-	defer d.trustMu.RUnlock()
+	unlock, ok := d.acquireTrustRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	// The query is intentionally between the two external reads: returning a
 	// result after a restore or anchor change would otherwise leak stale state.
 	first, rv, err := d.trust.get(ctx)
@@ -173,8 +193,11 @@ func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, or
 		response, err := d.db.Execute(ctx, request)
 		return committedResponse(response, err)
 	}
-	d.trustMu.Lock()
-	defer d.trustMu.Unlock()
+	unlock, ok := d.acquireTrustWrite(ctx)
+	if !ok {
+		return rhiza.ExecuteResponse{}, ctx.Err()
+	}
+	defer unlock()
 	if err := ctx.Err(); err != nil {
 		return rhiza.ExecuteResponse{}, err
 	}

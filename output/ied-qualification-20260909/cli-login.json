@@ -1,0 +1,11 @@
+{
+  "exit_code": 0,
+  "session_fields": [
+    "cookie",
+    "csrf_token",
+    "expires_at"
+  ],
+  "mode": "600",
+  "provider_tokens_absent": true,
+  "public_release": "v0.3.15-rc.8"
+}

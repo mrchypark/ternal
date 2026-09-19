@@ -178,7 +178,13 @@ def render(namespace, service_account_name, anchor_name, cluster_id, storage_ide
     token = token or str(uuid.uuid4())
     if not re.fullmatch(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", token):
         fail("token must be a lower-case UUID")
-    suffix = cluster_id[-35:]
+    # Readable prefix plus a hash of the full identity: two cluster IDs that
+    # share a suffix must not map to the same resources. Pre-fix manifests
+    # used the raw 35-char suffix; delete those resources before applying a
+    # re-rendered manifest, as the old selectors no longer match.
+    readable = cluster_id[:12].rstrip("-") or "id"
+    digest = hashlib.sha256(cluster_id.encode()).hexdigest()[:16]
+    suffix = readable + "-" + digest
     anchor_label = "anchor-" + suffix
     scope_label = "scope-" + suffix
     names = {"anchor": "ternal-trustguard-anchor-" + suffix, "api_pods": "ternal-trustguard-api-pods-" + suffix,

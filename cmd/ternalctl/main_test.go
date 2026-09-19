@@ -104,31 +104,53 @@ func TestProxyUsesGrantedHomeIdentityForEndpointAndFly(t *testing.T) {
 	t.Setenv("TERNAL_DEV_HEADERS", "1")
 
 	endpointID := strings.Repeat("a", 64)
-	grantSeen := false
+	var calls []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/access/relay-grants" {
-			http.NotFound(w, r)
-			return
-		}
-		var grant struct {
-			ClientEndpointID string `json:"client_endpoint_id"`
-			TTL              int    `json:"ttl"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&grant); err != nil {
-			t.Error(err)
-		}
-		if grant.ClientEndpointID != endpointID || grant.TTL != 300 {
-			t.Errorf("grant = %#v", grant)
-		}
-		grantSeen = true
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{}`))
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/hosts/host-1":
+			calls = append(calls, "host")
+			_, _ = w.Write([]byte(`{"id":"host-1","ssh_user":"ops"}`))
+		case r.URL.Path == "/access/ssh":
+			calls = append(calls, "ssh-grant")
+			var req struct {
+				HostID  string `json:"host_id"`
+				SSHUser string `json:"ssh_user"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Error(err)
+			}
+			if req.HostID != "host-1" || req.SSHUser != "ops" {
+				t.Errorf("ssh grant request = %#v", req)
+			}
+			_, _ = w.Write([]byte(`{"program":"ssh","args":[],"grant_id":"grant-1"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/access/grants/grant-1/key-status":
+			calls = append(calls, "key-status")
+			_, _ = w.Write([]byte(`{"installed":true}`))
+		case r.URL.Path == "/access/relay-grants":
+			calls = append(calls, "relay-grant")
+			var grant struct {
+				ClientEndpointID string `json:"client_endpoint_id"`
+				SSHUser          string `json:"ssh_user"`
+				TTL              int    `json:"ttl"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&grant); err != nil {
+				t.Error(err)
+			}
+			if grant.ClientEndpointID != endpointID || grant.SSHUser != "ops" || grant.TTL != 300 {
+				t.Errorf("grant = %#v", grant)
+			}
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 
 	cmdProxy(server.Client(), server.URL, "host-1", endpointID+":22", []string{"--relay-url", "https://relay.example"})
-	if !grantSeen {
-		t.Fatal("relay grant was not posted")
+	wantCalls := []string{"host", "ssh-grant", "key-status", "relay-grant"}
+	if strings.Join(calls, ",") != strings.Join(wantCalls, ",") {
+		t.Fatalf("proxy calls = %v, want %v", calls, wantCalls)
 	}
 	got, err := os.ReadFile(logPath)
 	if err != nil {
@@ -196,8 +218,8 @@ func TestConfigDirOverrideIsolatesSessionLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(configDir, "ternal", sessionFile); path != want {
-		t.Fatalf("session path = %q, want %q", path, want)
+	if wantDir := filepath.Join(configDir, "ternal"); filepath.Dir(path) != wantDir || !strings.HasPrefix(filepath.Base(path), "session-") {
+		t.Fatalf("session path = %q is not namespaced under %q", path, wantDir)
 	}
 	session := &Session{Cookie: "isolated-session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix()}
 	if err := saveSession(session); err != nil {
@@ -333,5 +355,95 @@ func TestLogoutOfEnvironmentSessionPreservesDiskSession(t *testing.T) {
 	got, err := loadSession()
 	if err != nil || got.Cookie != diskSession.Cookie {
 		t.Fatalf("disk session after environment logout = %#v, err=%v", got, err)
+	}
+}
+
+func TestSSHWaitsForKeyInstallation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ssh uses the repository's POSIX shell test convention")
+	}
+	t.Setenv("TERNAL_SESSION_COOKIE", "session-for-wait-test")
+	t.Setenv("TERNAL_CSRF_TOKEN", "")
+	sshLog := filepath.Join(t.TempDir(), "ssh-args")
+	fakeSSH := filepath.Join(t.TempDir(), "ssh")
+	if err := os.WriteFile(fakeSSH, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> "+sshLog+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	quotedSSH, _ := json.Marshal(fakeSSH)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/hosts":
+			_, _ = w.Write([]byte(`[{"id":"host-9","name":"edge-9","ssh_user":"ops"}]`))
+		case r.URL.Path == "/access/ssh":
+			calls = append(calls, "ssh-grant")
+			_, _ = w.Write([]byte(`{"program":` + string(quotedSSH) + `,"args":["-p","22","-o","ProxyCommand=ternalctl proxy host-9 %h:%p","edge-9"],"grant_id":"grant-9"}`))
+		case r.URL.Path == "/access/grants/grant-9/key-status":
+			calls = append(calls, "key-status")
+			_, _ = w.Write([]byte(`{"installed":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	cmdSSH(server.Client(), server.URL, "edge-9")
+	if strings.Join(calls, ",") != "ssh-grant,key-status" {
+		t.Fatalf("ssh calls = %v, want grant then key-status wait", calls)
+	}
+	if _, err := os.Stat(sshLog); err != nil {
+		t.Fatal("ssh was not executed after key installation")
+	}
+	logged, err := os.ReadFile(sshLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(logged), "=ternalctl ") {
+		t.Fatalf("ssh received bare recursive path: %q", logged)
+	}
+}
+
+func TestSessionRejectsCrossOriginReuse(t *testing.T) {
+	t.Setenv("TERNAL_CONFIG_DIR", t.TempDir())
+	t.Setenv("TERNAL_SESSION_COOKIE", "")
+	t.Setenv("TERNAL_API_URL", "http://127.0.0.1:3000")
+	session := &Session{Cookie: "origin-session", CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	if err := saveSession(session); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSession(); err != nil {
+		t.Fatalf("same-origin load = %v", err)
+	}
+	t.Setenv("TERNAL_API_URL", "http://127.0.0.1:4000")
+	if _, err := loadSession(); err == nil {
+		t.Fatal("cross-origin session reuse accepted")
+	}
+}
+
+func TestPigeonsFileNameIsPlatformAware(t *testing.T) {
+	if got := pigeonsFileName("windows"); got != "pigeons.exe" {
+		t.Fatalf("windows binary = %q, want pigeons.exe", got)
+	}
+	for _, goos := range []string{"linux", "darwin"} {
+		if got := pigeonsFileName(goos); got != "pigeons" {
+			t.Fatalf("%s binary = %q, want pigeons", goos, got)
+		}
+	}
+}
+
+func TestRecursiveCTLResolvesAbsolutePath(t *testing.T) {
+	exe := "/opt/ternal with spaces/ternalctl"
+	in := "ProxyCommand=ternalctl proxy host-1 %h:%p"
+	out := rewriteCTLPath(in, exe)
+	if out != "ProxyCommand='/opt/ternal with spaces/ternalctl' proxy host-1 %h:%p" {
+		t.Fatalf("proxy rewrite = %q", out)
+	}
+	plain := "/usr/local/bin/ternalctl"
+	in2 := "KnownHostsCommand=ternalctl known-host-key SHA256:x %I %f %t %K"
+	if out := rewriteCTLPath(in2, plain); out != "KnownHostsCommand=/usr/local/bin/ternalctl known-host-key SHA256:x %I %f %t %K" {
+		t.Fatalf("known-hosts rewrite = %q", out)
+	}
+	if out := rewriteCTLPath("StrictHostKeyChecking=yes", plain); out != "StrictHostKeyChecking=yes" {
+		t.Fatalf("unrelated arg changed: %q", out)
 	}
 }

@@ -1,0 +1,44 @@
+{
+  "batch_id": "e0fdd5d4-5a68-4437-a49c-31b389c0bdff",
+  "checks": {
+    "second_enrollment": {
+      "status": 201,
+      "serial_number": "IEDRC-000002"
+    },
+    "batch_closed_at_max": {
+      "status": 200,
+      "used_count": 2,
+      "state": "closed"
+    },
+    "closed_batch_new_device_rejected": {
+      "status": 400
+    },
+    "expired_batch_rejected": {
+      "status": 400
+    },
+    "legacy_single_use_first_enrollment": {
+      "status": 201
+    },
+    "legacy_single_use_replay_rejected": {
+      "status": 400
+    }
+  },
+  "created_resources": {
+    "batch_second_device": {
+      "device_id": "13de50fe-99a9-43b0-a65a-ae22cdfa404d",
+      "host_id": "e60f5a1e-6018-4847-8a9b-2744f8a730be",
+      "serial_number": "IEDRC-000002"
+    },
+    "expired_batch": {
+      "batch_id": "8b735a3d-4524-4f3a-9f7b-3d46abd0076a"
+    },
+    "legacy_token": {
+      "token_id": "ebf50bcd-9c1d-4bf6-bed8-e74b8cfdfec8"
+    },
+    "legacy_device": {
+      "device_id": "fd5347f0-868b-4a03-b72f-b3288c0eb46b",
+      "host_id": "f003141d-5939-4199-904b-71b6516086cd",
+      "serial_number": "LEGACYQ-9c2dbae4"
+    }
+  }
+}

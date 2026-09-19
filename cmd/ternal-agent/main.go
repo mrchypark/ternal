@@ -15,9 +15,12 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -26,6 +29,10 @@ import (
 )
 
 const defaultAPIURL = "http://127.0.0.1:3000"
+
+// authorizedKeysMaxBytes mirrors the server snapshot budget: anything
+// larger is refused, never truncated.
+const authorizedKeysMaxBytes = 1 << 20
 
 type config struct {
 	APIURL                 string
@@ -242,6 +249,44 @@ func heartbeat(ctx context.Context, cfg config, status string) error {
 	return requestJSON(ctx, cfg.APIURL, http.MethodPost, "/agents/heartbeat", body, nil, nil)
 }
 
+// purgeLegacyAuthorizedKeys removes lines that carry no expiry-time. A
+// pre-hardening snapshot would otherwise keep keys valid forever whenever
+// synchronization fails, because the agent replaces the file wholesale and
+// never rewrites the old lines. Returns true when it changed the file.
+func purgeLegacyAuthorizedKeys(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	kept := make([]string, 0, 8)
+	removed := false
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		option, _, found := strings.Cut(strings.TrimSpace(line), " ")
+		if !found || !validExpiryOption(option) {
+			removed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !removed {
+		return false, nil
+	}
+	body := ""
+	if len(kept) > 0 {
+		body = strings.Join(kept, "\n") + "\n"
+	}
+	if err := atomicWrite(path, []byte(body), 0600); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func syncAuthorizedKeys(ctx context.Context, cfg config, path string) error {
 	if path == "" {
 		return errors.New("TERNAL_AGENT_AUTHORIZED_KEYS_PATH is required")
@@ -251,6 +296,11 @@ func syncAuthorizedKeys(ctx context.Context, cfg config, path string) error {
 		return err
 	}
 	defer unlock()
+	// Drop lines left by a pre-hardening install before fetching: if this
+	// cycle fails, those keys must not survive without a deadline.
+	if _, err := purgeLegacyAuthorizedKeys(path); err != nil {
+		return err
+	}
 	private, identity, endpointID, err := loadDevice(cfg)
 	if err != nil {
 		return err
@@ -263,9 +313,14 @@ func syncAuthorizedKeys(ctx context.Context, cfg config, path string) error {
 		return err
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	// Read one byte past the server-published budget so an oversized
+	// snapshot is an explicit error, never a silent truncation.
+	body, err := io.ReadAll(io.LimitReader(response.Body, authorizedKeysMaxBytes+1))
 	if err != nil {
 		return err
+	}
+	if len(body) > authorizedKeysMaxBytes {
+		return fmt.Errorf("authorized_keys snapshot exceeds %d-byte budget", authorizedKeysMaxBytes)
 	}
 	digest := sha256.Sum256(body)
 	digestHex := hex.EncodeToString(digest[:])
@@ -290,6 +345,9 @@ func syncAuthorizedKeys(ctx context.Context, cfg config, path string) error {
 	if err := atomicWrite(path, body, 0600); err != nil {
 		return err
 	}
+	if err := ensureUserOwned(path, cfg.SSHUser); err != nil {
+		return err
+	}
 	state, err := json.Marshal(authorizedKeysState{Generation: generation, SHA256: digestHex})
 	if err != nil {
 		return err
@@ -297,25 +355,14 @@ func syncAuthorizedKeys(ctx context.Context, cfg config, path string) error {
 	if err := atomicWrite(statePath, append(state, '\n'), 0600); err != nil {
 		return err
 	}
+	if err := ensureUserOwned(statePath, cfg.SSHUser); err != nil {
+		return err
+	}
 	ackTime := time.Now().Unix()
 	ackPayload := deviceauth.AuthorizedKeysAckPayload(identity.Serial, endpointID, identity.HostKeyFingerprint, ackTime, cfg.SSHUser, generation, digestHex)
 	ackHeaders := signedHeaders(identity, endpointID, ackTime, deviceauth.Sign(private, ackPayload))
 	ack := map[string]any{"ssh_user": cfg.SSHUser, "generation": generation, "sha256": digestHex}
 	return requestJSON(ctx, cfg.APIURL, http.MethodPost, "/agents/authorized-keys/ack", ack, ackHeaders, nil)
-}
-
-func acquireSyncLock(path string) (func(), error) {
-	lockPath := path + ".ternal-lock"
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
-		return nil, err
-	}
-	if err := os.Mkdir(lockPath, 0700); err != nil {
-		if os.IsExist(err) {
-			return nil, fmt.Errorf("authorized_keys synchronization is already running; remove %s only after confirming no agent is active", lockPath)
-		}
-		return nil, err
-	}
-	return func() { _ = os.Remove(lockPath) }, nil
 }
 
 func readAuthorizedKeysState(path string) (*authorizedKeysState, error) {
@@ -438,16 +485,55 @@ func loadDevice(cfg config) (ed25519.PrivateKey, deviceauth.Identity, string, er
 	return private, identity, endpointID, err
 }
 
+var endpointIDTimeout = 30 * time.Second
+
+var (
+	endpointIDCacheMu sync.Mutex
+	endpointIDCache   = map[string]string{}
+)
+
 func roostEndpointID(cfg config) (string, error) {
-	output, err := exec.Command(cfg.Pigeons, "endpoint-id").Output()
+	// ponytail: local key read, 30s is generous; cache is keyed by helper
+	// path since the identity is immutable for a given key directory.
+	endpointIDCacheMu.Lock()
+	if id, ok := endpointIDCache[cfg.Pigeons]; ok {
+		endpointIDCacheMu.Unlock()
+		return id, nil
+	}
+	endpointIDCacheMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), endpointIDTimeout)
+	defer cancel()
+	// Stdout goes to a file, not a pipe: a hung helper's orphaned
+	// grandchildren cannot hold a pipe open past the deadline.
+	tmp, err := os.CreateTemp("", "ternal-endpoint-id-*")
 	if err != nil {
-		return "", fmt.Errorf("read persistent roost identity: %w", err)
+		return "", err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	cmd := exec.CommandContext(ctx, cfg.Pigeons, "endpoint-id")
+	cmd.Stdout = tmp
+	runErr := cmd.Run()
+	closeErr := tmp.Close()
+	output, readErr := os.ReadFile(tmpName)
+	if runErr != nil {
+		return "", fmt.Errorf("read persistent roost identity: %w", runErr)
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if readErr != nil {
+		return "", readErr
 	}
 	id := strings.TrimSpace(string(output))
 	if !validEndpointID(id) {
 		return "", errors.New("pigeons returned invalid roost endpoint id")
 	}
-	return strings.ToLower(id), nil
+	id = strings.ToLower(id)
+	endpointIDCacheMu.Lock()
+	endpointIDCache[cfg.Pigeons] = id
+	endpointIDCacheMu.Unlock()
+	return id, nil
 }
 
 func roostArgs(cfg config) []string {
@@ -534,7 +620,14 @@ func validateAuthorizedKeys(body []byte) error {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		key, _, _, rest, err := ssh.ParseAuthorizedKey([]byte(line))
+		// Every installed line must carry an sshd-enforced expiry so a grant
+		// stops authenticating on time even when this agent is dead. The
+		// timestamp is authority-checked by sshd, not here.
+		option, remainder, found := strings.Cut(strings.TrimSpace(line), " ")
+		if !found || !validExpiryOption(option) {
+			return errors.New("server returned authorized_keys line without expiry-time")
+		}
+		key, _, _, rest, err := ssh.ParseAuthorizedKey([]byte(remainder))
 		if err != nil || len(bytes.TrimSpace(rest)) != 0 || key == nil {
 			return errors.New("server returned invalid authorized_keys content")
 		}
@@ -542,34 +635,62 @@ func validateAuthorizedKeys(body []byte) error {
 	return nil
 }
 
-func atomicWrite(path string, body []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
+func validExpiryOption(option string) bool {
+	ts, found := strings.CutPrefix(option, "expiry-time=\"")
+	if !found || !strings.HasSuffix(ts, "\"") {
+		return false
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".ternal-*")
+	ts = strings.TrimSuffix(ts, "\"")
+	// The server always emits the UTC-suffixed form; accept only that, so a
+	// local-time value (which sshd would read in the device's zone) cannot
+	// pass validation.
+	if len(ts) != 15 || !strings.HasSuffix(ts, "Z") {
+		return false
+	}
+	_, err := time.Parse("20060102150405", strings.TrimSuffix(ts, "Z"))
+	return err == nil
+}
+
+// ensureUserOwned gives username ownership of path, plus its parent dir when
+// the agent created it root-owned, so sshd StrictModes keeps accepting the
+// key file. No-op unless this process runs as root. Callers pass the SSH
+// account the file authenticates, never a fixed uid.
+func ensureUserOwned(path, username string) error {
+	if username == "" || os.Geteuid() != 0 {
+		return nil
+	}
+	u, err := user.Lookup(username)
 	if err != nil {
 		return err
 	}
-	name := temp.Name()
-	defer os.Remove(name)
-	if err := temp.Chmod(mode); err != nil {
-		temp.Close()
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
 		return err
 	}
-	if _, err := temp.Write(body); err != nil {
-		temp.Close()
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
 		return err
 	}
-	if err := temp.Sync(); err != nil {
-		temp.Close()
+	if err := os.Chown(path, uid, gid); err != nil {
 		return err
 	}
-	if err := temp.Close(); err != nil {
-		return err
+	dir := filepath.Dir(path)
+	if rootOwned(dir) {
+		if err := os.Chown(dir, uid, gid); err != nil {
+			return err
+		}
 	}
-	return os.Rename(name, path)
+	if !fileOwnedBy(path, uid, gid) {
+		return fmt.Errorf("ownership of %s could not be established", path)
+	}
+	return nil
 }
 
+func atomicWrite(path string, body []byte, mode os.FileMode) error {
+	// Single durable implementation lives in deviceauth; this wrapper keeps
+	// existing call sites (keys, state, status) on the same path.
+	return deviceauth.AtomicWriteFile(path, body, mode)
+}
 func writeStatus(path string, status runtimeStatus) error {
 	data, err := json.MarshalIndent(status, "", "  ")
 	if err != nil {
@@ -578,22 +699,44 @@ func writeStatus(path string, status runtimeStatus) error {
 	return atomicWrite(path, append(data, '\n'), 0600)
 }
 
+// pigeonsFileName resolves the platform-appropriate transport binary name;
+// the Windows bundle ships pigeons.exe.
+func pigeonsFileName(goos string) string {
+	if goos == "windows" {
+		return "pigeons.exe"
+	}
+	return "pigeons"
+}
+
+// isExecutableFile reports regular files the platform can run. Exec bits
+// are meaningless on Windows, where every regular file is executable.
+func isExecutableFile(goos string, info os.FileInfo) bool {
+	if !info.Mode().IsRegular() {
+		return false
+	}
+	if goos == "windows" {
+		return true
+	}
+	return info.Mode()&0111 != 0
+}
+
 func findPigeons() (string, error) {
+	name := pigeonsFileName(runtime.GOOS)
 	if configured := os.Getenv("TERNAL_TRANSPORT_BIN"); configured != "" {
 		if filepath.IsAbs(configured) {
-			if info, err := os.Stat(configured); err == nil && info.Mode().IsRegular() && info.Mode()&0111 != 0 {
+			if info, err := os.Stat(configured); err == nil && isExecutableFile(runtime.GOOS, info) {
 				return configured, nil
 			}
 		}
 		return "", errors.New("configured pigeons binary is not executable")
 	}
 	if executable, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(executable), "pigeons")
-		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && info.Mode()&0111 != 0 {
+		candidate := filepath.Join(filepath.Dir(executable), name)
+		if info, err := os.Stat(candidate); err == nil && isExecutableFile(runtime.GOOS, info) {
 			return candidate, nil
 		}
 	}
-	path, err := exec.LookPath("pigeons")
+	path, err := exec.LookPath(name)
 	if err != nil {
 		return "", errors.New("pigeons binary not found")
 	}

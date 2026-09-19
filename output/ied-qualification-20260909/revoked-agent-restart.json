@@ -1,0 +1,6 @@
+{
+  "public_agent_run_exit": 1,
+  "service": "revoked",
+  "child": "stopped",
+  "live_transport_count": 0
+}

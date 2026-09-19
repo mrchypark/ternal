@@ -1,0 +1,17 @@
+{
+  "issuerEndpoint": true,
+  "redirectExact": true,
+  "clientExact": true,
+  "statePresent": true,
+  "noncePresent": true,
+  "pkceS256": true,
+  "authenticated": true,
+  "isAdmin": true,
+  "groups": [
+    "ternal-admins",
+    "platform"
+  ],
+  "issuer": "https://ternal-v027-auth.dev.conalog.com/auth/v1/",
+  "secureCookie": true,
+  "httpOnlyCookie": true
+}

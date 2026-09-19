@@ -1,0 +1,9 @@
+{
+  "ready_after_api_restart": 200,
+  "device_state": "revoked",
+  "discovery": 404,
+  "new_ssh_grant": 404,
+  "logged_out_cli_cookie_authenticated": false,
+  "signed_heartbeat_rejected": true,
+  "wrong_ssh_user": 404
+}

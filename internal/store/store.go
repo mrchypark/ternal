@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,8 +30,25 @@ func sessionRevocationCleanupCutoff(now int64) int64 {
 
 type Store struct {
 	db   *rhizaSQL
-	mu   sync.RWMutex
+	mu   ctxRWMutex
 	path string
+}
+
+// acquireWrite blocks for the write lock, abandoning the wait with
+// ok=false when ctx expires instead of defeating the caller's budget.
+func (s *Store) acquireWrite(ctx context.Context) (release func(), ok bool) {
+	if !s.mu.Lock(ctx) {
+		return nil, false
+	}
+	return s.mu.Unlock, true
+}
+
+// acquireRead is acquireWrite for the read lock.
+func (s *Store) acquireRead(ctx context.Context) (release func(), ok bool) {
+	if !s.mu.RLock(ctx) {
+		return nil, false
+	}
+	return s.mu.RUnlock, true
 }
 
 type NewHost struct {
@@ -493,13 +509,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			host_id TEXT NOT NULL,
 			endpoint_id TEXT NOT NULL,
 			ssh_host_key_fingerprint TEXT NOT NULL,
-			device_public_key TEXT NOT NULL,
+			device_public_key TEXT NOT NULL UNIQUE,
 			state TEXT NOT NULL DEFAULT 'manufactured',
-			serial_number TEXT,
+			serial_number TEXT UNIQUE,
 			model TEXT,
 			enrolled_at INTEGER NOT NULL,
 			last_seen_at INTEGER
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_access_grants_user ON access_grants (user_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_access_requests_user ON access_requests (user_id, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS endpoint_discovery (
 			host_id TEXT PRIMARY KEY,
 			direct_addresses TEXT NOT NULL DEFAULT '[]',
@@ -550,8 +568,11 @@ func (s *Store) RevokeSession(ctx context.Context, cookie string, expiresAt int6
 	if cookie == "" || expiresAt <= nowUnix() {
 		return fmt.Errorf("invalid session revocation")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	if _, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO revoked_sessions (cookie_hash, expires_at) VALUES (?, ?)`, hashSecret(cookie), expiresAt); err != nil {
 		return err
 	}
@@ -585,8 +606,11 @@ func nowUnix() int64 {
 }
 
 func (s *Store) CreateHost(ctx context.Context, h NewHost, actor string) (*core.Host, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	if actor == "" {
 		return nil, fmt.Errorf("audit actor is required")
 	}
@@ -594,6 +618,12 @@ func (s *Store) CreateHost(ctx context.Context, h NewHost, actor string) (*core.
 	now := nowUnix()
 	if h.SSHUser == "" {
 		h.SSHUser = "root"
+	}
+	if !core.ValidHostName(h.Name) {
+		return nil, fmt.Errorf("invalid host name")
+	}
+	if !core.ValidSSHUser(h.SSHUser) {
+		return nil, fmt.Errorf("invalid ssh user")
 	}
 	if h.SSHPort == 0 {
 		h.SSHPort = 22
@@ -616,8 +646,11 @@ func (s *Store) CreateHost(ctx context.Context, h NewHost, actor string) (*core.
 }
 
 func (s *Store) ListHosts(ctx context.Context) ([]core.Host, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, endpoint_id, ssh_user, tags, ssh_port, status, owner, last_seen FROM hosts ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -637,8 +670,11 @@ func (s *Store) ListHosts(ctx context.Context) ([]core.Host, error) {
 }
 
 func (s *Store) GetHost(ctx context.Context, id string) (*core.Host, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	var h core.Host
 	var tagsJSON string
 	err := s.db.QueryRowContext(ctx,
@@ -655,10 +691,19 @@ func (s *Store) GetHost(ctx context.Context, id string) (*core.Host, error) {
 }
 
 func (s *Store) UpdateHost(ctx context.Context, id string, h NewHost, actor string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	if actor == "" {
 		return fmt.Errorf("audit actor is required")
+	}
+	if !core.ValidHostName(h.Name) {
+		return fmt.Errorf("invalid host name")
+	}
+	if !core.ValidSSHUser(h.SSHUser) {
+		return fmt.Errorf("invalid ssh user")
 	}
 	tagsJSON, _ := json.Marshal(h.Tags)
 	now := nowUnix()
@@ -670,20 +715,36 @@ func (s *Store) UpdateHost(ctx context.Context, id string, h NewHost, actor stri
 }
 
 func (s *Store) DeleteHost(ctx context.Context, id, actor string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	if actor == "" {
 		return fmt.Errorf("audit actor is required")
 	}
+	// Delete the complete binding atomically: devices, discovery, live
+	// grants, and published snapshots die with the host, so no orphaned
+	// device can authenticate and no serial stays ambiguous. History
+	// (requests, audit) is kept. Reenrollment after delete gets a clean slate.
 	_, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `DELETE FROM authorized_keys_snapshot_grants WHERE host_id = ?`, Args: []any{id}},
+		rhiza.SQLStatement{SQL: `DELETE FROM authorized_keys_snapshots WHERE host_id = ?`, Args: []any{id}},
+		rhiza.SQLStatement{SQL: `DELETE FROM access_grants WHERE host_id = ?`, Args: []any{id}},
+		rhiza.SQLStatement{SQL: `DELETE FROM relay_access_grants WHERE host_id = ?`, Args: []any{id}},
+		rhiza.SQLStatement{SQL: `DELETE FROM endpoint_discovery WHERE host_id = ?`, Args: []any{id}},
+		rhiza.SQLStatement{SQL: `DELETE FROM devices WHERE host_id = ?`, Args: []any{id}},
 		rhiza.SQLStatement{SQL: `DELETE FROM hosts WHERE id=?`, Args: []any{id}},
 		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'host.deleted', 'host', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, nowUnix()}})
 	return err
 }
 
 func (s *Store) CreatePolicy(ctx context.Context, p NewPolicy, actor string) (*core.Policy, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	if actor == "" {
 		return nil, fmt.Errorf("audit actor is required")
 	}
@@ -704,8 +765,11 @@ func (s *Store) CreatePolicy(ctx context.Context, p NewPolicy, actor string) (*c
 }
 
 func (s *Store) ListPolicies(ctx context.Context) ([]core.Policy, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, principal, host_selector, ssh_users, expires_at FROM policies ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -725,8 +789,11 @@ func (s *Store) ListPolicies(ctx context.Context) ([]core.Policy, error) {
 }
 
 func (s *Store) UpdatePolicy(ctx context.Context, id string, p NewPolicy, actor string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	if actor == "" {
 		return fmt.Errorf("audit actor is required")
 	}
@@ -740,8 +807,11 @@ func (s *Store) UpdatePolicy(ctx context.Context, id string, p NewPolicy, actor 
 }
 
 func (s *Store) DeletePolicy(ctx context.Context, id, actor string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	if actor == "" {
 		return fmt.Errorf("audit actor is required")
 	}
@@ -752,8 +822,11 @@ func (s *Store) DeletePolicy(ctx context.Context, id, actor string) error {
 }
 
 func (s *Store) CreateSSHKey(ctx context.Context, userID, publicKey, fingerprint string) (*SshKey, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	id := newID()
 	now := nowUnix()
 	_, err := s.db.ExecContext(ctx,
@@ -767,8 +840,11 @@ func (s *Store) CreateSSHKey(ctx context.Context, userID, publicKey, fingerprint
 }
 
 func (s *Store) ListSSHKeys(ctx context.Context, userID string) ([]SshKey, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, public_key, fingerprint, created_at FROM ssh_keys WHERE user_id = ? ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -785,60 +861,161 @@ func (s *Store) ListSSHKeys(ctx context.Context, userID string) ([]SshKey, error
 	return keys, rows.Err()
 }
 
-func (s *Store) AuthorizedKeysForHost(ctx context.Context, hostID, sshUser string) ([]string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// AuthorizedKeyEntry binds one installed public key to the latest expiry of
+// the live grants covering it, so sshd can enforce the grant at the
+// authentication boundary even when the agent is dead. Times are UTC;
+// devices must run sshd with a UTC system clock.
+type AuthorizedKeyEntry struct {
+	Key       string
+	ExpiresAt int64
+}
+
+// FormatAuthorizedKeys renders snapshot entries as sshd-enforced lines.
+// One line per key, expiring with the longest covering grant (union
+// semantics: the key stays valid while any grant is live). The trailing Z
+// makes sshd read the deadline as UTC; without it sshd interprets the value
+// in the device's local time zone, which would extend a UTC deadline by the
+// device's offset. Requires OpenSSH 8.2 or newer (sshd_config(5):
+// expiry-time accepts a YYYYMMDDHHMMSS[Z] timespec).
+func FormatAuthorizedKeys(entries []AuthorizedKeyEntry) []string {
+	lines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		lines = append(lines, fmt.Sprintf("expiry-time=%q %s",
+			time.Unix(e.ExpiresAt, 0).UTC().Format("20060102150405Z"), e.Key))
+	}
+	return lines
+}
+
+// MaxAuthorizedKeysBodyBytes bounds any published snapshot so the agent
+// never receives more than it is willing to install. Oversized snapshots
+// are refused instead of truncated: truncation would break the digest and
+// wedge synchronization for the shared host/SSH account.
+const MaxAuthorizedKeysBodyBytes = 1 << 20
+
+func renderAuthorizedKeysBody(entries []AuthorizedKeyEntry) (string, error) {
+	body := strings.Join(FormatAuthorizedKeys(entries), "\n")
+	if body != "" {
+		body += "\n"
+	}
+	if len(body) > MaxAuthorizedKeysBodyBytes {
+		return "", fmt.Errorf("authorized_keys snapshot exceeds %d-byte budget", MaxAuthorizedKeysBodyBytes)
+	}
+	return body, nil
+}
+
+func (s *Store) AuthorizedKeysForHost(ctx context.Context, hostID, sshUser string) ([]AuthorizedKeyEntry, error) {
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	keys, _, err := s.authorizedKeysSnapshotForHost(ctx, hostID, sshUser)
 	return keys, err
 }
 
-func (s *Store) AuthorizedKeysSnapshotForHost(ctx context.Context, hostID, sshUser string) ([]string, []string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) AuthorizedKeysSnapshotForHost(ctx context.Context, hostID, sshUser string) ([]AuthorizedKeyEntry, []string, error) {
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, nil, ctx.Err()
+	}
+	defer unlock()
 	return s.authorizedKeysSnapshotForHost(ctx, hostID, sshUser)
 }
 
-func (s *Store) authorizedKeysSnapshotForHost(ctx context.Context, hostID, sshUser string) ([]string, []string, error) {
+func (s *Store) authorizedKeysSnapshotForHost(ctx context.Context, hostID, sshUser string) ([]AuthorizedKeyEntry, []string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT k.public_key, g.id
+		`SELECT k.public_key, MAX(g.expires_at)
 		 FROM access_grants g
 		 JOIN ssh_keys k ON k.user_id = g.user_id
 		 JOIN hosts h ON h.id = g.host_id
 		 JOIN devices d ON d.host_id = h.id
 		 WHERE g.host_id = ? AND g.ssh_user = ? AND g.expires_at > ? AND h.status != 'revoked' AND d.state != 'revoked'
-		 ORDER BY k.public_key, g.id`,
+		 GROUP BY k.public_key
+		 ORDER BY k.public_key`,
 		hostID, sshUser, nowUnix(),
 	)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
-	var keys []string
+	var entries []AuthorizedKeyEntry
 	var grants []string
-	seenKeys := map[string]bool{}
 	seenGrants := map[string]bool{}
 	for rows.Next() {
-		var key, grant string
-		if err := rows.Scan(&key, &grant); err != nil {
+		var entry AuthorizedKeyEntry
+		if err := rows.Scan(&entry.Key, &entry.ExpiresAt); err != nil {
 			return nil, nil, err
 		}
-		if !seenKeys[key] {
-			seenKeys[key] = true
-			keys = append(keys, key)
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	grantRows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT g.id
+		 FROM access_grants g
+		 JOIN hosts h ON h.id = g.host_id
+		 JOIN devices d ON d.host_id = h.id
+		 WHERE g.host_id = ? AND g.ssh_user = ? AND g.expires_at > ? AND h.status != 'revoked' AND d.state != 'revoked'
+		 ORDER BY g.id`,
+		hostID, sshUser, nowUnix(),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer grantRows.Close()
+	for grantRows.Next() {
+		var grant string
+		if err := grantRows.Scan(&grant); err != nil {
+			return nil, nil, err
 		}
 		if !seenGrants[grant] {
 			seenGrants[grant] = true
 			grants = append(grants, grant)
 		}
 	}
-	return keys, grants, rows.Err()
+	return entries, grants, grantRows.Err()
 }
 
 // AuthorizedKeysGeneration stores one replicated snapshot containing the
 // digest, monotonic generation, and exact grants represented by the body.
 func (s *Store) AuthorizedKeysGeneration(ctx context.Context, hostID, sshUser, digest string, grants []string) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return 0, ctx.Err()
+	}
+	defer unlock()
+	return s.publishAuthorizedKeysGeneration(ctx, hostID, sshUser, digest, grants)
+}
+
+// PublishAuthorizedKeysSnapshot captures the live key/grant set and
+// publishes its generation in one critical section, so a concurrent
+// grant change cannot slip between the read and the publication and bind
+// a stale snapshot to a newer generation.
+func (s *Store) PublishAuthorizedKeysSnapshot(ctx context.Context, hostID, sshUser string) (body, digest string, generation int64, err error) {
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return "", "", 0, ctx.Err()
+	}
+	defer unlock()
+	entries, grants, err := s.authorizedKeysSnapshotForHost(ctx, hostID, sshUser)
+	if err != nil {
+		return "", "", 0, err
+	}
+	body, err = renderAuthorizedKeysBody(entries)
+	if err != nil {
+		return "", "", 0, err
+	}
+	sum := sha256.Sum256([]byte(body))
+	digest = hex.EncodeToString(sum[:])
+	generation, err = s.publishAuthorizedKeysGeneration(ctx, hostID, sshUser, digest, grants)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return body, digest, generation, nil
+}
+
+func (s *Store) publishAuthorizedKeysGeneration(ctx context.Context, hostID, sshUser, digest string, grants []string) (int64, error) {
 	snapshotMarker := "snapshot:" + hashSecret(strings.Join(grants, "\n"))
 	statements := []rhiza.SQLStatement{{SQL: `INSERT INTO authorized_keys_snapshots (host_id, ssh_user, generation, digest)
 		 VALUES (?, ?, 1, ?)
@@ -873,8 +1050,11 @@ func (s *Store) AuthorizedKeysGeneration(ctx context.Context, hostID, sshUser, d
 }
 
 func (s *Store) AcknowledgeAuthorizedKeys(ctx context.Context, hostID, sshUser string, generation int64, digest string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	if generation < 1 || len(digest) != 64 {
 		return fmt.Errorf("invalid authorized_keys acknowledgement")
 	}
@@ -907,15 +1087,21 @@ func (s *Store) AcknowledgeAuthorizedKeys(ctx context.Context, hostID, sshUser s
 }
 
 func (s *Store) DeleteSSHKey(ctx context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM ssh_keys WHERE id=?`, id)
 	return err
 }
 
 func (s *Store) DeleteSSHKeyForUser(ctx context.Context, id, userID string, admin bool) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return false, ctx.Err()
+	}
+	defer unlock()
 	statement := `DELETE FROM ssh_keys WHERE id = ? AND user_id = ?`
 	args := []any{id, userID}
 	if admin {
@@ -931,8 +1117,11 @@ func (s *Store) DeleteSSHKeyForUser(ctx context.Context, id, userID string, admi
 // RecordPolicyDenied records a decision made for an authenticated caller. It is
 // intentionally not used for malformed or unauthenticated requests.
 func (s *Store) RecordPolicyDenied(ctx context.Context, action, resourceID, userID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	if userID == "" {
 		return fmt.Errorf("audit actor is required")
 	}
@@ -943,8 +1132,11 @@ func (s *Store) RecordPolicyDenied(ctx context.Context, action, resourceID, user
 }
 
 func (s *Store) CreateAccessRequest(ctx context.Context, userID, hostID, sshUser string) (*AccessRequest, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	id := newID()
 	now := nowUnix()
 	_, err := s.db.ExecContext(ctx,
@@ -958,8 +1150,11 @@ func (s *Store) CreateAccessRequest(ctx context.Context, userID, hostID, sshUser
 }
 
 func (s *Store) ApproveAccessRequest(ctx context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	response, err := s.db.ExecContext(ctx, `UPDATE access_requests SET status = 'approved' WHERE id = ? AND status = 'pending'`, id)
 	if err != nil {
 		return err
@@ -971,8 +1166,11 @@ func (s *Store) ApproveAccessRequest(ctx context.Context, id string) error {
 }
 
 func (s *Store) CreateAccessGrant(ctx context.Context, requestID, userID, hostID, sshUser string, expiresAt int64, ephemeralKey string) (*AccessGrant, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	id := newID()
 	now := nowUnix()
 	response, err := s.db.ExecContext(ctx,
@@ -996,9 +1194,12 @@ func (s *Store) CreateAccessGrant(ctx context.Context, requestID, userID, hostID
 // IssueSSHAccess records the approved request, short-lived key grant, and audit
 // event in one replicated data transaction. An access grant is never visible
 // without its corresponding decision record.
-func (s *Store) IssueSSHAccess(ctx context.Context, userID, hostID, sshUser string, expiresAt int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Store) IssueSSHAccess(ctx context.Context, userID, hostID, sshUser string, expiresAt int64) (string, error) {
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return "", ctx.Err()
+	}
+	defer unlock()
 	requestID := newID()
 	grantID := newID()
 	auditID := newID()
@@ -1010,17 +1211,20 @@ func (s *Store) IssueSSHAccess(ctx context.Context, userID, hostID, sshUser stri
 		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, before_json, after_json, created_at) SELECT ?, 'access.approved', 'host', ?, ?, NULL, ?, ? WHERE EXISTS (SELECT 1 FROM access_grants WHERE id = ?)`, Args: []any{auditID, hostID, userID, string(after), now, grantID}},
 	)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if response.RowsAffected != 3 {
-		return fmt.Errorf("host unavailable")
+		return "", fmt.Errorf("host unavailable")
 	}
-	return nil
+	return grantID, nil
 }
 
 func (s *Store) GetAccessGrant(ctx context.Context, id string) (*AccessGrant, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	var g AccessGrant
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, request_id, user_id, host_id, ssh_user, expires_at, ephemeral_key, key_installed, created_at FROM access_grants WHERE id = ?`, id,
@@ -1034,9 +1238,16 @@ func (s *Store) GetAccessGrant(ctx context.Context, id string) (*AccessGrant, er
 	return &g, nil
 }
 
+// userHistoryLimit caps principal-scoped history reads; no UI paginates
+// beyond recent activity, and unbounded scans wedge shared hosts.
+const userHistoryLimit = 1000
+
 func (s *Store) ListAccessGrants(ctx context.Context) ([]AccessGrant, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	rows, err := s.db.QueryContext(ctx, `SELECT id, request_id, user_id, host_id, ssh_user, expires_at, ephemeral_key, key_installed, created_at FROM access_grants ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -1054,8 +1265,11 @@ func (s *Store) ListAccessGrants(ctx context.Context) ([]AccessGrant, error) {
 }
 
 func (s *Store) ListAccessRequests(ctx context.Context) ([]AccessRequest, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, host_id, ssh_user, status, created_at FROM access_requests ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -1072,9 +1286,60 @@ func (s *Store) ListAccessRequests(ctx context.Context) ([]AccessRequest, error)
 	return requests, rows.Err()
 }
 
+// ListUserAccessGrants returns the newest grants for one principal without
+// scanning other users' history.
+func (s *Store) ListUserAccessGrants(ctx context.Context, userID string) ([]AccessGrant, error) {
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT id, request_id, user_id, host_id, ssh_user, expires_at, ephemeral_key, key_installed, created_at FROM access_grants WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`, userID, userHistoryLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var grants []AccessGrant
+	for rows.Next() {
+		var g AccessGrant
+		if err := rows.Scan(&g.ID, &g.RequestID, &g.UserID, &g.HostID, &g.SSHUser, &g.ExpiresAt, &g.EphemeralKey, &g.KeyInstalled, &g.CreatedAt); err != nil {
+			return nil, err
+		}
+		grants = append(grants, g)
+	}
+	return grants, rows.Err()
+}
+
+// ListUserAccessRequests returns the newest requests for one principal
+// without scanning other users' history.
+func (s *Store) ListUserAccessRequests(ctx context.Context, userID string) ([]AccessRequest, error) {
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, host_id, ssh_user, status, created_at FROM access_requests WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`, userID, userHistoryLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var requests []AccessRequest
+	for rows.Next() {
+		var r AccessRequest
+		if err := rows.Scan(&r.ID, &r.UserID, &r.HostID, &r.SSHUser, &r.Status, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		requests = append(requests, r)
+	}
+	return requests, rows.Err()
+}
+
 func (s *Store) CreateAuditEvent(ctx context.Context, action, resource, resourceID, userID string, before, after interface{}) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	var beforeJSON, afterJSON []byte
 	if before != nil {
 		beforeJSON, _ = json.Marshal(before)
@@ -1091,8 +1356,11 @@ func (s *Store) CreateAuditEvent(ctx context.Context, action, resource, resource
 }
 
 func (s *Store) ListAuditEvents(ctx context.Context, limit int) ([]AuditEvent, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	if limit <= 0 {
 		limit = 100
 	}
@@ -1122,8 +1390,11 @@ func (s *Store) ListAuditEvents(ctx context.Context, limit int) ([]AuditEvent, e
 }
 
 func (s *Store) UpdateEndpointDiscovery(ctx context.Context, hostID string, directAddresses, relayURLs []string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	addrsJSON, _ := json.Marshal(directAddresses)
 	relaysJSON, _ := json.Marshal(relayURLs)
 	_, err := s.db.ExecContext(ctx,
@@ -1136,8 +1407,11 @@ func (s *Store) UpdateEndpointDiscovery(ctx context.Context, hostID string, dire
 }
 
 func (s *Store) GetEndpointDiscovery(ctx context.Context, hostID string) (*EndpointDiscovery, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	var d EndpointDiscovery
 	var addrsJSON, relaysJSON string
 	err := s.db.QueryRowContext(ctx,
@@ -1159,8 +1433,11 @@ func (s *Store) GetEndpointDiscovery(ctx context.Context, hostID string) (*Endpo
 }
 
 func (s *Store) CreateRelayAccessGrant(ctx context.Context, hostID, clientEndpointID, userID string, ttlSeconds int64) (*RelayAccessGrant, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	id := newID()
 	auditID := newID()
 	now := nowUnix()
@@ -1179,8 +1456,11 @@ func (s *Store) CreateRelayAccessGrant(ctx context.Context, hostID, clientEndpoi
 }
 
 func (s *Store) RenewRelayAccessGrant(ctx context.Context, hostID, endpointID, actorID string, ttlSeconds int64) (*RelayAccessGrant, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	id := newID()
 	auditID := newID()
 	now := nowUnix()
@@ -1200,8 +1480,11 @@ func (s *Store) RenewRelayAccessGrant(ctx context.Context, hostID, endpointID, a
 }
 
 func (s *Store) RelayEndpointAllowed(ctx context.Context, endpointID string) (bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return false, ctx.Err()
+	}
+	defer unlock()
 	var count int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*)
@@ -1218,8 +1501,11 @@ func (s *Store) RelayEndpointAllowed(ctx context.Context, endpointID string) (bo
 }
 
 func (s *Store) CreateManufacturingToken(ctx context.Context, batchID string, expiresAt *int64, actor string) (*ManufacturingToken, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	if actor == "" {
 		return nil, fmt.Errorf("audit actor is required")
 	}
@@ -1251,8 +1537,11 @@ func (s *Store) CreateManufacturingToken(ctx context.Context, batchID string, ex
 }
 
 func (s *Store) ListManufacturingTokens(ctx context.Context) ([]ManufacturingToken, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	rows, err := s.db.QueryContext(ctx, `SELECT id, batch_id, expires_at, created_at FROM manufacturing_tokens ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -1270,8 +1559,11 @@ func (s *Store) ListManufacturingTokens(ctx context.Context) ([]ManufacturingTok
 }
 
 func (s *Store) GetManufacturingToken(ctx context.Context, token string) (*ManufacturingToken, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	var t ManufacturingToken
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, batch_id, expires_at, created_at FROM manufacturing_tokens WHERE token_hash = ?`, hashSecret(token),
@@ -1286,13 +1578,19 @@ func (s *Store) GetManufacturingToken(ctx context.Context, token string) (*Manuf
 }
 
 func (s *Store) CreateManufacturingBatch(ctx context.Context, name, serialPrefix string, expiresAt, maxDevices int64, actor string) (*ManufacturingBatch, string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return nil, "", ctx.Err()
+	}
+	defer unlock()
 	if actor == "" {
 		return nil, "", fmt.Errorf("audit actor is required")
 	}
 	if name == "" || serialPrefix == "" || expiresAt <= nowUnix() || maxDevices < 1 || maxDevices > 10000 {
 		return nil, "", fmt.Errorf("invalid manufacturing batch")
+	}
+	if !core.ValidHostName(serialPrefix + "-000001") {
+		return nil, "", fmt.Errorf("invalid serial prefix")
 	}
 	id := newID()
 	now := nowUnix()
@@ -1311,8 +1609,11 @@ func (s *Store) CreateManufacturingBatch(ctx context.Context, name, serialPrefix
 }
 
 func (s *Store) ListManufacturingBatches(ctx context.Context) ([]ManufacturingBatch, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, serial_prefix, status, expires_at, max_devices, used_count, closed_at, created_at FROM manufacturing_batches ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -1330,8 +1631,11 @@ func (s *Store) ListManufacturingBatches(ctx context.Context) ([]ManufacturingBa
 }
 
 func (s *Store) CloseManufacturingBatch(ctx context.Context, id, actor string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	if actor == "" {
 		return fmt.Errorf("audit actor is required")
 	}
@@ -1343,8 +1647,33 @@ func (s *Store) CloseManufacturingBatch(ctx context.Context, id, actor string) e
 }
 
 func (s *Store) EnrollDevice(ctx context.Context, token, endpointID, serialNumber, model, fingerprint, devicePublicKey, sshUser string, sshPort uint16, tags map[string]string) (*Device, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
+	if devicePublicKey == "" {
+		return nil, fmt.Errorf("device public key is required")
+	}
+	// Idempotent replay: the device public key is the durable idempotency
+	// identity. A retry after response loss presents the same key and must
+	// recover the committed enrollment without consuming another token.
+	// The same key with a different fingerprint or serial is a different
+	// device and is rejected; a different key stays on the token-checked
+	// path below.
+	var replay Device
+	replayErr := s.db.QueryRowContext(ctx,
+		`SELECT id, host_id, endpoint_id, ssh_host_key_fingerprint, device_public_key, state, serial_number, model, enrolled_at, last_seen_at FROM devices WHERE device_public_key = ?`, devicePublicKey,
+	).Scan(&replay.ID, &replay.HostID, &replay.EndpointID, &replay.SSHHostKeyFingerprint, &replay.DevicePublicKey, &replay.State, &replay.SerialNumber, &replay.Model, &replay.EnrolledAt, &replay.LastSeenAt)
+	if replayErr != nil && replayErr != sql.ErrNoRows {
+		return nil, replayErr
+	}
+	if replayErr == nil {
+		if fingerprint != replay.SSHHostKeyFingerprint || (serialNumber != "" && serialNumber != replay.SerialNumber) {
+			return nil, fmt.Errorf("device key already enrolled with a different identity")
+		}
+		return &replay, nil
+	}
 	mt, err := s.getManufacturingTokenByToken(ctx, token)
 	if err != nil {
 		return nil, err
@@ -1371,9 +1700,6 @@ func (s *Store) EnrollDevice(ctx context.Context, token, endpointID, serialNumbe
 	}
 	if mt != nil && mt.ExpiresAt != nil && *mt.ExpiresAt <= nowUnix() {
 		return nil, fmt.Errorf("manufacturing token expired")
-	}
-	if devicePublicKey == "" {
-		return nil, fmt.Errorf("device public key is required")
 	}
 	expectedOne := int64(1)
 	now := nowUnix()
@@ -1405,10 +1731,28 @@ func (s *Store) EnrollDevice(ctx context.Context, token, endpointID, serialNumbe
 			ExpectedRowsAffected: &expectedOne,
 		})
 	}
+	if !core.ValidHostName(serialNumber) {
+		return nil, fmt.Errorf("invalid serial number")
+	}
 	id := newID()
 	hostID := newID()
+	// Serials must stay unambiguous for device authentication: at most one
+	// live device per serial (same-key retries already returned above).
+	if serialNumber != "" {
+		var clash string
+		clashErr := s.db.QueryRowContext(ctx, `SELECT device_public_key FROM devices WHERE serial_number = ?`, serialNumber).Scan(&clash)
+		if clashErr != nil && clashErr != sql.ErrNoRows {
+			return nil, clashErr
+		}
+		if clashErr == nil {
+			return nil, fmt.Errorf("serial number already enrolled")
+		}
+	}
 	if sshUser == "" {
 		sshUser = "root"
+	}
+	if !core.ValidSSHUser(sshUser) {
+		return nil, fmt.Errorf("invalid ssh user")
 	}
 	if sshPort == 0 {
 		sshPort = 22
@@ -1482,8 +1826,11 @@ func hashSecret(value string) string {
 }
 
 func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	rows, err := s.db.QueryContext(ctx, `SELECT id, host_id, endpoint_id, ssh_host_key_fingerprint, device_public_key, state, serial_number, model, enrolled_at, last_seen_at FROM devices ORDER BY enrolled_at DESC`)
 	if err != nil {
 		return nil, err
@@ -1501,8 +1848,11 @@ func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 }
 
 func (s *Store) GetDeviceByHostID(ctx context.Context, hostID string) (*Device, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	var d Device
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, host_id, endpoint_id, ssh_host_key_fingerprint, device_public_key, state, serial_number, model, enrolled_at, last_seen_at FROM devices WHERE host_id = ? ORDER BY enrolled_at DESC LIMIT 1`,
@@ -1518,8 +1868,11 @@ func (s *Store) GetDeviceByHostID(ctx context.Context, hostID string) (*Device, 
 }
 
 func (s *Store) GetDeviceBySerial(ctx context.Context, serial string) (*Device, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	unlock, ok := s.acquireRead(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	defer unlock()
 	var d Device
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, host_id, endpoint_id, ssh_host_key_fingerprint, device_public_key, state, serial_number, model, enrolled_at, last_seen_at FROM devices WHERE serial_number = ?`, serial,
@@ -1534,8 +1887,11 @@ func (s *Store) GetDeviceBySerial(ctx context.Context, serial string) (*Device, 
 }
 
 func (s *Store) TouchDevice(ctx context.Context, id, hostID, endpointID, fingerprint, status string, directAddresses, relayURLs []string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	now := nowUnix()
 	addrsJSON, _ := json.Marshal(directAddresses)
 	relaysJSON, _ := json.Marshal(relayURLs)
@@ -1554,8 +1910,11 @@ func (s *Store) TouchDevice(ctx context.Context, id, hostID, endpointID, fingerp
 }
 
 func (s *Store) DeleteDevice(ctx context.Context, id, actor string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock, ok := s.acquireWrite(ctx)
+	if !ok {
+		return ctx.Err()
+	}
+	defer unlock()
 	if actor == "" {
 		return fmt.Errorf("audit actor is required")
 	}

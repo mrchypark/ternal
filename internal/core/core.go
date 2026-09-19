@@ -261,7 +261,9 @@ func ValidHostKeyFingerprint(value string) bool {
 }
 
 func shellQuote(value string) string {
-	if !strings.ContainsAny(value, " \t'\\\"") {
+	// Glob metacharacters are quoted too: an IPv6 address reaches sh as
+	// [2001:db8::1]:443, and an unquoted bracket pair is a glob pattern.
+	if !strings.ContainsAny(value, " \t'\\\"[]*?") {
 		return value
 	}
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
@@ -299,7 +301,9 @@ func appendRouteArgs(command string, relayConfig *RelayConfig, directAddresses [
 		if !validDirectAddress(addr) {
 			return "", ErrInvalidDirectAddress
 		}
-		command += " --direct-address " + addr
+		// Quoted: the allowlist admits '[' and ']' for IPv6, and sh would
+		// glob-expand a bare bracketed address before pigeons ever sees it.
+		command += " --direct-address " + shellQuote(addr)
 	}
 	for _, url := range relayConfig.RelayURLs {
 		command += " --relay-url " + url
@@ -354,7 +358,10 @@ func validateRouteArgs(parts []string) error {
 		if i+1 >= len(parts) {
 			return ErrInvalidProxyCommand
 		}
-		value := parts[i+1]
+		value, ok := unquoteShellArg(parts[i+1])
+		if !ok {
+			return ErrInvalidProxyCommand
+		}
 		i++
 		switch flag {
 		case "--direct-address":
@@ -372,12 +379,43 @@ func validateRouteArgs(parts []string) error {
 	return nil
 }
 
+// unquoteShellArg reverses the single-quote form emitted by shellQuote, so
+// validation runs on the value the shell would hand to the helper.
+func unquoteShellArg(value string) (string, bool) {
+	if !strings.HasPrefix(value, "'") {
+		return value, true
+	}
+	if !strings.HasSuffix(value, "'") || len(value) < 2 {
+		return "", false
+	}
+	inner := value[1 : len(value)-1]
+	if strings.ContainsAny(inner, "'\"") && !strings.Contains(inner, "'\\''") {
+		return "", false
+	}
+	return strings.ReplaceAll(inner, "'\\''", "'"), true
+}
+
+// ponytail: literal IP:port only, zones/hostnames rejected; keeps ProxyCommand shell-safe.
 func validDirectAddress(value string) bool {
-	addr, err := net.ResolveTCPAddr("tcp", value)
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	if strings.Contains(value, "%") {
+		return false
+	}
+	host, portStr, err := net.SplitHostPort(value)
 	if err != nil {
 		return false
 	}
-	return addr.Port != 0 && !addr.IP.IsUnspecified() && !addr.IP.IsMulticast()
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
 func validEndpointID(value string) bool {
@@ -407,6 +445,13 @@ func validHostReference(value string) bool {
 	return true
 }
 
+// ValidHostName reports whether value is safe to use as an SSH config Host
+// alias and as a host display name. Same grammar as host references:
+// no whitespace, control characters, or glob characters.
+func ValidHostName(value string) bool {
+	return validHostReference(value)
+}
+
 func validSSHUser(value string) bool {
 	if len(value) < 1 || len(value) > 64 {
 		return false
@@ -420,6 +465,12 @@ func validSSHUser(value string) bool {
 		}
 	}
 	return true
+}
+
+// ValidSSHUser reports whether value is safe as an SSH account name in
+// commands and config User directives.
+func ValidSSHUser(value string) bool {
+	return validSSHUser(value)
 }
 
 func validRelayURL(value string) bool {

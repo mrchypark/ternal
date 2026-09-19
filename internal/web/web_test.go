@@ -24,10 +24,11 @@ func TestPortalRendersHTMXAndEscapesData(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	if _, err := s.CreateHost(context.Background(), store.NewHost{
-		Name:       `<script>alert("x")</script>`,
+		Name:       "escape-test",
 		EndpointID: strings.Repeat("a", 64),
 		SSHUser:    "ops",
 		SSHPort:    22,
+		Status:     `<script>alert("x")</script>`,
 	}, "system"); err != nil {
 		t.Fatal(err)
 	}

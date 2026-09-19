@@ -1,0 +1,9 @@
+{
+  "outcome": "inconclusive",
+  "helper_failure": "supervisor-restart-30s-threshold",
+  "followup_ready": 200,
+  "followup_pending": false,
+  "followup_epoch": 314,
+  "followup_agent_service": "healthy",
+  "followup_agent_child": "running"
+}

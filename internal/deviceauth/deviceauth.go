@@ -28,6 +28,14 @@ func GenerateKey(path string) (string, error) {
 	if path == "" {
 		return "", errors.New("device key path is required")
 	}
+	// Exclusive creation: overwriting an enrolled key orphans the persisted
+	// identity (signatures would use a key the server never saw). Removal
+	// stays an explicit operator act, not a default.
+	if _, err := os.Lstat(path); err == nil {
+		return "", fmt.Errorf("device key already exists at %s; remove it explicitly to replace", path)
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return "", err
@@ -71,11 +79,12 @@ func Verify(publicKey, payload, signature string) error {
 }
 
 func Fresh(timestamp int64, now time.Time) bool {
-	delta := now.Unix() - timestamp
-	if delta < 0 {
-		delta = -delta
-	}
-	return delta <= int64(MaxClockSkew/time.Second)
+	// Bounded comparisons instead of absolute-difference arithmetic: no
+	// subtraction result is ever negated, so int64 extremes cannot wrap
+	// into the acceptance window.
+	skew := int64(MaxClockSkew / time.Second)
+	current := now.Unix()
+	return timestamp >= current-skew && timestamp <= current+skew
 }
 
 func HeartbeatPayload(serial, endpointID, fingerprint string, timestamp int64, status string, discovery *Discovery) string {
@@ -105,7 +114,7 @@ func WriteIdentity(path string, identity Identity) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(path, append(data, '\n'), 0600)
+	return AtomicWriteFile(path, append(data, '\n'), 0600)
 }
 
 func ReadIdentity(path string) (Identity, error) {
@@ -121,10 +130,13 @@ func ReadIdentity(path string) (Identity, error) {
 }
 
 func writePrivate(path string, private ed25519.PrivateKey) error {
-	return atomicWrite(path, []byte(base64.StdEncoding.EncodeToString(private)), 0600)
+	return AtomicWriteFile(path, []byte(base64.StdEncoding.EncodeToString(private)), 0600)
 }
 
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
+// AtomicWriteFile durably installs data at path: temp file, mode, content
+// sync, rename, then parent-directory sync so the rename itself survives
+// a crash before this returns.
+func AtomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -149,5 +161,8 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	return fsyncDir(filepath.Dir(path))
 }

@@ -1,0 +1,28 @@
+{
+  "checks": {
+    "cross_user_key_get_isolated": {
+      "status": 200
+    },
+    "cross_user_key_delete_rejected": {
+      "status": 404
+    },
+    "invalid_openssh_key_rejected": {
+      "status": 400
+    },
+    "openssh_key_normalized": {
+      "status": 201
+    },
+    "disposable_denied_key_deleted": {
+      "status": 200
+    },
+    "expired_policy_denies_second_host": {
+      "status": 404
+    }
+  },
+  "resource_ids": {
+    "second_host": "e60f5a1e-6018-4847-8a9b-2744f8a730be",
+    "preserved_allowed_key": "a547607b-fd9f-4f7b-bbac-ab8190b57cd6",
+    "deleted_disposable_denied_key": "a07eb596-99ee-4a1b-a2c9-d6b0f8e9e91b",
+    "expired_policy": "2e7cb59c-c69e-4075-afa0-8682437a1197"
+  }
+}

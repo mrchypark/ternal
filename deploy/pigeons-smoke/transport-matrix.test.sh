@@ -40,3 +40,11 @@ if [ "$status" -eq 0 ] || [ "$status" -eq 77 ]; then
 fi
 
 printf 'transport matrix harness self-test passed\n'
+
+driver_path="$script_dir/drivers/linux-netns-pigeons.sh"
+if grep -q '0\.0\.0\.0:\$relay_port' "$driver_path"; then
+	echo "local relay fixture publishes beyond the isolated client network" >&2; exit 1
+fi
+grep -F '"$host_ip:$relay_port:3340"' "$driver_path" >/dev/null || {
+	echo "local relay fixture must bind the isolated host address" >&2; exit 1
+}
