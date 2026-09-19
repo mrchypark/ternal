@@ -122,7 +122,7 @@ func TestBatchLinkedTokenRollbackAndNoBatchFallback(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO manufacturing_tokens (id,token_hash,batch_id,expires_at,created_at) VALUES (?,?,?,?,?)`, uuid.NewString(), hashSecret(directToken), "missing", nil, time.Now().Unix()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.EnrollDevice(ctx, directToken, strings.Repeat("f", 64), "", "model", "fingerprint", "key", "ops", 22, nil); err == nil {
+	if _, err := s.EnrollDevice(ctx, directToken, strings.Repeat("f", 64), "", "model", "fingerprint", "key-2", "ops", 22, nil); err == nil {
 		t.Fatal("wrong batch token fell back to direct credential")
 	}
 }

@@ -52,3 +52,30 @@ func TestPolicyPrincipalAcceptsGroupAndCustomClaim(t *testing.T) {
 		}
 	}
 }
+
+func TestValidHostNameRejectsConfigInjection(t *testing.T) {
+	malicious := []string{
+		"",
+		"has space",
+		"tab\there",
+		"new\nline",
+		"carriage\rreturn",
+		"wild*card",
+		"question?mark",
+		"bang!mark",
+		"-leading-dash",
+		"evil\n  ProxyCommand=evil",
+		strings.Repeat("x", 129),
+	}
+	for _, name := range malicious {
+		if ValidHostName(name) {
+			t.Errorf("ValidHostName(%q) = true, want false", name)
+		}
+	}
+	valid := []string{"edge-1", "TEST-000001", "IED-000001", "DUPLICATE", "host_1.example", "A"}
+	for _, name := range valid {
+		if !ValidHostName(name) {
+			t.Errorf("ValidHostName(%q) = false, want true", name)
+		}
+	}
+}

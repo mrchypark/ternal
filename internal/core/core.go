@@ -407,6 +407,13 @@ func validHostReference(value string) bool {
 	return true
 }
 
+// ValidHostName reports whether value is safe to use as an SSH config Host
+// alias and as a host display name. Same grammar as host references:
+// no whitespace, control characters, or glob characters.
+func ValidHostName(value string) bool {
+	return validHostReference(value)
+}
+
 func validSSHUser(value string) bool {
 	if len(value) < 1 || len(value) > 64 {
 		return false
@@ -420,6 +427,12 @@ func validSSHUser(value string) bool {
 		}
 	}
 	return true
+}
+
+// ValidSSHUser reports whether value is safe as an SSH account name in
+// commands and config User directives.
+func ValidSSHUser(value string) bool {
+	return validSSHUser(value)
 }
 
 func validRelayURL(value string) bool {

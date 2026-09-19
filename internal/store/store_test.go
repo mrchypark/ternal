@@ -4,8 +4,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -232,7 +237,7 @@ func TestIssueSSHAccessWritesDecisionGrantAndAuditAtomically(t *testing.T) {
 	hostID := createActiveTestHost(t, s)
 
 	expiresAt := time.Now().Add(5 * time.Minute).Unix()
-	if err := s.IssueSSHAccess(ctx, "user-1", hostID, "ops", expiresAt); err != nil {
+	if _, err := s.IssueSSHAccess(ctx, "user-1", hostID, "ops", expiresAt); err != nil {
 		t.Fatal(err)
 	}
 	requests, err := s.ListAccessRequests(ctx)
@@ -537,7 +542,7 @@ func TestDeleteDeviceAtomicallyRevokesAccessAndRelayGrants(t *testing.T) {
 	if _, err := s.CreateSSHKey(ctx, "user-1", key, "SHA256:test"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.IssueSSHAccess(ctx, "user-1", device.HostID, "ops", time.Now().Add(5*time.Minute).Unix()); err != nil {
+	if _, err := s.IssueSSHAccess(ctx, "user-1", device.HostID, "ops", time.Now().Add(5*time.Minute).Unix()); err != nil {
 		t.Fatal(err)
 	}
 	clientEndpointID := strings.Repeat("f", 64)
@@ -565,7 +570,7 @@ func TestDeleteDeviceAtomicallyRevokesAccessAndRelayGrants(t *testing.T) {
 	if keys, err := s.AuthorizedKeysForHost(ctx, device.HostID, "ops"); err != nil || len(keys) != 0 {
 		t.Fatalf("revoked authorized keys = %#v, err=%v", keys, err)
 	}
-	if err := s.IssueSSHAccess(ctx, "user-1", device.HostID, "ops", time.Now().Add(5*time.Minute).Unix()); err == nil {
+	if _, err := s.IssueSSHAccess(ctx, "user-1", device.HostID, "ops", time.Now().Add(5*time.Minute).Unix()); err == nil {
 		t.Fatal("revoked host received a new SSH grant")
 	}
 	if _, err := s.CreateRelayAccessGrant(ctx, device.HostID, clientEndpointID, "user-1", 300); err == nil {
@@ -623,7 +628,7 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest := hashSecret(strings.Join(keys, "\n") + "\n")
+	digest := hashSecret(strings.Join(FormatAuthorizedKeys(keys), "\n") + "\n")
 	generation, err := s.AuthorizedKeysGeneration(ctx, hostID, "ops", digest, snapshotGrants)
 	if err != nil {
 		t.Fatal(err)
@@ -649,7 +654,7 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sameDigest := hashSecret(strings.Join(keys, "\n") + "\n")
+	sameDigest := hashSecret(strings.Join(FormatAuthorizedKeys(keys), "\n") + "\n")
 	sameGeneration, err := s.AuthorizedKeysGeneration(ctx, hostID, "ops", sameDigest, snapshotGrants)
 	if err != nil {
 		t.Fatal(err)
@@ -683,7 +688,7 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nextDigest := hashSecret(strings.Join(keys, "\n") + "\n")
+	nextDigest := hashSecret(strings.Join(FormatAuthorizedKeys(keys), "\n") + "\n")
 	if _, err := s.AuthorizedKeysGeneration(ctx, hostID, "ops", nextDigest, snapshotGrants); err != nil {
 		t.Fatal(err)
 	}
@@ -704,6 +709,45 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	}
 	if err != nil || len(grants) != 4 || !installed["request-1"] || !installed["request-same-key"] || !installed["request-2"] || installed["request-3"] {
 		t.Fatalf("acknowledged grants = %#v, err=%v", grants, err)
+	}
+}
+
+func TestHostNamesRejectSSHConfigInjection(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	for _, name := range []string{"evil\n  ProxyCommand=evil", "has space", "wild*card", "-leading-dash", ""} {
+		if _, err := s.CreateHost(ctx, NewHost{Name: name, EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22}, "system"); err == nil {
+			t.Errorf("CreateHost(%q) accepted config-injecting name", name)
+		}
+	}
+	host, err := s.CreateHost(ctx, NewHost{Name: "good-host", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22}, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := NewHost{Name: "evil\nHost x", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22}
+	if err := s.UpdateHost(ctx, host.ID, bad, "system"); err == nil {
+		t.Error("UpdateHost accepted config-injecting name")
+	}
+	expires := time.Now().Add(time.Hour).Unix()
+	token, err := s.CreateManufacturingToken(ctx, "", &expires, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := base64.StdEncoding.EncodeToString(public)
+	fp := "SHA256:" + strings.Repeat("A", 43)
+	if _, err := s.EnrollDevice(ctx, token.Token, strings.Repeat("b", 64), "evil\n  ProxyCommand=evil", "test", fp, key, "ops", 22, nil); err == nil {
+		t.Error("EnrollDevice accepted config-injecting serial")
+	}
+	if _, _, err := s.CreateManufacturingBatch(ctx, "bad", "BAD PREFIX", time.Now().Add(time.Hour).Unix(), 1, "system"); err == nil {
+		t.Error("CreateManufacturingBatch accepted prefix that yields invalid host names")
 	}
 }
 
@@ -790,4 +834,355 @@ func TestEnrollDeviceRollsBackCredentialConsumptionOnInsertFailure(t *testing.T)
 			t.Fatalf("batch slot was not reusable after rollback: %v", err)
 		}
 	})
+}
+
+func TestAuthorizedKeysSnapshotCarriesKeyExpiry(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	hostID := createActiveTestHost(t, s)
+	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D test"
+	if _, err := s.CreateSSHKey(ctx, "user-1", key, "SHA256:test"); err != nil {
+		t.Fatal(err)
+	}
+	short := time.Now().Add(time.Minute).Unix()
+	long := time.Now().Add(5 * time.Minute).Unix()
+	if _, err := s.CreateAccessGrant(ctx, "request-short", "user-1", hostID, "ops", short, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateAccessGrant(ctx, "request-long", "user-1", hostID, "ops", long, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateAccessGrant(ctx, "request-dead", "user-1", hostID, "ops", time.Now().Add(-time.Minute).Unix(), ""); err != nil {
+		t.Fatal(err)
+	}
+	entries, grants, err := s.AuthorizedKeysSnapshotForHost(ctx, hostID, "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Key != key || entries[0].ExpiresAt != long {
+		t.Fatalf("snapshot entries = %#v, want one entry expiring at %d", entries, long)
+	}
+	if len(grants) != 2 {
+		t.Fatalf("snapshot grants = %#v, want the two live grants", grants)
+	}
+	lines := FormatAuthorizedKeys(entries)
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "expiry-time=\"") || !strings.HasSuffix(lines[0], " "+key) {
+		t.Fatalf("formatted lines = %#v, want sshd expiry-time option", lines)
+	}
+}
+
+func TestPublishAuthorizedKeysSnapshotIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	hostID := createActiveTestHost(t, s)
+	key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D test"
+	if _, err := s.CreateSSHKey(ctx, "user-1", key, "SHA256:test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateAccessGrant(ctx, "request-atomic-1", "user-1", hostID, "ops", time.Now().Add(5*time.Minute).Unix(), ""); err != nil {
+		t.Fatal(err)
+	}
+	body, digest, gen, err := s.PublishAuthorizedKeysSnapshot(ctx, hostID, "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(body))
+	if digest != hex.EncodeToString(sum[:]) || gen != 1 || !strings.Contains(body, "expiry-time=") {
+		t.Fatalf("published snapshot body=%q digest=%q gen=%d", body, digest, gen)
+	}
+	if _, err := s.CreateAccessGrant(ctx, "request-atomic-2", "user-1", hostID, "ops", time.Now().Add(6*time.Minute).Unix(), ""); err != nil {
+		t.Fatal(err)
+	}
+	body2, digest2, gen2, err := s.PublishAuthorizedKeysSnapshot(ctx, hostID, "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gen2 <= gen || digest2 == digest || body2 == body {
+		t.Fatalf("second publish did not advance: gen %d->%d", gen, gen2)
+	}
+	var mu sync.Mutex
+	seen := map[string]int64{}
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for i := 0; i < 25; i++ {
+				b, d, gn, err := s.PublishAuthorizedKeysSnapshot(ctx, hostID, "ops")
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				sum := sha256.Sum256([]byte(b))
+				if d != hex.EncodeToString(sum[:]) {
+					t.Errorf("published digest %q does not match body %q", d, b)
+					return
+				}
+				mu.Lock()
+				if prev, ok := seen[d]; ok && prev != gn {
+					t.Errorf("digest %q bound to generations %d and %d", d, prev, gn)
+				}
+				seen[d] = gn
+				mu.Unlock()
+			}
+		}(g)
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := s.CreateAccessGrant(ctx, "request-race", "user-1", hostID, "ops", time.Now().Add(time.Duration(7+i)*time.Minute).Unix(), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wg.Wait()
+}
+
+func TestRenderAuthorizedKeysBodyEnforcesSizeBudget(t *testing.T) {
+	entries := []AuthorizedKeyEntry{
+		{Key: "ssh-ed25519 " + strings.Repeat("A", 600*1024), ExpiresAt: time.Now().Add(5 * time.Minute).Unix()},
+		{Key: "ssh-ed25519 " + strings.Repeat("B", 600*1024), ExpiresAt: time.Now().Add(5 * time.Minute).Unix()},
+	}
+	if _, err := renderAuthorizedKeysBody(entries); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized body err = %v, want budget refusal", err)
+	}
+	ok, err := renderAuthorizedKeysBody(entries[:1])
+	if err != nil || !strings.HasPrefix(ok, "expiry-time=") {
+		t.Fatalf("under-budget body = %q, err = %v", ok[:40], err)
+	}
+}
+
+func TestAuthorizedKeysSnapshotScalesLinearly(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	hostID := createActiveTestHost(t, s)
+	const users = 4
+	for u := 0; u < users; u++ {
+		user := "scale-user-" + strconv.Itoa(u)
+		key := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D " + user
+		if _, err := s.CreateSSHKey(ctx, user, key, "SHA256:test"); err != nil {
+			t.Fatal(err)
+		}
+		for g := 0; g < 3; g++ {
+			if _, err := s.CreateAccessGrant(ctx, "req-"+user+"-"+strconv.Itoa(g), user, hostID, "ops", time.Now().Add(5*time.Minute).Unix(), ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	entries, grants, err := s.AuthorizedKeysSnapshotForHost(ctx, hostID, "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != users || len(grants) != 3*users {
+		t.Fatalf("snapshot = %d entries %d grants, want %d entries %d grants (no cross product)", len(entries), len(grants), users, 3*users)
+	}
+}
+
+func TestEnrollDeviceReplayRecoversSameResult(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	expires := time.Now().Add(time.Hour).Unix()
+	token, err := s.CreateManufacturingToken(ctx, "", &expires, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := base64.StdEncoding.EncodeToString(public)
+	fp := "SHA256:" + strings.Repeat("A", 43)
+	first, err := s.EnrollDevice(ctx, token.Token, strings.Repeat("a", 64), "REPLAY-1", "test", fp, key, "ops", 22, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := s.EnrollDevice(ctx, token.Token, strings.Repeat("a", 64), "REPLAY-1", "test", fp, key, "ops", 22, nil)
+	if err != nil {
+		t.Fatalf("replay after response loss = %v, want same device", err)
+	}
+	if replayed.ID != first.ID || replayed.HostID != first.HostID {
+		t.Fatalf("replay = %#v, want %#v", replayed, first)
+	}
+	other, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnrollDevice(ctx, token.Token, strings.Repeat("b", 64), "REPLAY-1", "test", fp, base64.StdEncoding.EncodeToString(other), "ops", 22, nil); err == nil {
+		t.Fatal("same serial with different device key was enrolled")
+	}
+}
+
+func TestDeleteHostCascadesBinding(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	expires := time.Now().Add(time.Hour).Unix()
+	token, err := s.CreateManufacturingToken(ctx, "", &expires, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := s.EnrollDevice(ctx, token.Token, strings.Repeat("a", 64), "DEL-1", "test", "SHA256:"+strings.Repeat("A", 43), base64.StdEncoding.EncodeToString(public), "ops", 22, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateEndpointDiscovery(ctx, device.HostID, []string{"127.0.0.1:1234"}, []string{"https://relay.example"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateSSHKey(ctx, "user-1", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D test", "SHA256:test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateAccessGrant(ctx, "request-del", "user-1", device.HostID, "ops", time.Now().Add(5*time.Minute).Unix(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteHost(ctx, device.HostID, "system"); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := s.GetDeviceBySerial(ctx, "DEL-1"); err != nil || d != nil {
+		t.Fatalf("orphaned device after host delete = %#v, err=%v", d, err)
+	}
+	if disc, err := s.GetEndpointDiscovery(ctx, device.HostID); err != nil || disc != nil {
+		t.Fatalf("orphaned discovery after host delete = %#v, err=%v", disc, err)
+	}
+	if entries, err := s.AuthorizedKeysForHost(ctx, device.HostID, "ops"); err != nil || len(entries) != 0 {
+		t.Fatalf("orphaned keys after host delete = %#v, err=%v", entries, err)
+	}
+	for _, g := range mustListGrants(t, s, ctx) {
+		if g.HostID == device.HostID {
+			t.Fatalf("orphaned grant after host delete = %#v", g)
+		}
+	}
+	token2, err := s.CreateManufacturingToken(ctx, "", &expires, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnrollDevice(ctx, token2.Token, strings.Repeat("b", 64), "DEL-1", "test", "SHA256:"+strings.Repeat("B", 43), base64.StdEncoding.EncodeToString(other), "ops", 22, nil); err != nil {
+		t.Fatalf("deliberate reenrollment after delete = %v", err)
+	}
+}
+
+func TestEnrollDeviceRejectsDuplicateSerial(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	expires := time.Now().Add(time.Hour).Unix()
+	for i, endpoint := range []string{strings.Repeat("a", 64), strings.Repeat("b", 64)} {
+		token, err := s.CreateManufacturingToken(ctx, "", &expires, "system")
+		if err != nil {
+			t.Fatal(err)
+		}
+		public, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.EnrollDevice(ctx, token.Token, endpoint, "DUP-1", "test", "SHA256:"+strings.Repeat("A", 43), base64.StdEncoding.EncodeToString(public), "ops", 22, nil)
+		if i == 0 && err != nil {
+			t.Fatal(err)
+		}
+		if i == 1 && err == nil {
+			t.Fatal("duplicate serial enrolled a second device")
+		}
+	}
+}
+
+func mustListGrants(t *testing.T, s *Store, ctx context.Context) []AccessGrant {
+	t.Helper()
+	grants, err := s.ListAccessGrants(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return grants
+}
+
+func TestStoreLockAcquisitionHonorsCancellation(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if !s.mu.Lock(context.Background()) {
+		t.Fatal("test lock not acquired")
+	}
+	defer s.mu.Unlock()
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	start := time.Now()
+	if _, err := s.GetHost(cancelled, "missing"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("queued read err = %v, want context.Canceled", err)
+	}
+	if err := s.DeleteHost(cancelled, "missing", "system"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("queued write err = %v, want context.Canceled", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("cancelled requests waited %v for the lock", took)
+	}
+}
+
+func TestListUserAccessHistoryIsScopedAndOrdered(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	hostID := createActiveTestHost(t, s)
+	for i := 0; i < 3; i++ {
+		if _, err := s.CreateAccessGrant(ctx, "req-a-"+strconv.Itoa(i), "user-a", hostID, "ops", time.Now().Add(5*time.Minute).Unix(), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.IssueSSHAccess(ctx, "user-b", hostID, "ops", time.Now().Add(5*time.Minute).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := s.ListUserAccessGrants(ctx, "user-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 3 {
+		t.Fatalf("user-a grants = %d, want 3 without scanning others", len(grants))
+	}
+	for _, g := range grants {
+		if g.UserID != "user-a" {
+			t.Fatalf("grant leaked across principals: %#v", g)
+		}
+	}
+	for i := 1; i < len(grants); i++ {
+		if grants[i].CreatedAt > grants[i-1].CreatedAt {
+			t.Fatal("user grants not newest-first")
+		}
+	}
+	requests, err := s.ListUserAccessRequests(ctx, "user-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 || requests[0].UserID != "user-b" {
+		t.Fatalf("user-b requests = %#v", requests)
+	}
 }

@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -653,7 +652,7 @@ func (s *Server) handleIssueSSHCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "register an SSH public key before requesting access")
 		return
 	}
-	if err := s.store.IssueSSHAccess(r.Context(), principalID, host.ID, req.SSHUser, time.Now().Add(5*time.Minute).Unix()); err != nil {
+	if _, err := s.store.IssueSSHAccess(r.Context(), principalID, host.ID, req.SSHUser, time.Now().Add(5*time.Minute).Unix()); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not issue access grant")
 		return
 	}
@@ -1104,18 +1103,7 @@ func (s *Server) handleAgentAuthorizedKeys(w http.ResponseWriter, r *http.Reques
 		writeDeviceVerificationError(w, err)
 		return
 	}
-	keys, grants, err := s.store.AuthorizedKeysSnapshotForHost(r.Context(), device.HostID, sshUser)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal server error")
-		return
-	}
-	body := strings.Join(keys, "\n")
-	if body != "" {
-		body += "\n"
-	}
-	digest := sha256.Sum256([]byte(body))
-	digestHex := hex.EncodeToString(digest[:])
-	generation, err := s.store.AuthorizedKeysGeneration(r.Context(), device.HostID, sshUser, digestHex, grants)
+	body, digestHex, generation, err := s.store.PublishAuthorizedKeysSnapshot(r.Context(), device.HostID, sshUser)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
