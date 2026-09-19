@@ -621,7 +621,11 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	if _, err := s.CreateSSHKey(ctx, "user-1", key, "SHA256:test"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateAccessGrant(ctx, "request-1", "user-1", hostID, "ops", time.Now().Add(time.Minute).Unix(), ""); err != nil {
+	// One shared expiry: the snapshot renders it into the digest, so two
+	// grants created in different wall-clock seconds would legitimately
+	// produce different digests and mask what this test checks.
+	expiry := time.Now().Add(time.Minute).Unix()
+	if _, err := s.CreateAccessGrant(ctx, "request-1", "user-1", hostID, "ops", expiry, ""); err != nil {
 		t.Fatal(err)
 	}
 	keys, snapshotGrants, err := s.AuthorizedKeysSnapshotForHost(ctx, hostID, "ops")
@@ -636,7 +640,7 @@ func TestAuthorizedKeysAcknowledgementRequiresExactSnapshot(t *testing.T) {
 	if err := s.AcknowledgeAuthorizedKeys(ctx, hostID, "ops", generation, strings.Repeat("b", 64)); err == nil {
 		t.Fatal("mismatched authorized_keys acknowledgement was accepted")
 	}
-	if _, err := s.CreateAccessGrant(ctx, "request-same-key", "user-1", hostID, "ops", time.Now().Add(time.Minute).Unix(), ""); err != nil {
+	if _, err := s.CreateAccessGrant(ctx, "request-same-key", "user-1", hostID, "ops", expiry, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AcknowledgeAuthorizedKeys(ctx, hostID, "ops", generation, digest); err != nil {
