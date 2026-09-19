@@ -161,14 +161,21 @@ func (s *Server) view(r *http.Request, identity *auth.AuthContext, view string) 
 		items, err := s.store.ListPolicies(r.Context())
 		return policiesTable(items), "Access policies", "Organization principals mapped to host selectors.", err
 	case "access":
-		grants, err := s.store.ListAccessGrants(r.Context())
-		if err != nil {
-			return nil, "", "", err
-		}
-		requests, err := s.store.ListAccessRequests(r.Context())
-		if !identity.IsAdmin {
-			grants = filterGrants(grants, identity.User.PrincipalID())
-			requests = filterRequests(requests, identity.User.PrincipalID())
+		var grants []store.AccessGrant
+		var requests []store.AccessRequest
+		var err error
+		if identity.IsAdmin {
+			grants, err = s.store.ListAccessGrants(r.Context())
+			if err != nil {
+				return nil, "", "", err
+			}
+			requests, err = s.store.ListAccessRequests(r.Context())
+		} else {
+			grants, err = s.store.ListUserAccessGrants(r.Context(), identity.User.PrincipalID())
+			if err != nil {
+				return nil, "", "", err
+			}
+			requests, err = s.store.ListUserAccessRequests(r.Context(), identity.User.PrincipalID())
 		}
 		return accessTables(grants, requests), "Access control", "Short-lived grants and their policy decisions.", err
 	case "audit":
@@ -229,26 +236,6 @@ func navigation(identity *auth.AuthContext, active string, outOfBand bool) g.Nod
 		attrs = append(attrs, hx("swap-oob", "outerHTML"))
 	}
 	return h.Nav(append(attrs, g.Group(navItems(identity, active)))...)
-}
-
-func filterGrants(items []store.AccessGrant, userID string) []store.AccessGrant {
-	filtered := make([]store.AccessGrant, 0, len(items))
-	for _, item := range items {
-		if item.UserID == userID {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered
-}
-
-func filterRequests(items []store.AccessRequest, userID string) []store.AccessRequest {
-	filtered := make([]store.AccessRequest, 0, len(items))
-	for _, item := range items {
-		if item.UserID == userID {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered
 }
 
 func hostsTable(items []core.Host) g.Node {

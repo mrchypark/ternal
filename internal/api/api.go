@@ -849,39 +849,33 @@ func (s *Server) handleKeyStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAccessGrants(w http.ResponseWriter, r *http.Request) {
-	grants, err := s.store.ListAccessGrants(r.Context())
+	identity := auth.GetAuth(r)
+	var grants []store.AccessGrant
+	var err error
+	if identity.IsAdmin {
+		grants, err = s.store.ListAccessGrants(r.Context())
+	} else {
+		grants, err = s.store.ListUserAccessGrants(r.Context(), identity.User.PrincipalID())
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	identity := auth.GetAuth(r)
-	if !identity.IsAdmin {
-		filtered := grants[:0]
-		for _, grant := range grants {
-			if grant.UserID == identity.User.PrincipalID() {
-				filtered = append(filtered, grant)
-			}
-		}
-		grants = filtered
 	}
 	writeJSON(w, http.StatusOK, grants)
 }
 
 func (s *Server) handleListAccessRequests(w http.ResponseWriter, r *http.Request) {
-	requests, err := s.store.ListAccessRequests(r.Context())
+	identity := auth.GetAuth(r)
+	var requests []store.AccessRequest
+	var err error
+	if identity.IsAdmin {
+		requests, err = s.store.ListAccessRequests(r.Context())
+	} else {
+		requests, err = s.store.ListUserAccessRequests(r.Context(), identity.User.PrincipalID())
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	identity := auth.GetAuth(r)
-	if !identity.IsAdmin {
-		filtered := requests[:0]
-		for _, request := range requests {
-			if request.UserID == identity.User.PrincipalID() {
-				filtered = append(filtered, request)
-			}
-		}
-		requests = filtered
 	}
 	writeJSON(w, http.StatusOK, requests)
 }

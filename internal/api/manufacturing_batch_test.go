@@ -66,7 +66,12 @@ func TestBatchLinkedOneUseTokensAllocateSerialsThroughAPI(t *testing.T) {
 		if device.SerialNumber != fmt.Sprintf("ONCE-%06d", i+1) {
 			t.Fatalf("server serial=%q", device.SerialNumber)
 		}
+		other, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
 		enrollment["endpoint_id"] = strings.Repeat(fmt.Sprint(i+3), 64)
+		enrollment["device_public_key"] = base64.StdEncoding.EncodeToString(other)
 		request("/manufacturing/enroll", enrollment, http.StatusBadRequest, nil)
 	}
 	batches, err := s.ListManufacturingBatches(context.Background())
