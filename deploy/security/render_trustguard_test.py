@@ -99,6 +99,19 @@ class TrustGuardRendererTest(unittest.TestCase):
         for binding in self.by_kind(result, "ValidatingAdmissionPolicyBinding"):
             self.assertNotIn("paramRef", binding["spec"])
 
+    def test_shared_suffix_cluster_ids_do_not_collide(self):
+        shared = "x" * 35
+        first = trustguard.render("ternal-test", "ternal-data", "ternal-trust-anchor",
+                                  "aaaa" + shared, "b" * 64, [IMAGE], token=TOKEN)
+        second = trustguard.render("ternal-test", "ternal-data", "ternal-trust-anchor",
+                                   "bbbb" + shared, "b" * 64, [IMAGE], token=TOKEN)
+        names = lambda result: sorted(item["metadata"]["name"] for item in result["items"])
+        self.assertNotEqual(names(first), names(second))
+        for name in names(first):
+            # Bindings are DNS subdomains (253); the rest stay DNS labels.
+            limit = 253 if name.endswith("-binding") else 63
+            self.assertLessEqual(len(name), limit)
+
 
 if __name__ == "__main__":
     unittest.main()
