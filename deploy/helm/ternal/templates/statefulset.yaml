@@ -111,7 +111,6 @@ spec:
             - name: relay-access
               containerPort: 3001
 {{ end }}
-{{ end }}
           readinessProbe:
             httpGet:
               path: /ready
