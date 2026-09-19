@@ -72,6 +72,22 @@ if grep -q 'TERNAL_DATA_MULTI_NODE' "$tmp/default.yaml"; then
 	exit 1
 fi
 
+secretChecksum() {
+	helm template ternal "$chart" 		--set image.tag=render-check 		--set-string secrets.oidcClientSecret=test-oidc-secret 		--set-string secrets.sessionKey="$1" 		--set-string secrets.dataAdminToken=0123456789abcdef0123456789abcdef 		--set-string secrets.relayAccessToken=0123456789abcdef0123456789abcdef 	| grep 'checksum/secret:' | awk '{print $2}'
+}
+if [ "$(secretChecksum 0123456789abcdef0123456789abcdef)" = "$(secretChecksum fedcba9876543210fedcba9876543210)" ]; then
+	echo "chart-managed secret change did not move the pod checksum" >&2; exit 1
+fi
+if [ "$(secretChecksum 0123456789abcdef0123456789abcdef)" != "$(secretChecksum 0123456789abcdef0123456789abcdef)" ]; then
+	echo "pod checksum unstable for identical secrets" >&2; exit 1
+fi
+helm template ternal "$chart" --set image.tag=render-check --set-string secrets.existingSecret=fixture --set-string secrets.version=1 >"$tmp/external-v1.yaml"
+helm template ternal "$chart" --set image.tag=render-check --set-string secrets.existingSecret=fixture --set-string secrets.version=2 >"$tmp/external-v2.yaml"
+if [ "$(grep 'ternal.dev/secret-version:' "$tmp/external-v1.yaml")" = "$(grep 'ternal.dev/secret-version:' "$tmp/external-v2.yaml")" ]; then
+	echo "external secret version bump did not move the pod annotation" >&2; exit 1
+fi
+
+
 helm template ternal "$chart" \
 	--set image.tag=render-check \
 	--set data.requireObjectStore=true \

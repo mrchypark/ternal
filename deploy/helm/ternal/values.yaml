@@ -45,7 +45,6 @@ data:
     durability: before-ack
   ha:
     peerPort: 9090
-
 gateway:
   enabled: false
   scheme: https
@@ -111,7 +110,11 @@ devHeaders: false
 secrets:
   # Set this to a pre-created Secret containing the four environment-variable
   # keys below. This keeps plaintext values out of Helm release history.
+  # The chart cannot see inside that Secret: bump `version` on every
+  # external rotation so pods roll (chart-managed secrets roll by content
+  # hash automatically).
   existingSecret: ""
+  version: ""
   oidcClientSecret: ""
   sessionKey: ""
   dataAdminToken: ""
