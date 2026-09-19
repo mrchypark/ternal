@@ -372,12 +372,27 @@ func validateRouteArgs(parts []string) error {
 	return nil
 }
 
+// ponytail: literal IP:port only, zones/hostnames rejected; keeps ProxyCommand shell-safe.
 func validDirectAddress(value string) bool {
-	addr, err := net.ResolveTCPAddr("tcp", value)
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	if strings.Contains(value, "%") {
+		return false
+	}
+	host, portStr, err := net.SplitHostPort(value)
 	if err != nil {
 		return false
 	}
-	return addr.Port != 0 && !addr.IP.IsUnspecified() && !addr.IP.IsMulticast()
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
 func validEndpointID(value string) bool {

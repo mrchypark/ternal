@@ -696,10 +696,24 @@ func (s *Server) handleSSHConfig(w http.ResponseWriter, r *http.Request) {
 				options = append(options, "  "+strings.Replace(cmd.Args[i+1], "=", " ", 1))
 			}
 		}
-		configs = append(configs, fmt.Sprintf("Host %s\n  HostName %s\n  Port %d\n  User %s\n%s",
-			h.Name, h.EndpointID, h.SSHPort, h.SSHUser, strings.Join(options, "\n")))
+		entry, ok := sshConfigEntry(h.Name, h.EndpointID, h.SSHPort, h.SSHUser, options)
+		if !ok {
+			continue
+		}
+		configs = append(configs, entry)
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"configs": configs})
+}
+
+// sshConfigEntry renders one SSH config block. It reports false for host
+// names outside the strict alias grammar so legacy rows can never inject
+// additional directives; writers reject such names at enrollment time.
+func sshConfigEntry(name, endpointID string, sshPort uint16, sshUser string, options []string) (string, bool) {
+	if !core.ValidHostName(name) || !core.ValidSSHUser(sshUser) {
+		return "", false
+	}
+	return fmt.Sprintf("Host %s\n  HostName %s\n  Port %d\n  User %s\n%s",
+		name, endpointID, sshPort, sshUser, strings.Join(options, "\n")), true
 }
 
 func (s *Server) handleIssueRelayGrant(w http.ResponseWriter, r *http.Request) {

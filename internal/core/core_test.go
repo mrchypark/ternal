@@ -53,6 +53,35 @@ func TestPolicyPrincipalAcceptsGroupAndCustomClaim(t *testing.T) {
 	}
 }
 
+func TestDirectAddressRejectsShellInjection(t *testing.T) {
+	malicious := []string{
+		"[fe80::1%eth0]:22",
+		"[fe80::1%x$(touch /tmp/pwned)]:22",
+		"[fe80::1%x`id`]:22",
+		"[fe80::1%x${IFS}]:22",
+		"127.0.0.1:22;echo pwned",
+		"127.0.0.1:22|id",
+	}
+	for _, addr := range malicious {
+		if validDirectAddress(addr) {
+			t.Errorf("validDirectAddress(%q) = true, want false", addr)
+		}
+		_, err := BuildGrantAwareSSHCommand("host-1", strings.Repeat("a", 64), "ops", 22, &RelayConfig{RelayURLs: []string{"https://relay.example"}}, []string{addr})
+		if !errors.Is(err, ErrInvalidDirectAddress) {
+			t.Errorf("BuildGrantAwareSSHCommand(%q) err = %v, want ErrInvalidDirectAddress", addr, err)
+		}
+	}
+}
+
+func TestDirectAddressAcceptsLiteralIPs(t *testing.T) {
+	valid := []string{"127.0.0.1:4444", "192.168.1.20:22", "[::1]:22", "[2001:db8::1]:443"}
+	for _, addr := range valid {
+		if !validDirectAddress(addr) {
+			t.Errorf("validDirectAddress(%q) = false, want true", addr)
+		}
+	}
+}
+
 func TestValidHostNameRejectsConfigInjection(t *testing.T) {
 	malicious := []string{
 		"",
