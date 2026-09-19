@@ -1,0 +1,35 @@
+{
+  "tag": "v0.3.15",
+  "source_commit": "299147e9827de718d8fd1191937e8162978faa2e",
+  "workflow_run_id": 34302772363,
+  "checksums_verified": 16,
+  "archives_verified": [
+    "ternal-agent-linux-amd64.tar.gz",
+    "ternal-agent-linux-arm64.tar.gz",
+    "ternalctl-linux-amd64.tar.gz",
+    "ternalctl-linux-arm64.tar.gz",
+    "ternalctl-macos-amd64.tar.gz",
+    "ternalctl-macos-arm64.tar.gz",
+    "ternalctl-windows-amd64.zip",
+    "ternalctl-windows-arm64.zip"
+  ],
+  "signed_image": "ghcr.io/mrchypark/ternal@sha256:95702428b5fd6822f751611e1e2f83b32d5b9e17d8268a22f3cccb2aa0c2c9ee",
+  "tag_digest_matches_signature": true,
+  "chart_version": "0.3.15",
+  "is_prerelease": false,
+  "public_url": "https://github.com/mrchypark/ternal/releases/tag/v0.3.15",
+  "same_source_as_qualified_rc8": true,
+  "rc8_asset_byte_equivalence": {
+    "ternal-agent-linux-amd64.tar.gz": true,
+    "ternal-agent-linux-arm64.tar.gz": true,
+    "ternalctl-linux-amd64.tar.gz": true,
+    "ternalctl-linux-arm64.tar.gz": true,
+    "ternalctl-macos-amd64.tar.gz": true,
+    "ternalctl-macos-arm64.tar.gz": true,
+    "ternalctl-windows-amd64.zip": true,
+    "ternalctl-windows-arm64.zip": true,
+    "ternal-trustguard.py": true
+  },
+  "latest_verified": true,
+  "release_notes_verified": true
+}

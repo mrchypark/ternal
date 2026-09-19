@@ -1,0 +1,17 @@
+{
+  "volumes": [
+    {
+      "pv": "pvc-963bf7ce-5b3f-473b-bc3d-49d6f86f4a8c",
+      "volume_handle": "projects/patch2-the-new-era/zones/asia-northeast3-a/disks/pvc-963bf7ce-5b3f-473b-bc3d-49d6f86f4a8c",
+      "pv_absent": true,
+      "disk_absent": true
+    },
+    {
+      "pv": "pvc-95aa88ec-1a8a-466a-9567-c19f23772890",
+      "volume_handle": "projects/patch2-the-new-era/zones/asia-northeast3-a/disks/pvc-95aa88ec-1a8a-466a-9567-c19f23772890",
+      "pv_absent": true,
+      "disk_absent": true
+    }
+  ],
+  "authoritative_queries_succeeded": true
+}

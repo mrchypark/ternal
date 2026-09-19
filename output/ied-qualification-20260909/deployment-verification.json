@@ -1,0 +1,12 @@
+{
+  "tag": "v0.3.15-rc.8",
+  "source_commit": "299147e9827de718d8fd1191937e8162978faa2e",
+  "signed_image": "ghcr.io/mrchypark/ternal@sha256:437df0868a6ab56665a7564e6b38c923dfe8e2d77fae1aea87f86fd9df638b1e",
+  "runtime_image": "ghcr.io/mrchypark/ternal@sha256:437df0868a6ab56665a7564e6b38c923dfe8e2d77fae1aea87f86fd9df638b1e",
+  "ready": true,
+  "no_pvc": true,
+  "candidate_only_admission": true,
+  "former_digest_denied": true,
+  "helm_revision": "8",
+  "private_upgrade_evidence": "/var/folders/r4/bygqtzg554v3dh6zd8z41zgw0000gn/T/ternal-ied-upgrade-synyekcj"
+}

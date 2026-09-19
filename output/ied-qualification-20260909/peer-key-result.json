@@ -1,0 +1,17 @@
+{
+  "actual_peer_key_changed": true,
+  "mismatch": {
+    "exit": 255,
+    "stdin_stdout": false,
+    "no_stdout": true,
+    "stderr_marker": false,
+    "exact_mismatch": true
+  },
+  "restored_normal_ssh": {
+    "exit": 23,
+    "stdin_stdout": true,
+    "no_stdout": false,
+    "stderr_marker": true,
+    "exact_mismatch": false
+  }
+}

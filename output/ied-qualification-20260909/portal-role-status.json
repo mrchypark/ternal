@@ -1,0 +1,16 @@
+{
+  "admin": {
+    "hosts": 200,
+    "keys": 200,
+    "policies": 200,
+    "access": 200,
+    "audit": 200
+  },
+  "allowed": {
+    "hosts": 200,
+    "keys": 200,
+    "policies": 403,
+    "access": 200,
+    "audit": 403
+  }
+}

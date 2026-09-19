@@ -1,0 +1,1 @@
+{"bucket_deleted": true, "deleted_admission": 6, "deleted_external": 5, "namespace_deleted": true, "outcome": "complete", "preflight": {"admission_objects_present": 6, "external_objects_present": 5, "namespace_object_count": 25, "namespace_pvc_count": 2}, "preserved_objects_verified": true, "uninstalled_releases": 2}

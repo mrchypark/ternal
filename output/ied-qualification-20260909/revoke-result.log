@@ -1,0 +1,13 @@
+client-session: ok
+agent-restart-no-rekey: ok
+authorized-keys-sync: exact-key-present
+ssh-marker-before-revoke: received
+device-revoke: 200
+existing-ssh-dropped: yes
+agent-revoked-child-stopped: yes
+revoked-signed-heartbeat: rejected
+revoked-discovery: 404
+revoked-ssh-grant: 404
+revoked-relay-grant: 404
+relay-callback-device-client: 403
+revoked-device-listed: revoked

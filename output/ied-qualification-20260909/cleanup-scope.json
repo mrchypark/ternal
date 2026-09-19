@@ -1,0 +1,87 @@
+{
+  "status": "cleaned-verified",
+  "context": "gke_ied-cluster",
+  "test_namespace": "ternal-v027-qual",
+  "helm_releases": [
+    "ternal-rc",
+    "ternal-v027"
+  ],
+  "external_namespace": "haproxy-gateway-system",
+  "external_resources": [
+    "gateway/ternal-qualification-gateway",
+    "certificate/tls-ternal-v027-app",
+    "certificate/tls-ternal-v027-auth",
+    "secret/tls-ternal-v027-app",
+    "secret/tls-ternal-v027-auth"
+  ],
+  "disposable_bucket": "gs://ternal-qual-20260908-602454948273",
+  "preserve": [
+    "namespace/ternal",
+    "gs://ternal-ied-602454948273",
+    "service/haproxy-gateway in haproxy-gateway-system (shared load balancer)"
+  ],
+  "notes": [
+    "Remove only inventoried qualification resources after all validation.",
+    "Re-list Helm revisions and namespace resources after final upgrade before cleanup.",
+    "Local protected qualification credentials and active browser sessions require final cleanup too."
+  ],
+  "public_candidate": "v0.3.15-rc.8",
+  "main_current_release": "v0.3.15-rc.8",
+  "main_current_revision": 8,
+  "external_admission_resources": [
+    {
+      "kind": "ValidatingAdmissionPolicy",
+      "name": "ternal-trustguard-anchor-policy-ternal-rc-20260908"
+    },
+    {
+      "kind": "ValidatingAdmissionPolicy",
+      "name": "ternal-trustguard-api-pods-ternal-rc-20260908"
+    },
+    {
+      "kind": "ValidatingAdmissionPolicy",
+      "name": "ternal-trustguard-api-workloads-ternal-rc-20260908"
+    },
+    {
+      "kind": "ValidatingAdmissionPolicyBinding",
+      "name": "ternal-trustguard-anchor-policy-ternal-rc-20260908-binding"
+    },
+    {
+      "kind": "ValidatingAdmissionPolicyBinding",
+      "name": "ternal-trustguard-api-pods-ternal-rc-20260908-binding"
+    },
+    {
+      "kind": "ValidatingAdmissionPolicyBinding",
+      "name": "ternal-trustguard-api-workloads-ternal-rc-20260908-binding"
+    }
+  ],
+  "cleanup_inventory_files": [
+    "/tmp/ternal-v0315rc4-qualification-20260909/cleanup-inventory.json",
+    "/tmp/ternal-batch-linked-cleanup.json",
+    "/tmp/ternal-v0315rc7-qualification-20260909/cleanup-inventory.json",
+    "/tmp/ternal-v0315rc8-qualification-20260909/cleanup-inventory.json"
+  ],
+  "cleanup_order": [
+    "Capture final results and audit",
+    "Revoke disposable device/user sessions",
+    "Remove exact admission bindings then policies",
+    "Uninstall inventoried Helm releases",
+    "Delete test namespace and inventoried dedicated gateway/TLS objects",
+    "Delete single disposable bucket",
+    "Verify preserved unrelated namespace/bucket and absence of all inventoried resources",
+    "Remove private local credentials"
+  ],
+  "legacy_test_volumes": [
+    {
+      "pvc": "data-ternal-v027-0",
+      "pv": "pvc-963bf7ce-5b3f-473b-bc3d-49d6f86f4a8c",
+      "reclaim_policy": "Delete",
+      "volume_handle": "projects/patch2-the-new-era/zones/asia-northeast3-a/disks/pvc-963bf7ce-5b3f-473b-bc3d-49d6f86f4a8c"
+    },
+    {
+      "pvc": "rauthy-qualification-data",
+      "pv": "pvc-95aa88ec-1a8a-466a-9567-c19f23772890",
+      "reclaim_policy": "Delete",
+      "volume_handle": "projects/patch2-the-new-era/zones/asia-northeast3-a/disks/pvc-95aa88ec-1a8a-466a-9567-c19f23772890"
+    }
+  ]
+}
