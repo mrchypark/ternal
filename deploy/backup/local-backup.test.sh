@@ -20,3 +20,12 @@ case "$archive" in
 	*) echo "archive outside output dir: $archive" >&2; exit 1 ;;
 esac
 tar -tzf "$archive" | grep -q 'nested/file.txt'
+
+# Red check: restrictive permissions under a permissive umask.
+mode() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+if [ "$(mode "$archive")" != "600" ]; then
+	echo "archive mode is $(mode "$archive"), want 600" >&2; exit 1
+fi
+if [ "$(mode "$out")" != "700" ]; then
+	echo "output dir mode is $(mode "$out"), want 700" >&2; exit 1
+fi
