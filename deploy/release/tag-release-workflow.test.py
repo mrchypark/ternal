@@ -52,6 +52,7 @@ for required in (
     "sbom-arm64.spdx.json",
     "cosign sign --yes",
     "cosign verify",
+    "docker buildx imagetools create",
     "contents: write",
     "needs:\n      - native\n      - release",
     "release-provenance.json",
@@ -69,6 +70,10 @@ for required in (
 ):
     if required not in workflow:
         raise SystemExit(f"tag release security contract is missing: {required}")
+
+release_tag = "${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
+if workflow.index(release_tag) < workflow.index("cosign verify"):
+    raise SystemExit("release tag must be promoted only after scan and sign gates pass")
 
 if workflow.count("-e DOCKER_CONFIG=/auth") != 2:
     raise SystemExit("both private-registry scanners must use the mounted Docker auth directory")
