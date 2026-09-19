@@ -870,7 +870,7 @@ func TestAuthorizedKeysSnapshotCarriesKeyExpiry(t *testing.T) {
 		t.Fatalf("snapshot grants = %#v, want the two live grants", grants)
 	}
 	lines := FormatAuthorizedKeys(entries)
-	if len(lines) != 1 || !strings.HasPrefix(lines[0], "expiry-time=\"") || !strings.HasSuffix(lines[0], " "+key) {
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "expiry-time=\"") || !strings.Contains(lines[0], "Z\" ") || !strings.HasSuffix(lines[0], " "+key) {
 		t.Fatalf("formatted lines = %#v, want sshd expiry-time option", lines)
 	}
 }
@@ -1184,5 +1184,37 @@ func TestListUserAccessHistoryIsScopedAndOrdered(t *testing.T) {
 	}
 	if len(requests) != 1 || requests[0].UserID != "user-b" {
 		t.Fatalf("user-b requests = %#v", requests)
+	}
+}
+
+func TestEnrollDeviceRejectsDuplicatePublicKey(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	expires := time.Now().Add(time.Hour).Unix()
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := base64.StdEncoding.EncodeToString(public)
+	fp := "SHA256:" + strings.Repeat("A", 43)
+	first, err := s.CreateManufacturingToken(ctx, "", &expires, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnrollDevice(ctx, first.Token, strings.Repeat("a", 64), "DUPKEY-1", "test", fp, key, "ops", 22, nil); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.CreateManufacturingToken(ctx, "", &expires, "system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second token with the same key and a different serial must not create
+	// a second device: the key is the device identity.
+	if _, err := s.EnrollDevice(ctx, second.Token, strings.Repeat("b", 64), "DUPKEY-2", "test", fp, key, "ops", 22, nil); err == nil {
+		t.Fatal("duplicate device public key enrolled a second device")
 	}
 }

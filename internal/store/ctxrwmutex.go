@@ -73,6 +73,12 @@ func (m *ctxRWMutex) Lock(ctx context.Context) bool {
 		case <-ctx.Done():
 			m.mu.Lock()
 			m.wwaiting--
+			// A cancelled writer releases no lock, so queued readers wait on
+			// wwaiting alone; the last one out must broadcast or they sleep
+			// forever with no owner.
+			if m.wwaiting == 0 {
+				m.broadcast()
+			}
 			m.mu.Unlock()
 			return false
 		}

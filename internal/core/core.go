@@ -261,7 +261,9 @@ func ValidHostKeyFingerprint(value string) bool {
 }
 
 func shellQuote(value string) string {
-	if !strings.ContainsAny(value, " \t'\\\"") {
+	// Glob metacharacters are quoted too: an IPv6 address reaches sh as
+	// [2001:db8::1]:443, and an unquoted bracket pair is a glob pattern.
+	if !strings.ContainsAny(value, " \t'\\\"[]*?") {
 		return value
 	}
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
@@ -299,7 +301,9 @@ func appendRouteArgs(command string, relayConfig *RelayConfig, directAddresses [
 		if !validDirectAddress(addr) {
 			return "", ErrInvalidDirectAddress
 		}
-		command += " --direct-address " + addr
+		// Quoted: the allowlist admits '[' and ']' for IPv6, and sh would
+		// glob-expand a bare bracketed address before pigeons ever sees it.
+		command += " --direct-address " + shellQuote(addr)
 	}
 	for _, url := range relayConfig.RelayURLs {
 		command += " --relay-url " + url
@@ -354,7 +358,10 @@ func validateRouteArgs(parts []string) error {
 		if i+1 >= len(parts) {
 			return ErrInvalidProxyCommand
 		}
-		value := parts[i+1]
+		value, ok := unquoteShellArg(parts[i+1])
+		if !ok {
+			return ErrInvalidProxyCommand
+		}
 		i++
 		switch flag {
 		case "--direct-address":
@@ -370,6 +377,22 @@ func validateRouteArgs(parts []string) error {
 		}
 	}
 	return nil
+}
+
+// unquoteShellArg reverses the single-quote form emitted by shellQuote, so
+// validation runs on the value the shell would hand to the helper.
+func unquoteShellArg(value string) (string, bool) {
+	if !strings.HasPrefix(value, "'") {
+		return value, true
+	}
+	if !strings.HasSuffix(value, "'") || len(value) < 2 {
+		return "", false
+	}
+	inner := value[1 : len(value)-1]
+	if strings.ContainsAny(inner, "'\"") && !strings.Contains(inner, "'\\''") {
+		return "", false
+	}
+	return strings.ReplaceAll(inner, "'\\''", "'"), true
 }
 
 // ponytail: literal IP:port only, zones/hostnames rejected; keeps ProxyCommand shell-safe.

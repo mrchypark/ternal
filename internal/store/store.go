@@ -509,7 +509,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			host_id TEXT NOT NULL,
 			endpoint_id TEXT NOT NULL,
 			ssh_host_key_fingerprint TEXT NOT NULL,
-			device_public_key TEXT NOT NULL,
+			device_public_key TEXT NOT NULL UNIQUE,
 			state TEXT NOT NULL DEFAULT 'manufactured',
 			serial_number TEXT UNIQUE,
 			model TEXT,
@@ -872,12 +872,16 @@ type AuthorizedKeyEntry struct {
 
 // FormatAuthorizedKeys renders snapshot entries as sshd-enforced lines.
 // One line per key, expiring with the longest covering grant (union
-// semantics: the key stays valid while any grant is live).
+// semantics: the key stays valid while any grant is live). The trailing Z
+// makes sshd read the deadline as UTC; without it sshd interprets the value
+// in the device's local time zone, which would extend a UTC deadline by the
+// device's offset. Requires OpenSSH 8.2 or newer (sshd_config(5):
+// expiry-time accepts a YYYYMMDDHHMMSS[Z] timespec).
 func FormatAuthorizedKeys(entries []AuthorizedKeyEntry) []string {
 	lines := make([]string, 0, len(entries))
 	for _, e := range entries {
 		lines = append(lines, fmt.Sprintf("expiry-time=%q %s",
-			time.Unix(e.ExpiresAt, 0).UTC().Format("20060102150405"), e.Key))
+			time.Unix(e.ExpiresAt, 0).UTC().Format("20060102150405Z"), e.Key))
 	}
 	return lines
 }

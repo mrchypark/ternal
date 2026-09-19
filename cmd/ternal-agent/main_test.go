@@ -59,7 +59,7 @@ func TestAuthorizedKeysStateRejectsInvalidAndLockSerializes(t *testing.T) {
 }
 
 func TestAuthorizedKeysAreValidatedAndWrittenWithStrictMode(t *testing.T) {
-	body := []byte("expiry-time=\"20330101000000\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n")
+	body := []byte("expiry-time=\"20330101000000Z\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n")
 	if err := validateAuthorizedKeys(body); err != nil {
 		t.Fatal(err)
 	}
@@ -80,8 +80,8 @@ func TestAuthorizedKeysAreValidatedAndWrittenWithStrictMode(t *testing.T) {
 }
 
 func TestSyncAuthorizedKeysRejectsRollbackAndEquivocation(t *testing.T) {
-	oldKeys := []byte("expiry-time=\"20330101000000\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D old\n")
-	newKeys := []byte("expiry-time=\"20330101000000\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D new\n")
+	oldKeys := []byte("expiry-time=\"20330101000000Z\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D old\n")
+	newKeys := []byte("expiry-time=\"20330101000000Z\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D new\n")
 	digest := func(body []byte) string { sum := sha256.Sum256(body); return hex.EncodeToString(sum[:]) }
 	for _, test := range []struct {
 		name       string
@@ -308,7 +308,7 @@ func TestStopChildFallsBackToKillAfterGrace(t *testing.T) {
 }
 
 func TestAuthorizedKeysRequireExpiryTime(t *testing.T) {
-	good := []byte("expiry-time=\"20330101000000\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n")
+	good := []byte("expiry-time=\"20330101000000Z\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n")
 	if err := validateAuthorizedKeys(good); err != nil {
 		t.Fatalf("expiry-time line rejected: %v", err)
 	}
@@ -316,6 +316,8 @@ func TestAuthorizedKeysRequireExpiryTime(t *testing.T) {
 		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n",
 		"expiry-time=20330101000000 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n",
 		"expiry-time=\"notatime\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n",
+		// A local-time deadline would be read in the device own zone by sshd.
+		"expiry-time=\"20330101000000\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n",
 		"command=\"evil\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D\n",
 	} {
 		if err := validateAuthorizedKeys([]byte(bad)); err == nil {
@@ -449,5 +451,45 @@ func TestPigeonsFileNameIsPlatformAware(t *testing.T) {
 		if got := pigeonsFileName(goos); got != "pigeons" {
 			t.Fatalf("%s binary = %q, want pigeons", goos, got)
 		}
+	}
+}
+
+func TestValidateAuthorizedKeysRejectsLegacyLines(t *testing.T) {
+	// A pre-hardening snapshot (plain keys, no expiry-time) must not be
+	// installable: the agent replaces the file wholesale, so accepting it
+	// would silently keep keys alive without a deadline.
+	legacy := []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D legacy\n")
+	if err := validateAuthorizedKeys(legacy); err == nil {
+		t.Fatal("legacy key line without expiry-time was accepted")
+	}
+}
+
+func TestPurgeLegacyAuthorizedKeysDropsUnboundedLines(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/authorized_keys"
+	legacy := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D legacy\n" +
+		"expiry-time=\"20330101000000Z\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEYKd11nBOnZgxjuU5AtNj5UWnfHEZGdRjL4pxr9u16D kept\n"
+	if err := atomicWrite(path, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := purgeLegacyAuthorizedKeys(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !removed {
+		t.Fatal("legacy lines were not reported as removed")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "legacy") {
+		t.Fatalf("unbounded legacy line survived the purge: %q", data)
+	}
+	if !strings.Contains(string(data), "kept") {
+		t.Fatalf("expiring line was dropped: %q", data)
+	}
+	if removed, err := purgeLegacyAuthorizedKeys(path); err != nil || removed {
+		t.Fatalf("second purge = %v, %v; want no-op", removed, err)
 	}
 }

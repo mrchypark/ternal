@@ -4,9 +4,13 @@ Ternal never uses the phrase "immediate revocation" for data-plane access.
 Each layer below states its own bound. Established SSH sessions are never
 killed by revocation; only new authentications are refused.
 
-All device clocks must be UTC: installed keys carry an `expiry-time`
-key option in `YYYYMMDDHHMMSS` UTC, and sshd interprets it in the
-device's local timezone.
+Installed keys carry an `expiry-time` key option in `YYYYMMDDHHMMSSZ`.
+The trailing `Z` makes sshd read the deadline as UTC; without it sshd
+interprets the value in the device's local time zone, which would extend a
+UTC deadline by that device's offset. This requires OpenSSH 8.2 or newer, and
+the agent refuses to install a line whose expiry-time lacks the `Z` suffix.
+Device clocks must still be roughly accurate for the deadline to mean what it
+says.
 
 ## Layers
 

@@ -108,3 +108,32 @@ func TestValidHostNameRejectsConfigInjection(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyCommandQuotesGlobMetacharacters(t *testing.T) {
+	addr := "[2001:db8::1]:443"
+	cmd, err := BuildGrantAwareSSHCommand("host-1", strings.Repeat("a", 64), "ops", 22, &RelayConfig{}, []string{addr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(joined, "--direct-address '"+addr+"'") {
+		t.Fatalf("IPv6 address is unquoted, so sh would glob-expand its brackets: %q", joined)
+	}
+	if err := ValidateProxyCommand("ProxyCommand=" + strings.TrimPrefix(strings.Join(cmd.Args, " "), "-o ProxyCommand=")); err != nil {
+		// ValidateProxyCommand is exercised below with its exact input shape.
+		_ = err
+	}
+	proxy := ""
+	for i, arg := range cmd.Args {
+		if arg == "ProxyCommand" || strings.HasPrefix(arg, "ProxyCommand=") {
+			proxy = arg
+			_ = i
+		}
+	}
+	if proxy == "" {
+		t.Fatal("no proxy command in args")
+	}
+	if err := ValidateProxyCommand(proxy); err != nil {
+		t.Fatalf("quoted address rejected by the validator: %v", err)
+	}
+}

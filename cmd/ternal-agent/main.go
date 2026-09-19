@@ -249,6 +249,44 @@ func heartbeat(ctx context.Context, cfg config, status string) error {
 	return requestJSON(ctx, cfg.APIURL, http.MethodPost, "/agents/heartbeat", body, nil, nil)
 }
 
+// purgeLegacyAuthorizedKeys removes lines that carry no expiry-time. A
+// pre-hardening snapshot would otherwise keep keys valid forever whenever
+// synchronization fails, because the agent replaces the file wholesale and
+// never rewrites the old lines. Returns true when it changed the file.
+func purgeLegacyAuthorizedKeys(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	kept := make([]string, 0, 8)
+	removed := false
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		option, _, found := strings.Cut(strings.TrimSpace(line), " ")
+		if !found || !validExpiryOption(option) {
+			removed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !removed {
+		return false, nil
+	}
+	body := ""
+	if len(kept) > 0 {
+		body = strings.Join(kept, "\n") + "\n"
+	}
+	if err := atomicWrite(path, []byte(body), 0600); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func syncAuthorizedKeys(ctx context.Context, cfg config, path string) error {
 	if path == "" {
 		return errors.New("TERNAL_AGENT_AUTHORIZED_KEYS_PATH is required")
@@ -258,6 +296,11 @@ func syncAuthorizedKeys(ctx context.Context, cfg config, path string) error {
 		return err
 	}
 	defer unlock()
+	// Drop lines left by a pre-hardening install before fetching: if this
+	// cycle fails, those keys must not survive without a deadline.
+	if _, err := purgeLegacyAuthorizedKeys(path); err != nil {
+		return err
+	}
 	private, identity, endpointID, err := loadDevice(cfg)
 	if err != nil {
 		return err
@@ -598,10 +641,13 @@ func validExpiryOption(option string) bool {
 		return false
 	}
 	ts = strings.TrimSuffix(ts, "\"")
-	if len(ts) != 14 {
+	// The server always emits the UTC-suffixed form; accept only that, so a
+	// local-time value (which sshd would read in the device's zone) cannot
+	// pass validation.
+	if len(ts) != 15 || !strings.HasSuffix(ts, "Z") {
 		return false
 	}
-	_, err := time.Parse("20060102150405", ts)
+	_, err := time.Parse("20060102150405", strings.TrimSuffix(ts, "Z"))
 	return err == nil
 }
 

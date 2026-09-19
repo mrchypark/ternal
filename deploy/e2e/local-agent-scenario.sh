@@ -170,7 +170,7 @@ jq -e '
 
 run_agent sync-authorized-keys
 installed=$(cat "$state/authorized_keys")
-printf '%s' "$installed" | grep -Eq '^expiry-time="[0-9]{14}" ssh-'
+printf '%s' "$installed" | grep -Eq '^expiry-time="[0-9]{14}Z" ssh-'
 [ "$(printf '%s' "$installed" | cut -d' ' -f2-)" = "$(cat "$state/user-key.pub")" ]
 generation=$(jq -er .generation "$state/authorized_keys.ternal-state")
 [ "$generation" = 1 ]
