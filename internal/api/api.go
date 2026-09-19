@@ -652,11 +652,14 @@ func (s *Server) handleIssueSSHCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "register an SSH public key before requesting access")
 		return
 	}
-	if _, err := s.store.IssueSSHAccess(r.Context(), principalID, host.ID, req.SSHUser, time.Now().Add(5*time.Minute).Unix()); err != nil {
+	grantID, err := s.store.IssueSSHAccess(r.Context(), principalID, host.ID, req.SSHUser, time.Now().Add(5*time.Minute).Unix())
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not issue access grant")
 		return
 	}
-	writeJSON(w, http.StatusOK, cmd)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"program": cmd.Program, "args": cmd.Args, "grant_id": grantID,
+	})
 }
 
 func (s *Server) handleSSHConfig(w http.ResponseWriter, r *http.Request) {
@@ -720,6 +723,7 @@ func (s *Server) handleIssueRelayGrant(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		HostID           string `json:"host_id"`
 		ClientEndpointID string `json:"client_endpoint_id"`
+		SSHUser          string `json:"ssh_user"`
 		TTL              int64  `json:"ttl"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -761,8 +765,15 @@ func (s *Server) handleIssueRelayGrant(w http.ResponseWriter, r *http.Request) {
 		}
 		claims := authClaims(identity)
 		allowed := false
+		// Authorize the account this connection will actually use, not the
+		// host default: a policy for ops on a root-default host must carry
+		// through the transport step. Absent means the historical default.
+		account := req.SSHUser
+		if account == "" {
+			account = host.SSHUser
+		}
 		for i := range policies {
-			if core.PolicyAllowsSSHUser(claims, host, &policies[i], host.SSHUser) {
+			if core.PolicyAllowsSSHUser(claims, host, &policies[i], account) {
 				allowed = true
 				break
 			}

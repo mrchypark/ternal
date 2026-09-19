@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -20,13 +23,13 @@ import (
 
 const (
 	defaultAPIURL = "http://127.0.0.1:3000"
-	sessionFile   = "session.json"
 )
 
 type Session struct {
 	Cookie    string `json:"cookie"`
 	CSRFToken string `json:"csrf_token"`
 	ExpiresAt int64  `json:"expires_at"`
+	APIURL    string `json:"api_url"`
 }
 
 type Host struct {
@@ -376,6 +379,17 @@ func cmdSSH(client *http.Client, apiURL, hostName string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	// The agent installs the key on its own cycle; wait for the
+	// acknowledgement before ssh connects, or auth races installation.
+	grantID, _ := cmdResp["grant_id"].(string)
+	if grantID == "" {
+		fmt.Fprintf(os.Stderr, "SSH grant was not issued\n")
+		os.Exit(1)
+	}
+	if err := waitForKeyGrant(client, apiURL, session, grantID); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 
 	program, _ := cmdResp["program"].(string)
 	args := make([]string, 0)
@@ -390,9 +404,7 @@ func cmdSSH(client *http.Client, apiURL, hostName string) {
 		os.Exit(1)
 	}
 	for i, arg := range args {
-		if strings.HasPrefix(arg, "KnownHostsCommand=ternalctl ") {
-			args[i] = "KnownHostsCommand=" + shellQuote(executable) + strings.TrimPrefix(arg, "KnownHostsCommand=ternalctl")
-		}
+		args[i] = rewriteCTLPath(arg, executable)
 	}
 
 	cmd := exec.Command(program, args...)
@@ -431,9 +443,14 @@ func cmdSSHConfig(client *http.Client, apiURL string) {
 	var result map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&result)
 
+	executable, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "could not resolve ternalctl: %v\n", err)
+		os.Exit(1)
+	}
 	if configs, ok := result["configs"].([]interface{}); ok {
 		for _, c := range configs {
-			fmt.Println(c)
+			fmt.Println(rewriteCTLPath(fmt.Sprint(c), executable))
 			fmt.Println()
 		}
 	}
@@ -513,7 +530,7 @@ func cmdEndpoint(client *http.Client, apiURL, hostName string) {
 }
 
 func cmdProxy(client *http.Client, apiURL, hostRef, endpointPort string, routeArgs []string) {
-	_, err := loadSession()
+	session, err := loadSession()
 	if err != nil && !developmentHeadersAllowed(apiURL) {
 		fmt.Fprintf(os.Stderr, "not logged in\n")
 		os.Exit(1)
@@ -521,6 +538,31 @@ func cmdProxy(client *http.Client, apiURL, hostRef, endpointPort string, routeAr
 
 	if err := validateProxyInvocation(hostRef, endpointPort, routeArgs); err != nil {
 		fmt.Fprintf(os.Stderr, "invalid proxy invocation: %v\n", err)
+		os.Exit(1)
+	}
+	// An exported ssh-config starts here without a prior `ternalctl ssh`, so
+	// acquire the host/account SSH key grant first and wait until the agent
+	// installs it; otherwise the transport would open with no authorized key.
+	proxyHost, err := getProxyHost(client, apiURL, session, hostRef)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	sshResp, err := postJSON(client, apiURL+"/access/ssh", map[string]string{
+		"host_id":  hostRef,
+		"ssh_user": proxyHost.SSHUser,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	grantID, _ := sshResp["grant_id"].(string)
+	if grantID == "" {
+		fmt.Fprintf(os.Stderr, "SSH grant was not issued\n")
+		os.Exit(1)
+	}
+	if err := waitForKeyGrant(client, apiURL, session, grantID); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 	pigeonsPath := findPigeons()
@@ -541,6 +583,7 @@ func cmdProxy(client *http.Client, apiURL, hostRef, endpointPort string, routeAr
 	grantResp, err := postJSON(client, apiURL+"/access/relay-grants", map[string]interface{}{
 		"host_id":            hostRef,
 		"client_endpoint_id": clientEndpointID,
+		"ssh_user":           proxyHost.SSHUser,
 		"ttl":                300,
 	})
 	if err != nil {
@@ -612,9 +655,26 @@ func homeSSHKeyDir() (string, error) {
 }
 
 func persistentEndpointID(pigeonsPath, keyDir string) (string, error) {
-	out, err := exec.Command(pigeonsPath, "endpoint-id", "--key-dir", keyDir).Output()
+	// Bounded like the agent helper; stdout to a file so orphaned
+	// grandchildren cannot hold a pipe past the deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tmp, err := os.CreateTemp("", "ternal-endpoint-id-*")
 	if err != nil {
 		return "", err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	cmd := exec.CommandContext(ctx, pigeonsPath, "endpoint-id", "--key-dir", keyDir)
+	cmd.Stdout = tmp
+	runErr := cmd.Run()
+	_ = tmp.Close()
+	out, readErr := os.ReadFile(tmpName)
+	if runErr != nil {
+		return "", runErr
+	}
+	if readErr != nil {
+		return "", readErr
 	}
 	endpointID := strings.TrimSpace(string(out))
 	if len(endpointID) != 64 {
@@ -626,6 +686,66 @@ func persistentEndpointID(pigeonsPath, keyDir string) (string, error) {
 		}
 	}
 	return strings.ToLower(endpointID), nil
+}
+
+// keyGrantPollInterval and keyGrantWaitTimeout bound how long ProxyCommand
+// setup waits for the agent to install the freshly issued key grant.
+const keyGrantPollInterval = 2 * time.Second
+const keyGrantWaitTimeout = 2 * time.Minute
+
+func getProxyHost(client *http.Client, apiURL string, session *Session, hostID string) (*Host, error) {
+	req, err := http.NewRequest("GET", apiURL+"/hosts/"+url.PathEscape(hostID), nil)
+	if err != nil {
+		return nil, err
+	}
+	if session != nil {
+		addSession(req, session)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("API returned HTTP %d", resp.StatusCode)
+	}
+	var host Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		return nil, err
+	}
+	return &host, nil
+}
+
+func waitForKeyGrant(client *http.Client, apiURL string, session *Session, grantID string) error {
+	deadline := time.Now().Add(keyGrantWaitTimeout)
+	for {
+		req, err := http.NewRequest("GET", apiURL+"/access/grants/"+url.PathEscape(grantID)+"/key-status", nil)
+		if err != nil {
+			return err
+		}
+		if session != nil {
+			addSession(req, session)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		var status struct {
+			Installed bool `json:"installed"`
+		}
+		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&status)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 && status.Installed {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("SSH key grant was not installed in time")
+		}
+		time.Sleep(keyGrantPollInterval)
+	}
 }
 
 func validateProxyInvocation(hostRef, endpointPort string, routeArgs []string) error {
@@ -652,7 +772,17 @@ func validateProxyInvocation(hostRef, endpointPort string, routeArgs []string) e
 	return nil
 }
 
+// pigeonsFileName resolves the platform-appropriate transport binary name;
+// the Windows bundle ships pigeons.exe.
+func pigeonsFileName(goos string) string {
+	if goos == "windows" {
+		return "pigeons.exe"
+	}
+	return "pigeons"
+}
+
 func findPigeons() string {
+	name := pigeonsFileName(runtime.GOOS)
 	if bin := os.Getenv("TERNAL_TRANSPORT_BIN"); bin != "" {
 		if _, err := os.Stat(bin); err == nil {
 			return bin
@@ -662,13 +792,13 @@ func findPigeons() string {
 	execPath, err := os.Executable()
 	if err == nil {
 		dir := filepath.Dir(execPath)
-		candidate := filepath.Join(dir, "pigeons")
+		candidate := filepath.Join(dir, name)
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
 	}
 
-	path, err := exec.LookPath("pigeons")
+	path, err := exec.LookPath(name)
 	if err == nil {
 		return path
 	}
@@ -750,6 +880,27 @@ func addSession(req *http.Request, session *Session) {
 }
 
 func sessionPath() (string, error) {
+	return sessionPathFor(currentAPIOrigin())
+}
+
+// currentAPIOrigin is the canonical origin this invocation talks to.
+func currentAPIOrigin() string {
+	return canonicalAPIOrigin(getEnv("TERNAL_API_URL", defaultAPIURL))
+}
+
+// canonicalAPIOrigin normalizes scheme/host case and a trailing slash so
+// the same server always maps to the same session file.
+func canonicalAPIOrigin(raw string) string {
+	parsed, err := url.Parse(strings.TrimSuffix(raw, "/"))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return raw
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host) + parsed.Path
+}
+
+// sessionPathFor namespaces the session file per API origin so a
+// credential saved for one server is never sent to another.
+func sessionPathFor(origin string) (string, error) {
 	configDir := os.Getenv("TERNAL_CONFIG_DIR")
 	if configDir == "" {
 		var err error
@@ -758,7 +909,8 @@ func sessionPath() (string, error) {
 			return "", err
 		}
 	}
-	return filepath.Join(configDir, "ternal", sessionFile), nil
+	sum := sha256.Sum256([]byte(origin))
+	return filepath.Join(configDir, "ternal", fmt.Sprintf("session-%x.json", sum[:8])), nil
 }
 
 func loadSession() (*Session, error) {
@@ -776,6 +928,11 @@ func loadSession() (*Session, error) {
 	var session Session
 	if err := json.Unmarshal(data, &session); err != nil {
 		return nil, err
+	}
+	// Refuse silent cross-origin reuse: the file is namespaced by origin
+	// and the recorded origin must match this invocation's server.
+	if session.APIURL == "" || session.APIURL != currentAPIOrigin() {
+		return nil, fmt.Errorf("session is not valid for this API origin")
 	}
 	if session.ExpiresAt < time.Now().Unix() {
 		return nil, fmt.Errorf("session expired")
@@ -799,10 +956,14 @@ func loadSessionForLogout() (*Session, bool, error) {
 	if err := json.Unmarshal(data, &session); err != nil {
 		return nil, false, err
 	}
+	if session.APIURL == "" || session.APIURL != currentAPIOrigin() {
+		return nil, false, fmt.Errorf("session is not valid for this API origin")
+	}
 	return &session, true, nil
 }
 
 func saveSession(session *Session) error {
+	session.APIURL = currentAPIOrigin()
 	path, err := sessionPath()
 	if err != nil {
 		return err
@@ -844,6 +1005,14 @@ func validateAPIURL(raw string) error {
 
 func isLoopbackHost(host string) bool {
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+// rewriteCTLPath replaces the bare recursive `ternalctl` command word with
+// the absolute path of this executable, so SSH never resolves it via PATH.
+// Only the `=ternalctl ` command position is rewritten; option values and
+// opaque arguments are untouched.
+func rewriteCTLPath(text, executable string) string {
+	return strings.ReplaceAll(text, "=ternalctl ", "="+shellQuote(executable)+" ")
 }
 
 func shellQuote(value string) string {
