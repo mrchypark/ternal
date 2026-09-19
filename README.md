@@ -180,6 +180,7 @@ that cannot be composed outside pigeons; both changes are proposed upstream.
 - [User scenarios](docs/user-scenarios.md)
 - [Verification](docs/verification.md)
 - [Device enrollment and access](docs/device-manufacturing-access.md)
+- [Revocation SLA](docs/revocation-sla.md)
 - [Identity and Ternal data boundary](docs/data-boundary.md)
 - [Release process](docs/releasing.md)
 - [Pinned transport provenance](docs/agent-embedded-pigeons.md)
