@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mrchypark/ternal/internal/api"
+	"github.com/mrchypark/ternal/internal/operatoridentity"
 	"github.com/mrchypark/ternal/internal/store"
 )
 
@@ -37,6 +38,9 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 }
 
 func run() error {
+	// Operator-managed generation identity first: it must be in place before the
+	// store reads its configuration.
+	operatoridentity.Apply()
 	s, err := store.OpenFromEnv(context.Background())
 	if err != nil {
 		return err

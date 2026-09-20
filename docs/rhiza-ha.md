@@ -85,6 +85,12 @@ Rhiza v0.15.0은 Coordinator의 Activate/Verify, CheckBinding(Ternal 시작 시 
 Operator Deployment는 기존 Ternal 시크릿의 TERNAL_OBJECT_STORE_ACCESS_KEY, TERNAL_OBJECT_STORE_SECRET_KEY, TERNAL_OBJECT_STORE_SESSION_TOKEN을 각각 RHIZA_OBJSTORE_ACCESS_KEY, RHIZA_OBJSTORE_SECRET_KEY, RHIZA_OBJSTORE_SESSION_TOKEN 환경 변수로 매핑한다. 이 자격 증명 Secret 키 참조만 optional이다.
 GCS Workload Identity를 사용하면 시크릿 키를 생략할 수 있다.
 
+## 검증
+
+`deploy/vind/operator-recovery-e2e.sh`가 실제 vCluster에서 3-voter HA, operator 관찰, 수동 세대 복구를 순서대로 확인한다. 로컬 이미지와 pinned 업스트림 소스로 이미지를 만들어 클러스터에 넣고, MinIO를 공유 오브젝트 저장소로 사용한다.
+
+현재 이 스크립트는 1단계에서 멈춘다. 문서화된 방식으로 앵커를 준비한 greenfield HA 릴리스가 trust-anchor migration fence에서 교착된다(#102). 관찰·복구 단계는 그 문제가 해결된 뒤에 자격 검증된다.
+
 ## 참고
 
 - Embedded Operator Guide: https://github.com/mrchypark/rhiza/blob/v0.15.0/docs/embedded-operator.md
@@ -93,7 +99,9 @@ GCS Workload Identity를 사용하면 시크릿 키를 생략할 수 있다.
 
 ## Ternal 설정과의 경계
 
-Ternal 자체의 공개 설정은 `TERNAL_*` 역할 이름만 사용한다. 위 `RHIZA_*` 변수는 operator 컨테이너(업스트림 바이너리)의 자체 인터페이스이며, operator 컨트롤러는 대상 파드의 환경에서 cluster ID, membership, admin token, 데이터 디렉터리, object store 위치를 읽는다. 차트는 `data.clusterID`, `data.objectStore`, `secrets.existingSecret` 값으로 그 이름들을 만들어 operator Deployment와 HA 파드에 넣는다. 값을 정하는 곳은 여전히 Ternal 설정이고, `RHIZA_*` 이름은 operator 소유 차트 파일(`deploy/helm/ternal/templates/operator-*`)과 이 문서에만 나타난다. Ternal API 파드는 operator와 `TERNAL_OPERATOR_BIND` 엔드포인트로 통신한다.
+Ternal 자체의 공개 설정은 `TERNAL_*` 역할 이름만 사용한다. 위 `RHIZA_*` 변수는 operator 컨테이너(업스트림 바이너리)의 자체 인터페이스이며, operator 컨트롤러는 대상 파드의 환경에서 cluster ID, membership, admin token, 데이터 디렉터리, object store 위치를 읽는다. 차트는 `data.clusterID`, `data.objectStore`, `secrets.existingSecret` 값으로 그 이름들을 만들어 operator Deployment와 HA 파드에 넣는다. 값을 정하는 곳은 여전히 Ternal 설정이고, `RHIZA_*` 이름은 operator 소유 차트 파일(`deploy/helm/ternal/templates/operator-*`), operator 식별자 bridge(`internal/operatoridentity`), 이 문서에만 나타난다. Ternal API 파드는 operator와 `TERNAL_OPERATOR_BIND` 엔드포인트로 통신한다.
+
+operator가 복구 세대를 시작할 때 다시 쓰는 값은 `internal/operatoridentity`가 프로세스 시작 시 Ternal 설정 이름으로 옮긴다. 그 파일 하나만 업스트림 이름을 알고, 사용자가 설정하는 값은 계속 `TERNAL_*`이다. 이 bridge는 operator가 파드 환경을 다시 쓰지 않는 한 아무것도 바꾸지 않는다.
 
 `TERNAL_OPERATOR_BIND`는 엔드포인트마다 인증이 다르다. 관리 엔드포인트는 admin token을 요구하지만 `/recovery/status`는 토큰 없이 응답한다. 그래서 차트의 NetworkPolicy가 9091 포트를 operator 파드로만 제한하며, 이 리스너를 클러스터나 서비스로 넓게 열지 않는다.
 

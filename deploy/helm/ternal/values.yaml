@@ -64,6 +64,10 @@ operator:
   # Not yet qualified. The operator template rejects true. See docs/rhiza-ha.md.
   automaticRecovery: false
   pollInterval: 10s
+  # The published operator image targets linux/amd64.
+  nodeSelector:
+    kubernetes.io/os: linux
+    kubernetes.io/arch: amd64
   resources: {}
 
 gateway:

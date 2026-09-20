@@ -28,12 +28,14 @@ fi
 # exception: it runs the upstream binary, whose own interface is RHIZA_*
 # (upstream rhiza.ConfigFromEnv: "the RHIZA_* environment used by the rhiza
 # server binary"), and its controller also reads those names from the target
-# pod's environment. Only the operator-owned chart files, the operator render
-# check, and the operator guide may name them; Ternal's code, values, and
-# every operator-facing document stay TERNAL_*.
+# pod's environment and rewrites them to start a recovered generation. Only the
+# operator-owned chart files, the operator render check, the operator identity
+# bridge that applies them to Ternal's configuration, and the operator guide may
+# name them; every other file stays TERNAL_*.
 if git grep -n -E "$storage_engine_name" -- . \
 	':(exclude,glob)deploy/helm/ternal/templates/operator-*' \
 	':(exclude,glob)deploy/vind/operator-*' \
+	':(exclude,glob)internal/operatoridentity/*' \
 	':(exclude)docs/rhiza-ha.md'; then
 	echo 'storage implementation environment variables must not be public Ternal configuration' >&2
 	exit 1

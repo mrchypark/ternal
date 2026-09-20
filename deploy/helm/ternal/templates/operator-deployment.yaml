@@ -119,8 +119,7 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       nodeSelector:
-        kubernetes.io/os: linux
-        kubernetes.io/arch: amd64
+        {{- toYaml (default (dict "kubernetes.io/os" "linux" "kubernetes.io/arch" "amd64") $operator.nodeSelector) | nindent 8 }}
       containers:
         - name: operator
           image: "{{ $operator.image.repository }}{{ if $imageDigest }}@{{ $imageDigest }}{{ else }}:{{ $imageTag }}{{ end }}"
