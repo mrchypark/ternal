@@ -406,28 +406,15 @@ func TestRoostEndpointIDHasDeadlineAndCache(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake pigeons uses the repository's POSIX shell test convention")
 	}
-	oldTimeout := endpointIDTimeout
-	endpointIDTimeout = 3 * time.Second
-	t.Cleanup(func() { endpointIDTimeout = oldTimeout })
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
-	slow := filepath.Join(dir, "pigeons")
-	script := "#!/bin/sh\necho x >> \"" + calls + "\"\nsleep 10\nprintf '%s\\n' '" + strings.Repeat("b", 64) + "'\n"
-	if err := os.WriteFile(slow, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	if _, err := roostEndpointID(config{Pigeons: slow}); err == nil {
-		t.Fatal("hung endpoint-id helper was not bounded")
-	}
-	if took := time.Since(start); took > 10*time.Second {
-		t.Fatalf("endpoint-id took %v without deadline", took)
-	}
 	fast := filepath.Join(dir, "fast-pigeons")
 	fastScript := "#!/bin/sh\necho x >> \"" + calls + "\"\nprintf '%s\\n' '" + strings.Repeat("c", 64) + "'\n"
 	if err := os.WriteFile(fast, []byte(fastScript), 0700); err != nil {
 		t.Fatal(err)
 	}
+	// The happy path runs under the production deadline: a loaded machine can
+	// push a shell spawn past a short test deadline.
 	cfg := config{Pigeons: fast}
 	first, err := roostEndpointID(cfg)
 	if err != nil || first != strings.Repeat("c", 64) {
@@ -440,6 +427,23 @@ func TestRoostEndpointIDHasDeadlineAndCache(t *testing.T) {
 	after, _ := os.ReadFile(calls)
 	if len(after) != len(before) {
 		t.Fatal("immutable endpoint identity was re-executed instead of cached")
+	}
+	// Only the hung helper gets the short deadline, so the unbounded case is
+	// still proven without waiting out the production timeout.
+	oldTimeout := endpointIDTimeout
+	endpointIDTimeout = 3 * time.Second
+	t.Cleanup(func() { endpointIDTimeout = oldTimeout })
+	slow := filepath.Join(dir, "pigeons")
+	script := "#!/bin/sh\necho x >> \"" + calls + "\"\nsleep 10\nprintf '%s\\n' '" + strings.Repeat("b", 64) + "'\n"
+	if err := os.WriteFile(slow, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := roostEndpointID(config{Pigeons: slow}); err == nil {
+		t.Fatal("hung endpoint-id helper was not bounded")
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("endpoint-id took %v without deadline", took)
 	}
 }
 

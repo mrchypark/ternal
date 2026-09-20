@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mrchypark/rhiza"
 )
 
 func TestOpenRejectsMismatchedSchemaVersion(t *testing.T) {
@@ -1221,4 +1224,78 @@ func TestEnrollDeviceRejectsDuplicatePublicKey(t *testing.T) {
 	if _, err := s.EnrollDevice(ctx, second.Token, strings.Repeat("b", 64), "DUPKEY-2", "test", fp, key, "ops", 22, nil); err == nil {
 		t.Fatal("duplicate device public key enrolled a second device")
 	}
+}
+
+func TestOperatorHandlerIntegration(t *testing.T) {
+	// Bypass store.Open to avoid trust-anchor bootstrap; construct Store
+	// directly from a rhiza.DB with filesystem objstore so the recovery
+	// archive initializes and the probe endpoint accepts tokens.
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	rhizaDB, err := rhiza.Open(ctx, rhiza.Config{
+		ClusterID:        "test-cluster",
+		NodeID:           "app-0",
+		DataDir:          tmpDir,
+		AdminToken:       "test-admin-token-12345678901234",
+		ObjStoreProvider: "filesystem",
+		ObjStoreDir:      tmpDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rhizaDB.Close() })
+	s := &Store{db: &rhizaSQL{db: rhizaDB}}
+	handler := s.OperatorHandler()
+
+	t.Run("recovery_status_200", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/recovery/status", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body)
+		}
+	})
+
+	t.Run("recovery_probe_valid_auth", func(t *testing.T) {
+		var nonce [32]byte
+		for i := range nonce {
+			nonce[i] = byte(i)
+		}
+		challenge := hex.EncodeToString(nonce[:])
+		req := httptest.NewRequest(http.MethodGet, "/recovery/probe?nonce="+challenge, nil)
+		req.Header.Set("Authorization", "Bearer test-admin-token-12345678901234")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body)
+		}
+	})
+
+	t.Run("recovery_probe_wrong_token", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/recovery/probe?nonce=aa", nil)
+		req.Header.Set("Authorization", "Bearer wrong-token")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d: %s", w.Code, w.Body)
+		}
+	})
+
+	t.Run("recovery_probe_no_token", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/recovery/probe?nonce=aa", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d: %s", w.Code, w.Body)
+		}
+	})
+
+	t.Run("sql_endpoint_404", func(t *testing.T) {
+		for _, path := range []string{"/sql/execute", "/kv/get", "/ready", "/metrics"} {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("%s: expected 404, got %d", path, w.Code)
+			}
+		}
+	})
 }

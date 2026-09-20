@@ -67,6 +67,17 @@ func run() error {
 		servers = append(servers, newHTTPServer(relayBind, apiServer.RelayRouter()))
 		listeners = append(listeners, relayListener)
 	}
+	if operatorBind := os.Getenv("TERNAL_OPERATOR_BIND"); operatorBind != "" {
+		operatorListener, err := net.Listen("tcp", operatorBind)
+		if err != nil {
+			for _, l := range listeners {
+				_ = l.Close()
+			}
+			return err
+		}
+		servers = append(servers, newHTTPServer(operatorBind, s.OperatorHandler()))
+		listeners = append(listeners, operatorListener)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
