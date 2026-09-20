@@ -1,0 +1,204 @@
+{{- $data := default dict .Values.data -}}
+{{- $dataMode := default "standalone" $data.mode -}}
+{{- $haMode := eq $dataMode "ha" -}}
+{{- $operator := default dict .Values.operator -}}
+{{- $operatorEnabled := and $haMode ($operator.enabled | default false) -}}
+{{- if $operatorEnabled }}
+{{- $imageTag := default "" $operator.image.tag -}}
+{{- $imageDigest := default "" $operator.image.digest -}}
+{{- if $imageDigest }}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" $imageDigest) }}
+{{- fail "operator.image.digest must be a sha256 digest" }}
+{{- end }}
+{{- else }}
+{{- $imageTag = required "operator.image.tag is required when operator is enabled" $imageTag }}
+{{- end }}
+{{- if $operator.automaticRecovery }}
+{{- fail "operator.automaticRecovery is not yet qualified; set operator.automaticRecovery=false. See docs/rhiza-ha.md" }}
+{{- end }}
+{{- $objectStore := default dict $data.objectStore -}}
+{{- $clusterID := required "data.clusterID is required when operator is enabled" $data.clusterID -}}
+{{- $objectStoreProvider := required "data.objectStore.provider is required when operator is enabled" $objectStore.provider -}}
+{{- $objectStoreBucket := required "data.objectStore.bucket is required when operator is enabled" $objectStore.bucket -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: rhiza-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+{{- with $operator.serviceAccountAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: rhiza-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+rules:
+  - apiGroups: ["rhiza.mrchypark.dev"]
+    resources: ["rhizarecoveries"]
+    verbs: ["get", "list", "create", "update"]
+  - apiGroups: ["rhiza.mrchypark.dev"]
+    resources: ["rhizarecoveries/status"]
+    verbs: ["get", "update"]
+  - apiGroups: ["rhiza.mrchypark.dev"]
+    resources: ["rhizaclusters"]
+    verbs: ["get", "list"]
+  - apiGroups: ["rhiza.mrchypark.dev"]
+    resources: ["rhizaclusters/status"]
+    verbs: ["get", "update"]
+  # Fence: operator creates; executor writes status proof.
+  # Operator must NOT update rhizafences/status per upstream contract.
+  - apiGroups: ["rhiza.mrchypark.dev"]
+    resources: ["rhizafences"]
+    verbs: ["get", "create"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: rhiza-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-operator
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: rhiza-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rhiza-operator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rhiza-operator
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: amd64
+      containers:
+        - name: operator
+          image: "{{ $operator.image.repository }}{{ if $imageDigest }}@{{ $imageDigest }}{{ else }}:{{ $imageTag }}{{ end }}"
+          imagePullPolicy: {{ $operator.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          args:
+            - --namespace={{ .Release.Namespace }}
+            - --poll-interval={{ default "10s" $operator.pollInterval }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # The operator binary is the upstream rhiza executable, so its own
+            # variables carry upstream names. Ternal's own pods never do: they
+            # keep TERNAL_* and talk to the operator over TERNAL_OPERATOR_BIND.
+            - name: RHIZA_CLUSTER_ID
+              value: {{ $clusterID | quote }}
+            - name: RHIZA_DATA_DIR
+              value: /data/ternal
+            - name: RHIZA_BIND_ADDR
+              value: {{ printf "0.0.0.0:%d" (int (default 9091 (default dict $data.ha).operatorPort)) | quote }}
+            - name: RHIZA_PEER_ADDR
+              value: {{ printf "0.0.0.0:%d" (int (default 9090 (default dict $data.ha).peerPort)) | quote }}
+            - name: RHIZA_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default .Release.Name }}
+                  key: TERNAL_DATA_ADMIN_TOKEN
+            - name: RHIZA_CLUSTER_MEMBERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default .Release.Name }}
+                  key: TERNAL_DATA_CLUSTER_MEMBERS
+            - name: RHIZA_OBJSTORE_PROVIDER
+              value: {{ $objectStoreProvider | quote }}
+            - name: RHIZA_OBJSTORE_ENDPOINT
+              value: {{ default "" $objectStore.endpoint | quote }}
+            - name: RHIZA_OBJSTORE_BUCKET
+              value: {{ $objectStoreBucket | quote }}
+            - name: RHIZA_OBJSTORE_PREFIX
+              value: {{ default (printf "clusters/%s" $clusterID) $objectStore.prefix | quote }}
+            - name: RHIZA_OBJSTORE_REGION
+              value: {{ default "" $objectStore.region | quote }}
+            - name: RHIZA_OBJSTORE_INSECURE
+              value: {{ ternary "true" "false" ($objectStore.insecure | default false) | quote }}
+            - name: RHIZA_OBJSTORE_DURABILITY
+              value: {{ default "before-ack" $objectStore.durability | quote }}
+            # Optional: omit for GCS workload identity.
+            - name: RHIZA_OBJSTORE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default .Release.Name }}
+                  key: TERNAL_OBJECT_STORE_ACCESS_KEY
+                  optional: true
+            - name: RHIZA_OBJSTORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default .Release.Name }}
+                  key: TERNAL_OBJECT_STORE_SECRET_KEY
+                  optional: true
+            - name: RHIZA_OBJSTORE_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default .Release.Name }}
+                  key: TERNAL_OBJECT_STORE_SESSION_TOKEN
+                  optional: true
+          resources:
+            {{- toYaml (default dict $operator.resources) | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

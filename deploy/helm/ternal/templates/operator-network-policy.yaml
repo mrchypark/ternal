@@ -1,0 +1,53 @@
+{{- $data := default dict .Values.data -}}
+{{- $dataMode := default "standalone" $data.mode -}}
+{{- $haMode := eq $dataMode "ha" -}}
+{{- $operator := default dict .Values.operator -}}
+{{- $operatorEnabled := and $haMode ($operator.enabled | default false) -}}
+{{- $managedRelay := default dict .Values.transport.managedRelay -}}
+{{- if $operatorEnabled }}
+{{- $ha := default dict $data.ha -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-operator-recovery
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Application HTTP API - open to cluster (services, ingress, gateways).
+    - ports:
+        - port: 3000
+          protocol: TCP
+    # Peer UDP among voters - same StatefulSet pods only.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      ports:
+        - port: {{ default 9090 $ha.peerPort }}
+          protocol: UDP
+{{- if ($managedRelay.enabled | default false) }}
+    # Managed relay access - open to cluster.
+    - ports:
+        - port: 3001
+          protocol: TCP
+{{- end }}
+    # Recovery port - operator pods only.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rhiza-operator
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      ports:
+        - port: {{ default 9091 $ha.operatorPort }}
+          protocol: TCP
+{{- end }}

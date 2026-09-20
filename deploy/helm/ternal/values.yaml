@@ -45,6 +45,27 @@ data:
     durability: before-ack
   ha:
     peerPort: 9090
+    # Operator recovery port for rhiza operator management endpoints.
+    # Only used in HA mode when operator.enabled is true.
+    operatorPort: 9091
+
+# Rhiza operator for HA observation and recovery preparation.
+# Requires data.mode=ha and a shared object store.
+operator:
+  enabled: false
+  # Annotations for the operator ServiceAccount. Use for GCS Workload Identity
+  # or other cloud IAM bindings.
+  serviceAccountAnnotations: {}
+  image:
+    repository: ghcr.io/mrchypark/rhiza-operator
+    tag: v0.15.0
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Not yet qualified. The operator template rejects true. See docs/rhiza-ha.md.
+  automaticRecovery: false
+  pollInterval: 10s
+  resources: {}
+
 gateway:
   enabled: false
   scheme: https

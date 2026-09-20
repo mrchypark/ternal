@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,13 @@ func (s *Store) acquireRead(ctx context.Context) (release func(), ok bool) {
 		return nil, false
 	}
 	return s.mu.RUnlock, true
+}
+
+// OperatorHandler exposes the rhiza recovery and membership management
+// endpoints. The operator drives them over TERNAL_OPERATOR_BIND; Ternal's own
+// configuration stays TERNAL_* and never names the storage engine.
+func (s *Store) OperatorHandler() http.Handler {
+	return s.db.db.OperatorHandler()
 }
 
 type NewHost struct {

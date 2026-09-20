@@ -163,6 +163,12 @@ ha_identity=$(grep 'ternal.dev/data-identity:' "$tmp/ha.yaml" | head -1 | awk '{
 [ -n "$ha_identity" ]
 grep -q "name: ternal-data-$ha_identity" "$tmp/ha.yaml"
 
+# Without the operator the HA pods name nothing upstream.
+if grep -q 'RHIZA_' "$tmp/ha.yaml"; then
+	echo "HA render without the operator names upstream variables" >&2
+	exit 1
+fi
+
 helm template ternal "$chart" \
 	--set image.tag=render-check \
 	--set data.mode=ha \
@@ -296,5 +302,9 @@ for missing in data.trustAnchorConfigMap serviceAccountName; do
 	fi
 	grep -q "$missing is required" "$tmp/missing-anchor.err"
 done
+
+# Operator cases live in their own file: the upstream controller's variable
+# names belong to the operator surface.
+sh "$(dirname "$0")/operator-render-check.sh" "$chart"
 
 echo "Helm render checks passed"

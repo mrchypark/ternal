@@ -14,6 +14,8 @@
 {{- $haMode := eq $dataMode "ha" -}}
 {{- $ha := default dict $data.ha -}}
 {{- $trustAnchor := default "" $data.trustAnchorConfigMap -}}
+{{- $operator := default dict .Values.operator -}}
+{{- $operatorEnabled := $operator.enabled | default false -}}
 {{- $dataIdentity := include "ternal.dataIdentity" . -}}
 {{- with (lookup "apps/v1" "StatefulSet" .Release.Namespace .Release.Name) -}}
 {{- $currentIdentity := index .spec.selector.matchLabels "ternal.dev/data-identity" -}}
@@ -29,6 +31,12 @@
 {{- end -}}
 {{- if and $haMode (not .Values.secrets.existingSecret) -}}
 {{- fail "data.mode=ha requires secrets.existingSecret with TERNAL_DATA_CLUSTER_MEMBERS" -}}
+{{- end -}}
+{{- if and $operatorEnabled (not $haMode) -}}
+{{- fail "operator.enabled requires data.mode=ha" -}}
+{{- end -}}
+{{- if $operator.automaticRecovery -}}
+{{- fail "operator.automaticRecovery is not supported in this release" -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -73,7 +81,7 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
-      {{- if $haMode }}
+      {{- if and $haMode (not (hasKey .Values "affinity")) }}
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -111,6 +119,10 @@ spec:
             - name: relay-access
               containerPort: 3001
 {{ end }}
+{{ if $operatorEnabled }}
+            - name: recovery
+              containerPort: {{ default 9091 $data.ha.operatorPort }}
+{{ end }}
           readinessProbe:
             httpGet:
               path: /ready
@@ -130,7 +142,7 @@ spec:
                 name: {{ include "ternal.dataConfigMapName" . }}
             - secretRef:
                 name: {{ $secretName }}
-          {{- if or $haMode $trustAnchor }}
+          {{- if or $haMode $trustAnchor $operatorEnabled }}
           env:
             {{- if $trustAnchor }}
             - name: TERNAL_TRUST_ANCHOR_CONFIGMAP
@@ -156,6 +168,11 @@ spec:
                 secretKeyRef:
                   name: {{ $secretName }}
                   key: TERNAL_DATA_CLUSTER_MEMBERS
+            {{- end }}
+            {{- if $operatorEnabled }}
+            - name: TERNAL_OPERATOR_BIND
+              value: {{ printf "0.0.0.0:%d" (int (default 9091 $data.ha.operatorPort)) | quote }}
+            {{- include "ternal.operatorEnv" . | nindent 12 }}
             {{- end }}
           {{- end }}
           volumeMounts:
