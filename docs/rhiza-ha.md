@@ -42,7 +42,7 @@ GCS Workload Identity 사용 시 operator.serviceAccountAnnotations에 GCP 서�
 
 ## 관찰 모드
 
-recoveryID가 비어 있으면 관찰 전용 요청이다. Operator는 읽기 전용이 아니며 복구 CR에 따라 StatefulSet을 변경할 수 있다.
+recoveryID가 비어 있으면 관찰 전용 요청이다. Operator는 읽기 전용이 아니다: 네임스페이스의 복구 CR을 계속 reconcile하며, 확인된 fence가 있는 CR은 대상 세대를 예약하고 소스 아카이브를 영구 seal한 뒤 워크로드를 변경할 수 있다. Ternal은 operator가 다시 쓰는 `RHIZA_*` 값을 읽지 않으므로 그 세대 전환을 완료할 수 없다. 세대 전환 경로가 자격 검증될 때까지 recoveryID를 비워 둔다.
 
     apiVersion: rhiza.mrchypark.dev/v1alpha1
     kind: RhizaRecovery
@@ -94,5 +94,7 @@ GCS Workload Identity를 사용하면 시크릿 키를 생략할 수 있다.
 ## Ternal 설정과의 경계
 
 Ternal 자체의 공개 설정은 `TERNAL_*` 역할 이름만 사용한다. 위 `RHIZA_*` 변수는 operator 컨테이너(업스트림 바이너리)의 자체 인터페이스이며, operator 컨트롤러는 대상 파드의 환경에서 cluster ID, membership, admin token, 데이터 디렉터리, object store 위치를 읽는다. 차트는 `data.clusterID`, `data.objectStore`, `secrets.existingSecret` 값으로 그 이름들을 만들어 operator Deployment와 HA 파드에 넣는다. 값을 정하는 곳은 여전히 Ternal 설정이고, `RHIZA_*` 이름은 operator 소유 차트 파일(`deploy/helm/ternal/templates/operator-*`)과 이 문서에만 나타난다. Ternal API 파드는 operator와 `TERNAL_OPERATOR_BIND` 엔드포인트로 통신한다.
+
+`TERNAL_OPERATOR_BIND`는 엔드포인트마다 인증이 다르다. 관리 엔드포인트는 admin token을 요구하지만 `/recovery/status`는 토큰 없이 응답한다. 그래서 차트의 NetworkPolicy가 9091 포트를 operator 파드로만 제한하며, 이 리스너를 클러스터나 서비스로 넓게 열지 않는다.
 
 HA 파드에 실리는 값은 operator의 검증 입력이며 Ternal 엔진 설정이 아니다. Ternal은 `TERNAL_*` 값만 읽으므로, operator가 세대 사이에 갱신하는 `RHIZA_*` 값만으로는 파드의 엔진 설정이 바뀌지 않는다. 그래서 세대 전환(수동 복구 포함)은 아직 자격 검증되지 않았고, 관찰 모드만 확인된 범위다.

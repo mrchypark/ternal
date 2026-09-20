@@ -85,11 +85,35 @@ for key in RHIZA_CLUSTER_ID RHIZA_OBJSTORE_PROVIDER RHIZA_OBJSTORE_ENDPOINT \
 	}
 done
 
-# The data directory the operator expects is the one Ternal actually uses.
-pod_data_dir=$(yq 'select(.kind=="StatefulSet") | .spec.template.spec.containers[].env[]? | select(.name=="RHIZA_DATA_DIR") | .value' "$tmp/ha-operator.yaml" | head -1)
-config_data_dir=$(yq 'select(.kind=="ConfigMap" and .data.TERNAL_DATA_DIR != null) | .data.TERNAL_DATA_DIR' "$tmp/ha-operator.yaml" | head -1)
-[ "$pod_data_dir" = "$config_data_dir" ] || {
-	echo "RHIZA_DATA_DIR ($pod_data_dir) differs from TERNAL_DATA_DIR ($config_data_dir)" >&2
+# The injected identity must equal Ternal's own rendered configuration, not just
+# agree with the operator Deployment: two generated copies could drift together.
+for pair in \
+	'RHIZA_DATA_DIR:TERNAL_DATA_DIR' \
+	'RHIZA_CLUSTER_ID:TERNAL_DATA_CLUSTER_ID' \
+	'RHIZA_OBJSTORE_PROVIDER:TERNAL_OBJECT_STORE_PROVIDER' \
+	'RHIZA_OBJSTORE_ENDPOINT:TERNAL_OBJECT_STORE_ENDPOINT' \
+	'RHIZA_OBJSTORE_BUCKET:TERNAL_OBJECT_STORE_BUCKET' \
+	'RHIZA_OBJSTORE_PREFIX:TERNAL_OBJECT_STORE_PREFIX' \
+	'RHIZA_OBJSTORE_DURABILITY:TERNAL_OBJECT_STORE_DURABILITY'; do
+	pod_key=${pair%%:*}
+	config_key=${pair##*:}
+	pod_value=$(yq "select(.kind==\"StatefulSet\") | .spec.template.spec.containers[].env[]? | select(.name==\"$pod_key\") | .value" "$tmp/ha-operator.yaml" | head -1)
+	config_value=$(yq "select(.kind==\"ConfigMap\" and .data.$config_key != null) | .data.$config_key" "$tmp/ha-operator.yaml" | head -1)
+	[ -n "$config_value" ] && [ "$pod_value" = "$config_value" ] || {
+		echo "$pod_key ($pod_value) differs from $config_key ($config_value)" >&2
+		exit 1
+	}
+done
+
+# Credentials come from the same Secret keys Ternal's own pods use.
+members_ref=$(yq 'select(.kind=="StatefulSet") | .spec.template.spec.containers[].env[]? | select(.name=="RHIZA_CLUSTER_MEMBERS") | .valueFrom.secretKeyRef.name + ":" + .valueFrom.secretKeyRef.key' "$tmp/ha-operator.yaml" | head -1)
+token_ref=$(yq 'select(.kind=="StatefulSet") | .spec.template.spec.containers[].env[]? | select(.name=="RHIZA_ADMIN_TOKEN") | .valueFrom.secretKeyRef.name + ":" + .valueFrom.secretKeyRef.key' "$tmp/ha-operator.yaml" | head -1)
+[ "$members_ref" = "ternal-runtime:TERNAL_DATA_CLUSTER_MEMBERS" ] || {
+	echo "membership reference is $members_ref" >&2
+	exit 1
+}
+[ "$token_ref" = "ternal-runtime:TERNAL_DATA_ADMIN_TOKEN" ] || {
+	echo "admin token reference is $token_ref" >&2
 	exit 1
 }
 
