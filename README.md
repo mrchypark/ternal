@@ -184,3 +184,4 @@ that cannot be composed outside pigeons; both changes are proposed upstream.
 - [Identity and Ternal data boundary](docs/data-boundary.md)
 - [Release process](docs/releasing.md)
 - [Pinned transport provenance](docs/agent-embedded-pigeons.md)
+- [HA and the Rhiza operator](docs/rhiza-ha.md)
