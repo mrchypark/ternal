@@ -38,7 +38,7 @@ cannot reach this contract. See [HA and the Rhiza operator](rhiza-ha.md).
 | `TERNAL_SESSION_TTL_SECONDS` | `3600` | Session lifetime, from 60 through 3600 seconds |
 | `TERNAL_DEV_HEADERS` | `0` | Enables development identity headers; accepted only on a loopback bind |
 | `TERNAL_CORS_ORIGIN` | redirect origin | Optional exact browser origin |
-| `TERNAL_RELAY_ACCESS_TOKEN` | none | Relay callback bearer; at least 32 bytes |
+| `TERNAL_RELAY_ACCESS_TOKEN` | none | Relay callback bearer; required with `TERNAL_RELAY_BIND`, at least 32 bytes |
 
 ## OIDC
 

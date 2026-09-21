@@ -16,10 +16,19 @@ import (
 	"github.com/mrchypark/rhiza"
 )
 
+// errTrustUnsettled is returned while a store that must be fenced has not yet
+// established its anchored pair on this node.
+var errTrustUnsettled = errors.New("trust anchor is not settled")
+
 type rhizaSQL struct {
 	db      *rhiza.DB
 	trust   *trustAnchor
 	trustMu ctxRWMutex
+	// trustRequired marks a store whose deployment configured a trust anchor.
+	// Until that anchor is settled here, Ternal reads and writes stay closed:
+	// serving them unfenced is exactly the failure the anchor exists to
+	// prevent.  The embedded data node keeps serving peers either way.
+	trustRequired bool
 }
 
 // acquireTrustRead blocks for the trust read lock like RLock, but abandons
@@ -144,6 +153,9 @@ func committedResponse(response rhiza.ExecuteResponse, err error) (rhiza.Execute
 
 func (d *rhizaSQL) QueryContext(ctx context.Context, statement string, args ...any) (*rhizaRows, error) {
 	if d.trust == nil {
+		if d.trustRequired {
+			return nil, errTrustUnsettled
+		}
 		return d.queryRaw(ctx, statement, args...)
 	}
 	unlock, ok := d.acquireTrustRead(ctx)
@@ -185,11 +197,20 @@ func (d *rhizaSQL) queryRaw(ctx context.Context, statement string, args ...any) 
 	return &rhizaRows{rows: response.Rows, index: -1}, nil
 }
 
+// requireTrust marks the store as one that may only serve fenced operations.
+func (d *rhizaSQL) requireTrust() { d.trustRequired = true }
+
 // enableTrust is called only after startup has established the durable pair.
-func (d *rhizaSQL) enableTrust(anchor *trustAnchor) { d.trust = anchor }
+func (d *rhizaSQL) enableTrust(anchor *trustAnchor) {
+	d.trust = anchor
+	d.trustRequired = false
+}
 
 func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, originalStatements int) (rhiza.ExecuteResponse, error) {
 	if d.trust == nil {
+		if d.trustRequired {
+			return rhiza.ExecuteResponse{}, errTrustUnsettled
+		}
 		response, err := d.db.Execute(ctx, request)
 		return committedResponse(response, err)
 	}
