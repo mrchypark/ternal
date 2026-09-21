@@ -282,6 +282,10 @@ func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, or
 		final.Token = nextToken
 		final.PendingEpoch = nil
 		final.PendingID = ""
+		// This write established the pair, so the deployment bootstrap is spent.
+		// Leaving it set would let a later wiped database re-bootstrap from an
+		// anchor whose pair is already established.
+		final.Bootstrap = false
 		if _, casErr := anchor.cas(fencedCtx, pendingRV, final); casErr != nil {
 			return rhiza.ExecuteResponse{}, fmt.Errorf("finalize trust anchor after committed write: %w", casErr)
 		}

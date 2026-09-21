@@ -284,12 +284,12 @@ func TestTrustAnchorParsingAndBindingFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(data, "token")
-	parsed, err = parseAnchorData(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := anchor.validate(parsed); err == nil {
-		t.Fatal("missing token accepted")
+	// The shape is compared exactly, so a dropped key is a representation
+	// error rather than a record that reads as an empty token.
+	if parsed, err = parseAnchorData(data); err == nil {
+		if err := anchor.validate(parsed); err == nil {
+			t.Fatal("missing token accepted")
+		}
 	}
 	if TrustAnchorStorageID("gcs", "", "bucket", "prefix", "c") == TrustAnchorStorageID("gcs", "", "bucket", "other", "c") {
 		t.Fatal("storage binding omitted prefix")
