@@ -331,10 +331,13 @@ var trustStartupBudget = 30 * time.Second
 // trustStartup records what one Open already did, so a retry after contention
 // or after a partial attempt never repeats a completed obligation.
 type trustStartup struct {
-	// attempted is the reservation ID this Open proposed, recorded before the
-	// compare-and-swap is issued.  A CAS whose response never arrived may still
-	// have been applied, so finding this ID in the anchor is proof the fence in
-	// it is this Open's own reservation.
+	// attempted is the reservation ID this Open proposed, minted once and
+	// reused by every retry.  A CAS whose response never arrived may still have
+	// been applied, so finding this ID in the anchor is proof the fence in it
+	// is this Open's own reservation.  Minting a second ID on a retry discards
+	// that proof while the first attempt is still in flight: the retry reads
+	// the unchanged predecessor, and the delayed attempt then lands as a
+	// reservation this process can no longer claim.
 	attempted string
 	// reserved is set only once the anchor is known to carry this Open's own
 	// reservation.  A definite CAS loser keeps it false so it can still follow
@@ -606,11 +609,16 @@ func (s *Store) beginMigrationFence(ctx context.Context, anchor *trustAnchor, re
 	next := record.Epoch + 1
 	pending := record
 	pending.PendingEpoch = &next
-	pending.PendingID = uuid.NewString()
-	// The reservation is recorded before the compare-and-swap is issued.  A
-	// CAS whose response is lost may still have been applied, and this ID is
-	// what proves the fence it published is this process's own.
-	state.attempted = pending.PendingID
+	// One reservation identity per Open, minted before the first
+	// compare-and-swap is issued and reused by every retry.  A CAS whose
+	// response is lost may still be applied after the next read returns the
+	// unchanged predecessor, and this ID is what proves the fence it published
+	// is this process's own.  A peer that wins the race proposes an ID of its
+	// own, so a stable ID never claims a peer's reservation.
+	if state.attempted == "" {
+		state.attempted = uuid.NewString()
+	}
+	pending.PendingID = state.attempted
 	one := int64(1)
 	if err := rhiza.ValidateExecuteRequest(rhiza.ExecuteRequest{RequestID: pending.PendingID, Statements: []rhiza.SQLStatement{{SQL: `UPDATE trust_state SET epoch=?, token=? WHERE id=1 AND epoch=? AND token=?`, Args: []any{next, pending.PendingID, record.Epoch, record.Token}, ExpectedRowsAffected: &one}}}); err != nil {
 		return trustAnchorRecord{}, err

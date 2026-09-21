@@ -98,6 +98,79 @@ func (a *lostResponseAnchor) proposedReservation() string {
 	return a.proposed
 }
 
+// delayedCASAnchor retains the first reservation it is asked to publish and
+// reports that call as failed without applying it.  The anchor keeps showing
+// the predecessor to the next read, and the retained write lands only when
+// the retry reaches the compare-and-swap: the schedule where a retry reads the
+// anchor before the attempt it is retrying has become visible.
+type delayedCASAnchor struct {
+	trustAnchorBackend
+	mu        sync.Mutex
+	held      bool
+	heldRec   trustAnchorRecord
+	heldRV    string
+	applied   bool
+	published int
+	proposed  []string
+}
+
+func (a *delayedCASAnchor) CAS(ctx context.Context, rv string, next trustAnchorRecord) (string, error) {
+	a.mu.Lock()
+	if next.PendingEpoch != nil && !a.held {
+		a.held = true
+		a.heldRec = next
+		a.heldRV = rv
+		a.proposed = append(a.proposed, next.PendingID)
+		a.mu.Unlock()
+		return "", fmt.Errorf("the reservation outcome is unknown")
+	}
+	if next.PendingEpoch != nil && !a.applied {
+		// The retained attempt lands now, exactly as the retry reaches the
+		// compare-and-swap.  The retry read the anchor before this
+		// application, so it competes with the write it is retrying.
+		a.applied = true
+		a.proposed = append(a.proposed, next.PendingID)
+		held, heldRV := a.heldRec, a.heldRV
+		a.mu.Unlock()
+		if _, err := a.trustAnchorBackend.CAS(ctx, heldRV, held); err != nil {
+			return "", err
+		}
+		a.mu.Lock()
+		a.published++
+		a.mu.Unlock()
+		return a.trustAnchorBackend.CAS(ctx, rv, next)
+	}
+	a.mu.Unlock()
+	updated, err := a.trustAnchorBackend.CAS(ctx, rv, next)
+	if err == nil && next.PendingEpoch != nil {
+		a.mu.Lock()
+		a.published++
+		a.mu.Unlock()
+	}
+	return updated, err
+}
+
+func (a *delayedCASAnchor) proposals() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.proposed...)
+}
+
+func (a *delayedCASAnchor) reservationCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.published
+}
+
+// pendingID reports the reservation the anchor currently carries.
+func (a *delayedCASAnchor) pendingID() string {
+	record, _, err := a.Get(context.Background())
+	if err != nil {
+		return fmt.Sprintf("unreadable: %v", err)
+	}
+	return record.PendingID
+}
+
 // trustAnchorEnv points the store at a shared object store with a trust
 // anchor, which is the HA configuration the bootstrap deadlock was reported
 // for.
@@ -514,6 +587,63 @@ func TestOpenKeepsReservationOwnershipAcrossTheForegroundDeadline(t *testing.T) 
 	}
 	if final.PendingEpoch != nil || final.Epoch != 1 || final.Token != proposed || final.Bootstrap {
 		t.Fatalf("anchor after the deadline = %#v, want the proposed reservation %s finalized", final, proposed)
+	}
+	if err := s.db.verifyDBTrust(ctx, final.Epoch, final.Token); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOpenRecognizesItsOwnReservationWhenTheRetryOutrunsTheFirstAttempt covers
+// the retry that reads the anchor before the attempt it is retrying has been
+// applied.  The first reservation is retained by the backend and reported as
+// an unknown outcome while the anchor still shows the predecessor; the retry
+// then competes with that delayed write.  The retry has to keep proposing the
+// same reservation identity, because that identity is the only thing that
+// proves the fence the delayed attempt published is this Open's own.  Minting
+// a fresh one leaves the applied reservation stranded: no peer submitted its
+// trust tail, this Open cannot claim it, and readiness never arrives.
+func TestOpenRecognizesItsOwnReservationWhenTheRetryOutrunsTheFirstAttempt(t *testing.T) {
+	ctx := context.Background()
+	withStartupBudget(t, 300*time.Millisecond)
+	trustAnchorEnv(t)
+	backend := &delayedCASAnchor{trustAnchorBackend: &countingAnchor{record: bootstrapAnchorRecord()}}
+	useAnchorBackend(t, backend)
+
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("voter failed to start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if err := s.Ready(ctx); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("voter never settled the reservation it proposed; anchor holds pending %q, this Open proposed %v", backend.pendingID(), backend.proposals())
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	proposals := backend.proposals()
+	if len(proposals) < 2 {
+		t.Fatalf("expected the delayed attempt and its retry to both propose, got %v", proposals)
+	}
+	for _, proposed := range proposals {
+		if proposed != proposals[0] {
+			t.Fatalf("retry replaced the reservation identity: %v", proposals)
+		}
+	}
+	if got := backend.reservationCount(); got != 1 {
+		t.Fatalf("anchor published %d reservations, want 1", got)
+	}
+	final, _, err := backend.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.PendingEpoch != nil || final.Epoch != 1 || final.Token != proposals[0] || final.Bootstrap {
+		t.Fatalf("anchor after the delayed compare-and-swap = %#v, want the proposed reservation %s finalized", final, proposals[0])
 	}
 	if err := s.db.verifyDBTrust(ctx, final.Epoch, final.Token); err != nil {
 		t.Fatal(err)
