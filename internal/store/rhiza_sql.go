@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,8 +22,11 @@ import (
 var errTrustUnsettled = errors.New("trust anchor is not settled")
 
 type rhizaSQL struct {
-	db      *rhiza.DB
-	trust   *trustAnchor
+	db *rhiza.DB
+	// trust is published once settlement has established the anchored pair on
+	// this node.  Every request reads it and background settlement writes it
+	// while requests are already being served, so it is an atomic pointer.
+	trust   atomic.Pointer[trustAnchor]
 	trustMu ctxRWMutex
 	// trustRequired marks a store whose deployment configured a trust anchor.
 	// Until that anchor is settled here, Ternal reads and writes stay closed:
@@ -152,7 +156,8 @@ func committedResponse(response rhiza.ExecuteResponse, err error) (rhiza.Execute
 }
 
 func (d *rhizaSQL) QueryContext(ctx context.Context, statement string, args ...any) (*rhizaRows, error) {
-	if d.trust == nil {
+	anchor := d.trust.Load()
+	if anchor == nil {
 		if d.trustRequired {
 			return nil, errTrustUnsettled
 		}
@@ -165,7 +170,7 @@ func (d *rhizaSQL) QueryContext(ctx context.Context, statement string, args ...a
 	defer unlock()
 	// The query is intentionally between the two external reads: returning a
 	// result after a restore or anchor change would otherwise leak stale state.
-	first, rv, err := d.trust.get(ctx)
+	first, rv, err := anchor.get(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +184,7 @@ func (d *rhizaSQL) QueryContext(ctx context.Context, statement string, args ...a
 	if err := d.verifyDBTrust(ctx, first.Epoch, first.Token); err != nil {
 		return nil, err
 	}
-	second, rv2, err := d.trust.get(ctx)
+	second, rv2, err := anchor.get(ctx)
 	if err != nil || rv != rv2 || second.PendingEpoch != nil || second.Epoch != first.Epoch || second.Token != first.Token {
 		if err != nil {
 			return nil, err
@@ -202,12 +207,12 @@ func (d *rhizaSQL) requireTrust() { d.trustRequired = true }
 
 // enableTrust is called only after startup has established the durable pair.
 func (d *rhizaSQL) enableTrust(anchor *trustAnchor) {
-	d.trust = anchor
-	d.trustRequired = false
+	d.trust.Store(anchor)
 }
 
 func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, originalStatements int) (rhiza.ExecuteResponse, error) {
-	if d.trust == nil {
+	anchor := d.trust.Load()
+	if anchor == nil {
 		if d.trustRequired {
 			return rhiza.ExecuteResponse{}, errTrustUnsettled
 		}
@@ -227,7 +232,7 @@ func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, or
 	// independent anchor permanently pending after its CAS succeeds.
 	fencedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	current, rv, err := d.trust.get(fencedCtx)
+	current, rv, err := anchor.get(fencedCtx)
 	if err != nil {
 		return rhiza.ExecuteResponse{}, err
 	}
@@ -263,14 +268,14 @@ func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, or
 	pending := current
 	pending.PendingEpoch = &nextEpoch
 	pending.PendingID = request.RequestID
-	pendingRV, err := d.trust.cas(fencedCtx, rv, pending)
+	pendingRV, err := anchor.cas(fencedCtx, rv, pending)
 	if err != nil {
 		return rhiza.ExecuteResponse{}, err
 	}
 	response, err := d.db.Execute(fencedCtx, request)
 	if err == nil && response.Status == rhiza.MutationCommitted {
 		final := trustAnchorRecord{Format: current.Format, ClusterID: current.ClusterID, StorageID: current.StorageID, Epoch: nextEpoch, Token: nextToken}
-		if _, casErr := d.trust.cas(fencedCtx, pendingRV, final); casErr != nil {
+		if _, casErr := anchor.cas(fencedCtx, pendingRV, final); casErr != nil {
 			return rhiza.ExecuteResponse{}, fmt.Errorf("finalize trust anchor after committed write: %w", casErr)
 		}
 		if len(response.Statements) != originalStatements+1 {
@@ -296,7 +301,7 @@ func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, or
 		final := current
 		final.PendingEpoch = nil
 		final.PendingID = ""
-		if _, casErr := d.trust.cas(fencedCtx, pendingRV, final); casErr != nil {
+		if _, casErr := anchor.cas(fencedCtx, pendingRV, final); casErr != nil {
 			return rhiza.ExecuteResponse{}, fmt.Errorf("clear rejected trust write: %w", casErr)
 		}
 	}

@@ -12,6 +12,15 @@ import (
 	"github.com/mrchypark/rhiza"
 )
 
+// withStartupBudget shortens the foreground settlement window so a test can
+// reach the deadline path without waiting the production budget out.
+func withStartupBudget(t *testing.T, budget time.Duration) {
+	t.Helper()
+	previous := trustStartupBudget
+	trustStartupBudget = budget
+	t.Cleanup(func() { trustStartupBudget = previous })
+}
+
 // countingAnchor records how many migration fences the store reserved and can
 // fail a compare-and-swap to emulate a peer winning the race.
 type countingAnchor struct {
@@ -52,10 +61,47 @@ func (c *countingAnchor) pendingCount() int {
 	return c.reservations
 }
 
-// objectStoreEnv points the store at a shared object store with a trust
+func (c *countingAnchor) setBootstrap(bootstrap bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.record.Bootstrap = bootstrap
+}
+
+// lostResponseAnchor applies a reservation and then reports the call as
+// failed, which is the window a compare-and-swap response is lost in: the
+// anchor holds the reservation while the caller never learned its outcome.
+type lostResponseAnchor struct {
+	trustAnchorBackend
+	mu       sync.Mutex
+	lost     bool
+	proposed string
+}
+
+func (a *lostResponseAnchor) CAS(ctx context.Context, rv string, next trustAnchorRecord) (string, error) {
+	updated, err := a.trustAnchorBackend.CAS(ctx, rv, next)
+	if err != nil || next.PendingEpoch == nil {
+		return updated, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.lost {
+		return updated, nil
+	}
+	a.lost = true
+	a.proposed = next.PendingID
+	return "", fmt.Errorf("the reservation response was lost")
+}
+
+func (a *lostResponseAnchor) proposedReservation() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.proposed
+}
+
+// trustAnchorEnv points the store at a shared object store with a trust
 // anchor, which is the HA configuration the bootstrap deadlock was reported
-// for, and returns the anchor backend the store will use.
-func objectStoreEnv(t *testing.T, conflicts int) *countingAnchor {
+// for.
+func trustAnchorEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("TERNAL_DATA_CLUSTER_ID", "trust-startup")
 	t.Setenv("TERNAL_DATA_NODE_ID", "node-1")
@@ -65,10 +111,22 @@ func objectStoreEnv(t *testing.T, conflicts int) *countingAnchor {
 	t.Setenv("TERNAL_OBJECT_STORE_DURABILITY", "before-ack")
 	t.Setenv("TERNAL_TRUST_ANCHOR_CONFIGMAP", "test-anchor")
 	t.Setenv("TERNAL_TRUST_ANCHOR_NAMESPACE", "test")
-	backend := &countingAnchor{record: bootstrapAnchorRecord(), conflicts: conflicts}
+}
+
+// useAnchorBackend makes every store opened by this test read the given anchor.
+func useAnchorBackend(t *testing.T, backend trustAnchorBackend) {
+	t.Helper()
 	previous := kubernetesAnchorBackend
 	kubernetesAnchorBackend = func(string, string) trustAnchorBackend { return backend }
 	t.Cleanup(func() { kubernetesAnchorBackend = previous })
+}
+
+// objectStoreEnv is trustAnchorEnv plus the anchor backend the store will use.
+func objectStoreEnv(t *testing.T, conflicts int) *countingAnchor {
+	t.Helper()
+	trustAnchorEnv(t)
+	backend := &countingAnchor{record: bootstrapAnchorRecord(), conflicts: conflicts}
+	useAnchorBackend(t, backend)
 	return backend
 }
 
@@ -184,13 +242,13 @@ func TestTrustStartupRetriesThroughAnchorContention(t *testing.T) {
 func TestTrustStartupJoinsPeerFenceWithoutReservingAnother(t *testing.T) {
 	ctx := context.Background()
 	s, backend := anchoredStore(t)
-	anchor := s.db.trust
+	anchor := s.db.trust.Load()
 	base, pending := pendingFence(t, backend)
 	peer := &countingAnchor{record: pending, rv: 1}
 	anchor.backend = peer
 	commitTrustTail(t, s, pending, base)
 
-	if err := s.settleTrustAnchor(ctx, anchor); err != nil {
+	if err := s.settleTrustAnchor(ctx, anchor, &trustStartup{}); err != nil {
 		t.Fatalf("follower did not converge on the peer fence: %v", err)
 	}
 	final, _, err := peer.Get(ctx)
@@ -213,14 +271,14 @@ func TestTrustStartupJoinsPeerFenceWithoutReservingAnother(t *testing.T) {
 func TestTrustStartupWithholdsReadinessForUnknownPeerFence(t *testing.T) {
 	ctx := context.Background()
 	s, backend := anchoredStore(t)
-	anchor := s.db.trust
+	anchor := s.db.trust.Load()
 	base, pending := pendingFence(t, backend)
 	peer := &countingAnchor{record: pending, rv: 1}
 	anchor.backend = peer
 
 	shortCtx, cancel := context.WithTimeout(ctx, 400*time.Millisecond)
 	defer cancel()
-	err := s.settleTrustAnchor(shortCtx, anchor)
+	err := s.settleTrustAnchor(shortCtx, anchor, &trustStartup{})
 	if err == nil {
 		t.Fatal("unprovable peer fence was treated as settled")
 	}
@@ -248,7 +306,7 @@ func TestTrustStartupWithholdsReadinessForUnknownPeerFence(t *testing.T) {
 	// Replication delivers the peer's committed tail.  Only then may this
 	// voter finalize the fence and report readiness, exactly as Open does.
 	commitTrustTail(t, s, pending, base)
-	if err := s.settleTrustAnchor(ctx, anchor); err != nil {
+	if err := s.settleTrustAnchor(ctx, anchor, &trustStartup{}); err != nil {
 		t.Fatalf("voter did not converge once the tail arrived: %v", err)
 	}
 	s.db.enableTrust(anchor)
@@ -271,13 +329,13 @@ func TestTrustStartupWithholdsReadinessForUnknownPeerFence(t *testing.T) {
 func TestTrustStartupRetriesItsOwnFenceWithoutReservingAgain(t *testing.T) {
 	ctx := context.Background()
 	s, backend := anchoredStore(t)
-	anchor := s.db.trust
+	anchor := s.db.trust.Load()
 	base, pending := pendingFence(t, backend)
 	owned := &countingAnchor{record: pending, rv: 1}
 	anchor.backend = owned
 	commitTrustTail(t, s, pending, base)
 
-	state := trustStartup{reserved: true, pendingID: pending.PendingID}
+	state := trustStartup{attempted: pending.PendingID, reserved: true, pendingID: pending.PendingID}
 	if err := s.settleTrustAnchorOnce(ctx, anchor, &state); err != nil {
 		t.Fatalf("resumed fence: %v", err)
 	}
@@ -295,7 +353,7 @@ func TestTrustStartupRetriesItsOwnFenceWithoutReservingAgain(t *testing.T) {
 func TestTrustFenceFinalizationRequiresTheMigrationMarker(t *testing.T) {
 	ctx := context.Background()
 	s, backend := anchoredStore(t)
-	anchor := s.db.trust
+	anchor := s.db.trust.Load()
 	base, pending := pendingFence(t, backend)
 	commitTrustTail(t, s, pending, base)
 	if _, err := s.db.execRaw(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), SQL: "DROP TABLE ternal_schema"}); err != nil {
@@ -372,5 +430,140 @@ func TestOpenKeepsUnsettledVoterAliveAndConverges(t *testing.T) {
 	}
 	if got := backend.pendingCount(); got != setupReservations {
 		t.Fatalf("converging voter reserved %d fences, want only the peer's %d", got, setupReservations)
+	}
+}
+
+// TestTrustActivationNeverServesTheUnfencedPath covers publication of the
+// anchor.  A deployment that configured a fence makes the store closed to
+// unfenced operations for its whole life, and activation publishes the anchor
+// without relaxing that: a request that read the anchor before publication
+// observed exactly the pre-activation state, and letting it fall through to the
+// raw path would commit a mutation with no trust transition.  A restored
+// snapshot could then keep the same epoch and token while omitting that
+// mutation, which is the failure the anchor exists to catch.
+func TestTrustActivationNeverServesTheUnfencedPath(t *testing.T) {
+	ctx := context.Background()
+	s, anchor, backend := unpublishedAnchoredStore(t)
+	s.db.requireTrust()
+	// Activation publishes the anchor, exactly as background settlement does
+	// once the pair is established here.
+	s.db.enableTrust(anchor)
+
+	// A request that read the anchor before that publication observed an empty
+	// anchor on a store whose deployment configured one.  Whatever it does
+	// next, it may not be served unfenced: the requirement belongs to the
+	// deployment and has to outlive publication.
+	s.db.trust.Store(nil)
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO ssh_keys (id,user_id,public_key,fingerprint,created_at) VALUES (?,?,?,?,?)`, uuid.NewString(), "u", "key", "fp", 1); err == nil {
+		t.Fatal("a configured store served an unfenced mutation")
+	}
+	if _, err := s.db.QueryContext(ctx, `SELECT 1`); err == nil {
+		t.Fatal("a configured store served an unfenced read")
+	}
+	s.db.trust.Store(anchor)
+
+	base, _, err := backend.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.PendingEpoch != nil || base.Epoch != 0 || !base.Bootstrap {
+		t.Fatalf("activation mutated the anchor: %#v", base)
+	}
+	if err := s.db.verifyDBTrust(ctx, base.Epoch, base.Token); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOpenKeepsReservationOwnershipAcrossTheForegroundDeadline covers the
+// reservation this process proposed and the anchor now carries: the foreground
+// attempt times out before the tail is submitted, and the background
+// continuation has to recognize the fence as its own instead of waiting on a
+// peer operation that will never appear.  It also covers the lost CAS
+// response: the anchor holds the reservation while this process never learned
+// that the compare-and-swap was applied.
+func TestOpenKeepsReservationOwnershipAcrossTheForegroundDeadline(t *testing.T) {
+	ctx := context.Background()
+	withStartupBudget(t, 300*time.Millisecond)
+	trustAnchorEnv(t)
+	backend := &lostResponseAnchor{trustAnchorBackend: &countingAnchor{record: bootstrapAnchorRecord()}}
+	useAnchorBackend(t, backend)
+
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("voter failed to start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if err := s.Ready(ctx); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("voter never settled the reservation it proposed")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	proposed := backend.proposedReservation()
+	if proposed == "" {
+		t.Fatal("no reservation was proposed")
+	}
+	final, _, err := backend.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.PendingEpoch != nil || final.Epoch != 1 || final.Token != proposed || final.Bootstrap {
+		t.Fatalf("anchor after the deadline = %#v, want the proposed reservation %s finalized", final, proposed)
+	}
+	if err := s.db.verifyDBTrust(ctx, final.Epoch, final.Token); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTrustStartupReservesOnlyUnderTheBootstrapItObserved covers the starter
+// racing a peer that consumes Bootstrap: this node reads an unmigrated database
+// under a bootstrap anchor, the peer then establishes the pair, and this node
+// re-reads the anchor while reserving.  The reservation may only be taken
+// under the record it decided on, so the peer's finalized anchor makes the
+// compare-and-swap conflict instead of the reservation being taken again on an
+// anchor that is already established.
+func TestTrustStartupReservesOnlyUnderTheBootstrapItObserved(t *testing.T) {
+	ctx := context.Background()
+	s, _, backend := unpublishedAnchoredStore(t)
+	observed, _, err := backend.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !observed.Bootstrap {
+		t.Fatal("the observed anchor is not a bootstrap anchor")
+	}
+	// The peer establishes the pair in between: it consumes Bootstrap,
+	// advances the epoch, and its trust tail replicates into this database.
+	peerRecord := observed
+	peerRecord.Epoch = 1
+	peerRecord.Token = uuid.NewString()
+	peerRecord.Bootstrap = false
+	peer := &countingAnchor{record: peerRecord, rv: 2}
+	if _, err := s.db.execRaw(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), SQL: `UPDATE trust_state SET epoch=?, token=? WHERE id=1`, Args: []any{peerRecord.Epoch, peerRecord.Token}}); err != nil {
+		t.Fatal(err)
+	}
+	anchor := &trustAnchor{backend: peer, binding: storageBindingFromEnv()}
+
+	// The reservation is decided on the record this node read.  Handing that
+	// stale record to the reservation has to leave the peer's finalized anchor
+	// alone: re-reading it here is what used to turn a consumed bootstrap into
+	// a second fence and put the shared anchor back into pending state.
+	if _, err := s.beginMigrationFence(ctx, anchor, observed, "1", &trustStartup{}); err == nil {
+		t.Fatal("reserved a second fence under a bootstrap the peer had consumed")
+	}
+	if got := peer.pendingCount(); got != 0 {
+		t.Fatalf("starter reserved %d fences after the peer consumed bootstrap", got)
+	}
+	final, _, err := peer.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.PendingEpoch != nil || final.Epoch != peerRecord.Epoch || final.Token != peerRecord.Token || final.Bootstrap {
+		t.Fatalf("peer's finalized anchor was rewritten: %#v", final)
 	}
 }

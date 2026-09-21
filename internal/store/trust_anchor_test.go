@@ -69,6 +69,15 @@ func (m *memoryAnchor) CAS(_ context.Context, rv string, next trustAnchorRecord)
 
 func anchoredStore(t *testing.T) (*Store, *memoryAnchor) {
 	t.Helper()
+	s, anchor, backend := unpublishedAnchoredStore(t)
+	s.db.enableTrust(anchor)
+	return s, backend
+}
+
+// unpublishedAnchoredStore returns a store whose anchor is configured but not
+// published to it yet, which is the window background settlement runs in.
+func unpublishedAnchoredStore(t *testing.T) (*Store, *trustAnchor, *memoryAnchor) {
+	t.Helper()
 	ctx := context.Background()
 	s, err := Open(ctx, t.TempDir())
 	if err != nil {
@@ -79,13 +88,15 @@ func anchoredStore(t *testing.T) (*Store, *memoryAnchor) {
 	record := binding
 	record.Epoch = 0
 	record.Token = uuid.NewString()
+	// A deployment pre-creates the anchor with Bootstrap set: the first voter
+	// to migrate is the one that consumes it.
+	record.Bootstrap = true
 	backend := &memoryAnchor{record: record}
 	anchor := &trustAnchor{backend: backend, binding: binding}
 	if _, err := s.db.execRaw(ctx, rhiza.ExecuteRequest{RequestID: uuid.NewString(), Statements: []rhiza.SQLStatement{{SQL: `CREATE TABLE trust_state (id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL, token TEXT NOT NULL)`}, {SQL: `INSERT INTO trust_state (id,epoch,token) VALUES (1,?,?)`, Args: []any{record.Epoch, record.Token}}}}); err != nil {
 		t.Fatal(err)
 	}
-	s.db.enableTrust(anchor)
-	return s, backend
+	return s, anchor, backend
 }
 
 func TestTrustAnchorFencesWritesAndRejectsRestoredPair(t *testing.T) {
@@ -117,7 +128,7 @@ func TestTrustAnchorFencesWritesAndRejectsRestoredPair(t *testing.T) {
 func TestTrustAnchorFencedWriteSurvivesCallerCancellation(t *testing.T) {
 	s, backend := anchoredStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	s.db.trust.backend = &cancelOnPendingAnchor{trustAnchorBackend: backend, cancel: cancel}
+	s.db.trust.Load().backend = &cancelOnPendingAnchor{trustAnchorBackend: backend, cancel: cancel}
 	defer cancel()
 
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO ssh_keys (id,user_id,public_key,fingerprint,created_at) VALUES (?,?,?,?,?)`, uuid.NewString(), "u", "key", "fp", 1); err != nil {
@@ -136,7 +147,7 @@ func TestTrustAnchorReadWaitsForLocalFencedWrite(t *testing.T) {
 	s, backend := anchoredStore(t)
 	pending := make(chan struct{})
 	release := make(chan struct{})
-	s.db.trust.backend = &blockingPendingAnchor{trustAnchorBackend: backend, pending: pending, release: release}
+	s.db.trust.Load().backend = &blockingPendingAnchor{trustAnchorBackend: backend, pending: pending, release: release}
 
 	writeDone := make(chan error, 1)
 	go func() {
