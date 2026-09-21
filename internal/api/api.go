@@ -95,7 +95,10 @@ func (s *Server) ValidateRuntime(bind string) error {
 			return fmt.Errorf("invalid OIDC configuration: %w", s.oidcErr)
 		}
 	}
-	if len(s.relayToken) < 32 {
+	// The relay token is read only by the relay listener, so only a deployment
+	// that serves one has to carry it. Requiring it unconditionally kept the
+	// default chart render (managed relay disabled) from ever starting.
+	if os.Getenv("TERNAL_RELAY_BIND") != "" && len(s.relayToken) < 32 {
 		return fmt.Errorf("TERNAL_RELAY_ACCESS_TOKEN must be at least 32 bytes")
 	}
 	return nil

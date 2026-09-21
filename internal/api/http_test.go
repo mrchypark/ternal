@@ -238,6 +238,26 @@ func TestPolicyDenialActorValidationFailureFailsClosed(t *testing.T) {
 	}
 }
 
+// The relay token is read only by the relay listener. Requiring it on every
+// deployment kept the default chart render (managed relay disabled) from
+// starting at all, so the check follows the listener.
+func TestValidateRuntimeRequiresTheRelayTokenOnlyForARelayListener(t *testing.T) {
+	t.Setenv("TERNAL_DEV_HEADERS", "1")
+	t.Setenv("TERNAL_RELAY_BIND", "")
+	t.Setenv("TERNAL_RELAY_ACCESS_TOKEN", "")
+	if err := NewServer(nil).ValidateRuntime("127.0.0.1:3000"); err != nil {
+		t.Fatalf("a deployment without a relay listener must start: %v", err)
+	}
+	t.Setenv("TERNAL_RELAY_BIND", "127.0.0.1:3001")
+	if err := NewServer(nil).ValidateRuntime("127.0.0.1:3000"); err == nil {
+		t.Fatal("a relay listener without a token must be refused")
+	}
+	t.Setenv("TERNAL_RELAY_ACCESS_TOKEN", strings.Repeat("r", 32))
+	if err := NewServer(nil).ValidateRuntime("127.0.0.1:3000"); err != nil {
+		t.Fatalf("a relay listener with a token must start: %v", err)
+	}
+}
+
 func TestLogoutRejectsReplayedSession(t *testing.T) {
 	key := strings.Repeat("s", 32)
 	t.Setenv("TERNAL_SESSION_KEY", key)

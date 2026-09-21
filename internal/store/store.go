@@ -9,10 +9,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,6 +35,56 @@ type Store struct {
 	db   *rhizaSQL
 	mu   ctxRWMutex
 	path string
+	// settleMu guards the trust settlement state Open publishes.  A store whose
+	// anchored pair is not established yet stays alive but unready.
+	settleMu     sync.Mutex
+	settleCancel context.CancelFunc
+	trustNeeded  bool
+	trustSettled bool
+}
+
+// trustReady reports whether this store may serve Ternal reads.  A configured
+// trust anchor that has not settled withholds readiness instead of failing
+// open on a pair this process cannot prove.
+func (s *Store) trustReady() error {
+	s.settleMu.Lock()
+	defer s.settleMu.Unlock()
+	if s.trustNeeded && !s.trustSettled {
+		return fmt.Errorf("trust anchor is not settled")
+	}
+	return nil
+}
+
+// markTrustSettled publishes that the anchored pair is durable here.
+func (s *Store) markTrustSettled() {
+	s.settleMu.Lock()
+	defer s.settleMu.Unlock()
+	s.trustSettled = true
+}
+
+// settleInBackground keeps working on the anchored pair after Open returned.
+// Exiting instead would remove this voter from the quorum that has to resolve
+// the obligation, so the process stays alive and unready until it settles.
+// The startup state is the foreground attempt's, so the reservation it
+// already proposed stays this process's own fence instead of looking like an
+// unprovable peer operation.
+func (s *Store) settleInBackground(anchor *trustAnchor, state *trustStartup, cause error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.settleMu.Lock()
+	s.trustNeeded = true
+	s.settleCancel = cancel
+	s.settleMu.Unlock()
+	go func() {
+		defer cancel()
+		if err := s.settleTrustAnchor(ctx, anchor, state); err != nil {
+			return // Close ended the wait.
+		}
+		s.db.enableTrust(anchor)
+		s.markTrustSettled()
+	}()
+	if cause != nil {
+		log.Printf("trust anchor unsettled, Ternal readiness withheld until this node proves the pair: %v", cause)
+	}
 }
 
 // acquireWrite blocks for the write lock, abandoning the wait with
@@ -194,38 +246,39 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	var migrationFence *trustAnchorRecord
-	if anchor != nil {
-		if err := s.prepareTrustAnchor(startupCtx, anchor); err != nil {
+	if anchor == nil {
+		if err := s.migrate(startupCtx); err != nil {
 			db.Close()
-			return nil, err
+			return nil, fmt.Errorf("migrate: %w", err)
 		}
-		fence, err := s.beginMigrationFence(startupCtx, anchor)
-		if err != nil {
-			db.Close()
-			return nil, err
-		}
-		migrationFence = &fence
-		if err := s.prepareMigrationTrustState(startupCtx, *migrationFence); err != nil {
-			db.Close()
-			return nil, err
-		}
+		return s, nil
 	}
-	if err := s.migrate(startupCtx); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
+	// Serving Ternal data unfenced is the failure the anchor exists to prevent,
+	// so the store stays closed until the pair is established here.
+	db.requireTrust()
+	// One startup state covers the foreground attempt and the background
+	// continuation: the reservation this process proposes belongs to the
+	// process, not to one attempt, so a foreground deadline or a lost CAS
+	// response cannot hand this node's own fence to the background as a
+	// stranger's operation it has no way to prove.
+	state := &trustStartup{}
+	// The fence has to be resolvable by this process before it can serve, but
+	// waiting on a peer here would hold the pod in its startup probe until that
+	// peer can commit.  A bounded attempt settles the common case; anything
+	// longer continues in the background while the pod stays alive, serves its
+	// data node, and reports unready.
+	settleCtx, cancelSettle := context.WithTimeout(startupCtx, trustStartupBudget)
+	err = s.settleTrustAnchor(settleCtx, anchor, state)
+	cancelSettle()
+	if err != nil {
+		// A voter that cannot yet prove the anchored pair is not ready to serve
+		// Ternal reads, but its data node is part of the quorum that has to
+		// resolve the obligation.  Keep it running unready instead of exiting,
+		// which would take away the very member the resolution needs.
+		s.settleInBackground(anchor, state, err)
+		return s, nil
 	}
-	if anchor != nil {
-		if err := s.completeMigrationFence(startupCtx, anchor, *migrationFence); err != nil {
-			db.Close()
-			return nil, err
-		}
-		if err := s.finishTrustStartup(startupCtx, anchor); err != nil {
-			db.Close()
-			return nil, err
-		}
-		db.enableTrust(anchor)
-	}
+	db.enableTrust(anchor)
 	return s, nil
 }
 
@@ -234,6 +287,12 @@ func OpenFromEnv(ctx context.Context) (*Store, error) {
 }
 
 func (s *Store) Close() error {
+	s.settleMu.Lock()
+	if s.settleCancel != nil {
+		s.settleCancel()
+		s.settleCancel = nil
+	}
+	s.settleMu.Unlock()
 	return s.db.Close()
 }
 
@@ -241,6 +300,9 @@ func (s *Store) Close() error {
 // than process liveness and fails when the embedded data node cannot reach the
 // consistency level required by API reads.
 func (s *Store) Ready(ctx context.Context) error {
+	if err := s.trustReady(); err != nil {
+		return err
+	}
 	row := s.db.QueryRowContext(ctx, `SELECT 1`)
 	var value int
 	if err := row.Scan(&value); err != nil {
@@ -252,49 +314,254 @@ func (s *Store) Ready(ctx context.Context) error {
 	return nil
 }
 
-// prepareTrustAnchor runs before migrations and normal writes.  The anchor is
-// pre-created by deployment; this process never creates or deletes it.
-func (s *Store) prepareTrustAnchor(ctx context.Context, anchor *trustAnchor) error {
+// trustStartupRetryDelay paces the join-and-follow loop.  A voter whose peer
+// holds the fence keeps its data node alive on this cadence instead of exiting
+// and destroying the quorum the peer needs.
+const trustStartupRetryDelay = 250 * time.Millisecond
+
+// trustStartupBudget bounds the foreground settlement attempt.  A fence that
+// is resolvable here settles well inside this; one that depends on a peer's
+// commit continues in the background so the pod can start, stay alive, and
+// report unready while its data node keeps the quorum reachable.
+// It is a variable so a test can exercise the deadline path without waiting
+// the budget out; the deadline only decides where settlement continues, never
+// what this process still owes.
+var trustStartupBudget = 30 * time.Second
+
+// trustStartup records what one Open already did, so a retry after contention
+// or after a partial attempt never repeats a completed obligation.
+type trustStartup struct {
+	// attempted is the reservation ID this Open proposed, minted once and
+	// reused by every retry.  A CAS whose response never arrived may still have
+	// been applied, so finding this ID in the anchor is proof the fence in it
+	// is this Open's own reservation.  Minting a second ID on a retry discards
+	// that proof while the first attempt is still in flight: the retry reads
+	// the unchanged predecessor, and the delayed attempt then lands as a
+	// reservation this process can no longer claim.
+	attempted string
+	// reserved is set only once the anchor is known to carry this Open's own
+	// reservation.  A definite CAS loser keeps it false so it can still follow
+	// the peer that won.
+	reserved  bool
+	pendingID string // the reservation this Open owns, empty before it reserves
+}
+
+// settleTrustAnchor drives one Open until the local database pair matches the
+// external anchor.  The anchor is pre-created by deployment; this process
+// never creates or deletes it.  Contention and an unresolved peer operation
+// are retried here instead of ending the process: this data node is part of
+// the quorum that has to resolve them.
+func (s *Store) settleTrustAnchor(ctx context.Context, anchor *trustAnchor, state *trustStartup) error {
+	for {
+		err := s.settleTrustAnchorOnce(ctx, anchor, state)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("settle trust anchor: %w (last attempt: %v)", ctx.Err(), err)
+		case <-time.After(trustStartupRetryDelay):
+		}
+	}
+}
+
+// settleTrustAnchorOnce runs one attempt.  An older local pair and an unknown
+// request outcome withhold Ternal readiness; only a reservation this Open took
+// creates the migration obligation, and it is never taken twice.
+func (s *Store) settleTrustAnchorOnce(ctx context.Context, anchor *trustAnchor, state *trustStartup) error {
 	record, rv, err := anchor.get(ctx)
 	if err != nil {
 		return err
 	}
 	if record.PendingEpoch != nil {
+		if state.attempted != "" && record.PendingID == state.attempted {
+			// Our own reservation: finish the obligation it created.  The ID
+			// this Open proposed proves ownership even when the CAS that
+			// published it lost its response.
+			state.reserved = true
+			state.pendingID = record.PendingID
+			return s.finishMigrationFence(ctx, anchor, record)
+		}
+		if s.db.verifyDBTrust(ctx, *record.PendingEpoch, record.PendingID) == nil {
+			// A peer's fence whose authorized write is already durable here.
+			// This node owes the migration that write carried, not a second
+			// reservation: taking one would advance the epoch the peer
+			// already advanced.
+			return s.convergeFence(ctx, anchor, record)
+		}
+		// A peer's operation whose outcome this node cannot prove yet.  The
+		// trust row is never replayed from here: resolving an unknown outcome
+		// by replaying only the trust update would fabricate the pair.
 		return s.recoverPendingTrust(ctx, anchor, record, rv)
+	}
+	if !state.reserved {
+		behind, err := s.migrationPending(ctx)
+		if err != nil {
+			return err
+		}
+		// Only a bootstrap fence is worth reserving.  The first finalization
+		// consumes Bootstrap permanently, so once any voter has established
+		// the pair, the others catch up by replication instead of advancing
+		// the epoch a peer already advanced.
+		if behind && record.Bootstrap {
+			reserved, err := s.beginMigrationFence(ctx, anchor, record, rv, state)
+			if err != nil {
+				return err
+			}
+			return s.finishMigrationFence(ctx, anchor, reserved)
+		}
+		if behind {
+			// The pair is established; this node is only behind on the schema
+			// that fence authorized, which replication delivers.
+			if err := s.catchUpMigration(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	return s.finishTrustStartup(ctx, anchor)
+}
+
+// finishMigrationFence drives a reserved fence to completion.  The write that
+// commits the tail uses the reservation's own request ID, so it stays the one
+// operation the anchor authorized, and it is safe to retry because the
+// migration is idempotent and a durable tail only needs the finalization.
+func (s *Store) finishMigrationFence(ctx context.Context, anchor *trustAnchor, pending trustAnchorRecord) error {
+	if pending.PendingEpoch == nil {
+		return fmt.Errorf("missing migration trust fence")
+	}
+	if s.db.verifyDBTrust(ctx, *pending.PendingEpoch, pending.PendingID) == nil {
+		return s.convergeFence(ctx, anchor, pending)
+	}
+	if err := s.prepareMigrationTrustState(ctx, pending); err != nil {
+		return err
+	}
+	if err := s.migrate(ctx); err != nil {
+		return err
+	}
+	return s.completeMigrationFence(ctx, anchor, pending)
+}
+
+// convergeFence closes a fence whose authorized trust tail is already durable
+// here.  The pending pair is unique to that one operation, so finding it in
+// the replicated database is evidence the operation committed; this node only
+// still owes the migration the fence was reserved for.  Anything short of
+// that leaves the fence and Ternal readiness untouched.
+func (s *Store) convergeFence(ctx context.Context, anchor *trustAnchor, pending trustAnchorRecord) error {
+	if err := s.catchUpMigration(ctx); err != nil {
+		return err
+	}
+	return s.finalizeTrustFence(ctx, anchor, pending)
+}
+
+// catchUpMigration finishes the migration a fence was reserved for on a node
+// that did not reserve it.  The reservation is already consumed or is being
+// consumed here, so this is catch-up work: it never advances the epoch and
+// never leaves a second fence behind.  The durable marker is the proof, so a
+// node that cannot migrate keeps withholding Ternal readiness instead of
+// serving reads against tables it has not built.
+func (s *Store) catchUpMigration(ctx context.Context) error {
+	behind, err := s.migrationPending(ctx)
+	if err != nil {
+		return err
+	}
+	if behind {
+		if err := s.migrate(ctx); err != nil {
+			return err
+		}
+	}
+	return s.requireMigrated(ctx)
+}
+
+// migrationPending reports whether this database still owes the schema
+// migration this binary carries.  The durable marker decides, so a peer's
+// completed fence and later epoch bumps are catch-up work rather than a new
+// obligation to advance the epoch.
+func (s *Store) migrationPending(ctx context.Context) (bool, error) {
+	count, version, err := s.schemaMarker(ctx)
+	if err != nil {
+		return false, err
+	}
+	return count != 1 || version != schemaVersion, nil
+}
+
+// schemaMarker reads the durable migration marker.  A database without the
+// marker table reports (0, 0), which counts as unmigrated.
+func (s *Store) schemaMarker(ctx context.Context) (int, int, error) {
+	exists, err := s.tableExists(ctx, "ternal_schema")
+	if err != nil || !exists {
+		return 0, 0, err
+	}
+	rows, err := s.db.queryRaw(ctx, `SELECT COUNT(*), COALESCE(MAX(version), 0) FROM ternal_schema`)
+	if err != nil {
+		return 0, 0, err
+	}
+	if !rows.Next() {
+		return 0, 0, fmt.Errorf("read schema version")
+	}
+	var count, version int
+	if err := rows.Scan(&count, &version); err != nil {
+		return 0, 0, err
+	}
+	return count, version, nil
+}
+
+// requireMigrated proves the migration this binary carries is durable here,
+// so a fence can only be finalized once its migration is really committed.
+func (s *Store) requireMigrated(ctx context.Context) error {
+	count, version, err := s.schemaMarker(ctx)
+	if err != nil {
+		return err
+	}
+	if count != 1 || version != schemaVersion {
+		return fmt.Errorf("unsupported Ternal schema version")
 	}
 	return nil
 }
 
 func (s *Store) finishTrustStartup(ctx context.Context, anchor *trustAnchor) error {
-	record, rv, err := anchor.get(ctx)
+	record, _, err := anchor.get(ctx)
 	if err != nil {
 		return err
 	}
 	if record.PendingEpoch != nil {
-		if err := s.recoverPendingTrust(ctx, anchor, record, rv); err != nil {
-			return err
-		}
-		record, rv, err = anchor.get(ctx)
-		if err != nil {
-			return err
-		}
+		return fmt.Errorf("trust anchor has unresolved pending write")
 	}
 	return s.db.verifyDBTrust(ctx, record.Epoch, record.Token)
 }
 
-func (s *Store) trustStateExists(ctx context.Context) (bool, error) {
-	rows, err := s.db.queryRaw(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='trust_state'`)
+func (s *Store) tableExists(ctx context.Context, name string) (bool, error) {
+	count, err := s.countTables(ctx, name)
 	if err != nil {
 		return false, err
 	}
+	return count == 1, nil
+}
+
+// countTables counts how many of the named tables exist.  It reads through the
+// raw path on purpose: schema introspection is not Ternal data and has to work
+// while the anchored pair is still unsettled, which is when migrations run.
+func (s *Store) countTables(ctx context.Context, names ...string) (int, error) {
+	args := make([]any, len(names))
+	for i, name := range names {
+		args[i] = name
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(names)), ",")
+	rows, err := s.db.queryRaw(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
 	if !rows.Next() {
-		return false, fmt.Errorf("inspect trust state")
+		return 0, fmt.Errorf("inspect tables")
 	}
 	var count int
 	if err := rows.Scan(&count); err != nil {
-		return false, err
+		return 0, err
 	}
-	return count == 1, nil
+	return count, nil
+}
+
+func (s *Store) trustStateExists(ctx context.Context) (bool, error) {
+	return s.tableExists(ctx, "trust_state")
 }
 
 func (s *Store) prepareMigrationTrustState(ctx context.Context, pending trustAnchorRecord) error {
@@ -318,13 +585,17 @@ func (s *Store) prepareMigrationTrustState(ctx context.Context, pending trustAnc
 	return s.db.verifyDBTrust(ctx, pending.Epoch, pending.Token)
 }
 
-func (s *Store) beginMigrationFence(ctx context.Context, anchor *trustAnchor) (trustAnchorRecord, error) {
-	record, rv, err := anchor.get(ctx)
-	if err != nil {
-		return trustAnchorRecord{}, err
-	}
+// beginMigrationFence reserves the one bootstrap fence.  It reserves against
+// the exact anchor record the caller decided on, so the bootstrap it observed
+// is the bootstrap it reserves under: a peer that consumes Bootstrap in
+// between makes this compare-and-swap conflict instead of letting this node
+// reserve a second fence on an anchor that is already established.
+func (s *Store) beginMigrationFence(ctx context.Context, anchor *trustAnchor, record trustAnchorRecord, rv string, state *trustStartup) (trustAnchorRecord, error) {
 	if record.PendingEpoch != nil {
 		return trustAnchorRecord{}, fmt.Errorf("trust anchor has unresolved pending write")
+	}
+	if !record.Bootstrap {
+		return trustAnchorRecord{}, fmt.Errorf("trust anchor bootstrap is already consumed")
 	}
 	exists, err := s.trustStateExists(ctx)
 	if err != nil {
@@ -334,13 +605,20 @@ func (s *Store) beginMigrationFence(ctx context.Context, anchor *trustAnchor) (t
 		if err := s.db.verifyDBTrust(ctx, record.Epoch, record.Token); err != nil {
 			return trustAnchorRecord{}, err
 		}
-	} else if !record.Bootstrap {
-		return trustAnchorRecord{}, fmt.Errorf("database trust state is missing")
 	}
 	next := record.Epoch + 1
 	pending := record
 	pending.PendingEpoch = &next
-	pending.PendingID = uuid.NewString()
+	// One reservation identity per Open, minted before the first
+	// compare-and-swap is issued and reused by every retry.  A CAS whose
+	// response is lost may still be applied after the next read returns the
+	// unchanged predecessor, and this ID is what proves the fence it published
+	// is this process's own.  A peer that wins the race proposes an ID of its
+	// own, so a stable ID never claims a peer's reservation.
+	if state.attempted == "" {
+		state.attempted = uuid.NewString()
+	}
+	pending.PendingID = state.attempted
 	one := int64(1)
 	if err := rhiza.ValidateExecuteRequest(rhiza.ExecuteRequest{RequestID: pending.PendingID, Statements: []rhiza.SQLStatement{{SQL: `UPDATE trust_state SET epoch=?, token=? WHERE id=1 AND epoch=? AND token=?`, Args: []any{next, pending.PendingID, record.Epoch, record.Token}, ExpectedRowsAffected: &one}}}); err != nil {
 		return trustAnchorRecord{}, err
@@ -348,6 +626,8 @@ func (s *Store) beginMigrationFence(ctx context.Context, anchor *trustAnchor) (t
 	if _, err := anchor.cas(ctx, rv, pending); err != nil {
 		return trustAnchorRecord{}, err
 	}
+	state.reserved = true
+	state.pendingID = pending.PendingID
 	return pending, nil
 }
 
@@ -363,7 +643,14 @@ func (s *Store) completeMigrationFence(ctx context.Context, anchor *trustAnchor,
 	if _, err := s.db.execRaw(ctx, request); err != nil {
 		return fmt.Errorf("commit migration trust tail: %w", err)
 	}
-	// Re-read the anchor so a competing process cannot finalize an unrelated state.
+	return s.finalizeTrustFence(ctx, anchor, pending)
+}
+
+// finalizeTrustFence closes a reserved fence once both halves of the pair are
+// durable: the trust tail this process wrote and the migration the fence was
+// reserved for.  The anchor is re-read first so a competing process cannot
+// make this one finalize an unrelated state.
+func (s *Store) finalizeTrustFence(ctx context.Context, anchor *trustAnchor, pending trustAnchorRecord) error {
 	current, rv, err := anchor.get(ctx)
 	if err != nil {
 		return err
@@ -372,6 +659,9 @@ func (s *Store) completeMigrationFence(ctx context.Context, anchor *trustAnchor,
 		return fmt.Errorf("migration trust fence changed")
 	}
 	if err := s.db.verifyDBTrust(ctx, *pending.PendingEpoch, pending.PendingID); err != nil {
+		return err
+	}
+	if err := s.requireMigrated(ctx); err != nil {
 		return err
 	}
 	final := current
@@ -410,15 +700,14 @@ func (s *Store) recoverPendingTrust(ctx context.Context, anchor *trustAnchor, pe
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	var schemaTables, legacyTables int
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'ternal_schema'`,
-	).Scan(&schemaTables); err != nil {
+	// The schema inspection reads stay on the raw path: a migration runs while
+	// the anchored pair is still unsettled, so the fenced read path is closed.
+	schemaTables, err := s.countTables(ctx, "ternal_schema")
+	if err != nil {
 		return fmt.Errorf("inspect schema marker: %w", err)
 	}
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('hosts', 'policies', 'access_grants', 'devices', 'relay_access_grants')`,
-	).Scan(&legacyTables); err != nil {
+	legacyTables, err := s.countTables(ctx, "hosts", "policies", "access_grants", "devices", "relay_access_grants")
+	if err != nil {
 		return fmt.Errorf("inspect legacy schema: %w", err)
 	}
 	if schemaTables == 0 && legacyTables != 0 {
@@ -562,14 +851,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.db.Migrate(ctx, []rhiza.Migration{{Version: schemaVersion, Name: "ternal-v1", Statements: statements}}); err != nil {
 		return fmt.Errorf("execute migration: %w", err)
 	}
-	var versionCount, version int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(version), 0) FROM ternal_schema`).Scan(&versionCount, &version); err != nil {
-		return fmt.Errorf("read schema version: %w", err)
-	}
-	if versionCount != 1 || version != schemaVersion {
-		return fmt.Errorf("unsupported Ternal schema version")
-	}
-	return nil
+	return s.requireMigrated(ctx)
 }
 
 func (s *Store) RevokeSession(ctx context.Context, cookie string, expiresAt int64) error {

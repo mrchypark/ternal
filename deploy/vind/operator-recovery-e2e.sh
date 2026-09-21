@@ -374,12 +374,12 @@ spec:
 EOF
 
 wait_phase "$release-observe" Observed 600
-peers=$(kubectl -n "$namespace" get "rhizarecovery/$release-observe" -o jsonpath='{.status.peers[*].nodeID}' | wc -w | tr -d ' ')
+peers=$(kubectl -n "$namespace" get "rhizarecovery/$release-observe" -o jsonpath='{.status.peers[*].node_id}' | wc -w | tr -d ' ')
 if [ "$peers" != 3 ]; then
 	echo "observation reported $peers peers, want 3" >&2
 	exit 1
 fi
-ready=$(kubectl -n "$namespace" get "rhizarecovery/$release-observe" -o jsonpath='{.status.peers[?(@.ready==true)].nodeID}' | wc -w | tr -d ' ')
+ready=$(kubectl -n "$namespace" get "rhizarecovery/$release-observe" -o jsonpath='{.status.peers[?(@.ready==true)].node_id}' | wc -w | tr -d ' ')
 if [ "$ready" != 3 ]; then
 	echo "observation reported $ready ready peers, want 3" >&2
 	exit 1
@@ -426,14 +426,36 @@ if [ -z "$target" ] || [ "$recovered_tip" = 0 ]; then
 fi
 
 # The transition is only real if the running generation now reports the target.
-cluster_now=$(kubectl -n "$namespace" get "rhizarecovery/$release-recovery" -o jsonpath='{.status.peers[0].clusterID}')
+cluster_now=$(kubectl -n "$namespace" get "rhizarecovery/$release-recovery" -o jsonpath='{.status.peers[0].cluster_id}')
 if [ "$cluster_now" != "$target" ]; then
 	echo "recovered peers report cluster $cluster_now, want $target" >&2
 	exit 1
 fi
 
+# The recovered generation runs under the target cluster ID, but the trust
+# anchor still binds the source one, so Ternal must refuse to serve it.  That
+# fail-closed start is the contract until the anchor transition exists (#104),
+# and this check asserts it rather than waiting for a readiness that must not
+# arrive: a recovered voter that became ready would be serving unfenced data.
 for ordinal in 0 1 2; do
-	wait_pod "$release-$ordinal"
+	pod="$release-$ordinal"
+	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+		phase=$(kubectl -n "$namespace" get "pod/$pod" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+		[ "$phase" = Running ] && break
+		sleep 2
+	done
+	if [ "$(kubectl -n "$namespace" get "pod/$pod" -o jsonpath='{.status.phase}')" != Running ]; then
+		echo "recovered $pod is not running" >&2
+		exit 1
+	fi
+	if [ "$(kubectl -n "$namespace" get "pod/$pod" -o jsonpath='{.status.containerStatuses[0].ready}')" = true ]; then
+		echo "recovered $pod reports ready while the anchor still binds $cluster_id" >&2
+		exit 1
+	fi
+	if ! kubectl -n "$namespace" logs "$pod" | grep -q 'trust anchor unsettled, Ternal readiness withheld'; then
+		echo "recovered $pod did not record the withheld readiness" >&2
+		exit 1
+	fi
 done
-echo "stage 3: generation recovery completed from $cluster_id to $target at tip $recovered_tip"
+echo "stage 3: generation recovery completed from $cluster_id to $target at tip $recovered_tip; the recovered generation runs fail-closed on the source anchor"
 echo "operator recovery e2e passed"

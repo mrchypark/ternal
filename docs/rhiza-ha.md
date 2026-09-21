@@ -89,7 +89,7 @@ GCS Workload Identity를 사용하면 시크릿 키를 생략할 수 있다.
 
 `deploy/vind/operator-recovery-e2e.sh`가 실제 vCluster에서 3-voter HA, operator 관찰, 수동 세대 복구를 순서대로 확인한다. 로컬 이미지와 pinned 업스트림 소스로 이미지를 만들어 클러스터에 넣고, MinIO를 공유 오브젝트 저장소로 사용한다.
 
-현재 이 스크립트는 1단계에서 멈춘다. 문서화된 방식으로 앵커를 준비한 greenfield HA 릴리스가 trust-anchor migration fence에서 교착된다(#102). 관찰·복구 단계는 그 문제가 해결된 뒤에 자격 검증된다.
+세 단계 모두 통과한다. greenfield HA 릴리스가 quorum에 도달하고(#102), operator가 준비된 3 peer를 Observed로 보고하며, 수동 세대 복구가 Complete에 도달한다. 복구 단계는 대상 세대가 소스 앵커를 그대로 둔 채 시작하므로 대상 파드가 ready가 되는 대신 fail-closed로 남는 것을 확인한다. 앵커 전환이 생기기 전까지 그 동작이 계약이고, ready 검사로 바꾸는 일은 #104에 있다.
 
 ## 참고
 
