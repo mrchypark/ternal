@@ -274,7 +274,14 @@ func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, or
 	}
 	response, err := d.db.Execute(fencedCtx, request)
 	if err == nil && response.Status == rhiza.MutationCommitted {
-		final := trustAnchorRecord{Format: current.Format, ClusterID: current.ClusterID, StorageID: current.StorageID, Epoch: nextEpoch, Token: nextToken}
+		// The finalization moves the application pair and nothing else: the
+		// binding and every recovery field advance in the same compare-and-swap
+		// that publishes the new pair.
+		final := current
+		final.Epoch = nextEpoch
+		final.Token = nextToken
+		final.PendingEpoch = nil
+		final.PendingID = ""
 		if _, casErr := anchor.cas(fencedCtx, pendingRV, final); casErr != nil {
 			return rhiza.ExecuteResponse{}, fmt.Errorf("finalize trust anchor after committed write: %w", casErr)
 		}
