@@ -70,6 +70,29 @@ operator:
     kubernetes.io/arch: amd64
   resources: {}
 
+# External recovery anchor service: the same image running its own
+# executable, in its own Deployment, so it stays up while the recovered
+# StatefulSet is unready or scaled to zero.  A generation recovery needs it;
+# without it the recovered generation starts fail-closed.  Its anchor ID is
+# data.trustAnchorConfigMap, which is also the ConfigMap the external
+# trustguard pins the anchor container to.
+anchor:
+  enabled: false
+  # Pre-created Secret with the server certificate and key (tls.crt, tls.key)
+  # the operator verifies as its recovery-anchor CA.
+  tlsSecretName: ""
+  # Pre-created Secret holding the bearer token the operator presents.
+  tokenSecretName: ""
+  tokenSecretKey: ""
+  # Must match the service account the trustguard renderer was given.
+  serviceAccountName: ""
+  port: 9191
+  # Bounded scratch space for the recovered-evidence helper: the runtime image
+  # is scratch and has no writable /tmp.
+  tmpSizeLimit: 512Mi
+  nodeSelector: {}
+  resources: {}
+
 gateway:
   enabled: false
   scheme: https

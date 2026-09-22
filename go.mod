@@ -6,8 +6,10 @@ require (
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-chi/cors v1.2.2
+	github.com/go-kit/log v0.2.1
 	github.com/google/uuid v1.6.0
 	github.com/mrchypark/rhiza v0.15.0
+	github.com/thanos-io/objstore v0.0.0-20260817070452-e42d91c337ee
 	golang.org/x/crypto v0.56.0
 	golang.org/x/oauth2 v0.36.0
 	maragu.dev/gomponents v1.3.0
@@ -54,7 +56,6 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
-	github.com/go-kit/log v0.2.1 // indirect
 	github.com/go-logfmt/logfmt v0.5.1 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -88,7 +89,6 @@ require (
 	github.com/quic-go/quic-go v0.61.0 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.8.1 // indirect
-	github.com/thanos-io/objstore v0.0.0-20260817070452-e42d91c337ee // indirect
 	github.com/tinylib/msgp v1.3.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.44.0 // indirect

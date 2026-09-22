@@ -216,6 +216,7 @@ with the exact effective object-store prefix (including the chart's default
 ```sh
 python3 ternal-trustguard.py \
   --namespace ternal --service-account ternal-data \
+  --anchor-service-account ternal-anchor \
   --anchor-configmap ternal-trust-floor --cluster-id ternal-production-a1 \
   --provider gcs --bucket YOUR_BUCKET --prefix clusters/ternal-production-a1 \
   --approved-api-image ghcr.io/mrchypark/ternal@sha256:VERIFIED_DIGEST \
@@ -226,24 +227,30 @@ kubectl apply -f trustguard.json
 
 The helper prints resources only; it neither creates a bucket nor applies them.
 It requires Kubernetes ValidatingAdmissionPolicy v1 support. Create the named
-service account separately and grant its object-store access. Review the
+API service account separately and grant its object-store access. The recovery
+service account must be distinct; the anchor chart creates it when enabled.
+Grant it the same required object-store read access independently (including
+Workload Identity configuration for GCS). Review the
 generated namespace label and cluster-scoped policy names before applying.
 Each initial render generates a fresh bootstrap token: retain the original
 manifest, and never reapply its initial anchor over an advanced epoch. For a
 release upgrade, render with both the current and candidate verified digests
-by repeating `--approved-api-image`. Apply **only the two API admission
-policies**, leaving the anchor ConfigMap and its epoch unchanged. The guard
+by repeating `--approved-api-image`. Keep the original source cluster ID,
+namespace and service-account names when rendering, even after a recovery
+has advanced the live binding. Apply **all rendered resources except the
+ConfigMap**, leaving its UID, epoch and evidence untouched. This upgrades the
+anchor transition policy and installs the recovery service-account Role and
+RoleBinding before the new application attempts format migration. The guard
 embeds these values directly in its CEL expressions; it does not depend on a
 ConfigMap parameter cache.
 
-Extract the two API policies from that rendered manifest with the standard
-Python JSON library:
+Extract the guard and RBAC update with the standard Python JSON library:
 
 ```sh
-python3 -c 'import json,sys; d=json.load(sys.stdin); d["items"]=[x for x in d["items"] if x["kind"]=="ValidatingAdmissionPolicy" and x["metadata"]["name"].startswith("ternal-trustguard-api-")]; print(json.dumps(d))' \
-  < trustguard.json > api-policies.json
-kubectl apply --dry-run=server -f api-policies.json
-kubectl apply -f api-policies.json
+python3 -c 'import json,sys; d=json.load(sys.stdin); d["items"]=[x for x in d["items"] if x["kind"]!="ConfigMap"]; print(json.dumps(d))' \
+  < trustguard.json > guard-update.json
+kubectl apply --dry-run=server -f guard-update.json
+kubectl apply -f guard-update.json
 ```
 
 Guard resource names embed a readable cluster prefix plus a hash of the full
@@ -251,10 +258,18 @@ cluster ID. Manifests rendered before this naming change use the raw ID
 suffix and no longer match: delete those guard resources before applying a
 re-rendered manifest.
 
+For recovery, provision the anchor TLS and bearer-token Secrets and configure
+`anchor.enabled` and its distinct service account as described in
+[rhiza-ha.md](rhiza-ha.md). Verify the anchor Deployment and RBAC are present.
+Do not delete, recreate or bootstrap-reset the existing ConfigMap: the first
+application CAS performs its eight-to-twelve-key migration with all eight
+existing values preserved. A pending application write must settle before
+recovery activation.
+
 Verify a server dry-run accepts the candidate StatefulSet, then upgrade Helm
 with `image.digest` set to that same verified digest. It renders
 `repository@digest` and takes precedence over `image.tag`. Once the candidate
-is Ready and its running image digest matches, repeat the policy-only update
+is Ready and its running image digest matches, repeat the guard/RBAC update
 with just the candidate digest and verify the former image is rejected. Keep
 the existing and candidate digests admitted while a rollout is incomplete;
 never admit an image that does not enforce the external trust floor.

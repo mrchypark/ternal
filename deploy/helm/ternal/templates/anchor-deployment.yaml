@@ -1,0 +1,219 @@
+{{/*
+The external recovery anchor runs the same image as the API but its own
+executable, its own ServiceAccount, and its own Deployment. It must stay up
+while the recovered StatefulSet is unready or scaled to zero, so it never
+mounts Ternal's data directory, never opens the replicated store, and never
+talks to the voters' Service. Everything it needs is the trust-anchor
+ConfigMap, the shared object store, and its own TLS and bearer credentials.
+*/}}
+{{- $data := default dict .Values.data -}}
+{{- $dataMode := default "standalone" $data.mode -}}
+{{- $haMode := eq $dataMode "ha" -}}
+{{- $anchor := default dict .Values.anchor -}}
+{{- $anchorEnabled := and $haMode ($anchor.enabled | default false) -}}
+{{- if $anchorEnabled }}
+{{- $objectStore := default dict $data.objectStore -}}
+{{- $clusterID := required "data.clusterID is required when the anchor is enabled" $data.clusterID -}}
+{{- $objectStoreProvider := required "data.objectStore.provider is required when the anchor is enabled" $objectStore.provider -}}
+{{- $objectStoreBucket := required "data.objectStore.bucket is required when the anchor is enabled" $objectStore.bucket -}}
+{{- $configMap := required "data.trustAnchorConfigMap is required when the anchor is enabled" $data.trustAnchorConfigMap -}}
+{{- $tlsSecret := required "anchor.tlsSecretName is required when the anchor is enabled" $anchor.tlsSecretName -}}
+{{- $tokenSecret := required "anchor.tokenSecretName is required when the anchor is enabled" $anchor.tokenSecretName -}}
+{{- $tokenKey := required "anchor.tokenSecretKey is required when the anchor is enabled" $anchor.tokenSecretKey -}}
+{{- $serviceAccount := default (printf "%s-anchor" .Release.Name) $anchor.serviceAccountName -}}
+{{- if or (eq $serviceAccount .Values.serviceAccountName) (eq $serviceAccount (printf "%s-operator" .Release.Name)) -}}
+{{- fail "anchor.serviceAccountName must differ from API and operator service accounts" -}}
+{{- end -}}
+{{- $port := int (default 9191 $anchor.port) -}}
+{{- $secretName := .Values.secrets.existingSecret | default .Release.Name -}}
+{{- $imageTag := default "" .Values.image.tag -}}
+{{- $imageDigest := default "" .Values.image.digest -}}
+{{- if $imageDigest -}}
+{{- if not (regexMatch "^sha256:[a-f0-9]{64}$" $imageDigest) -}}
+{{- fail "image.digest must be a sha256 digest" }}
+{{- end -}}
+{{- else -}}
+{{- $imageTag = required "image.tag is required" $imageTag -}}
+{{- end -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $serviceAccount }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-anchor
+    app.kubernetes.io/instance: {{ .Release.Name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-anchor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-anchor
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}-anchor
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}-anchor
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ $serviceAccount }}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $anchor.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ternal-anchor
+          # The external trustguard recognises the anchor role by this
+          # executable and this pinned configuration, not by the image.
+          command: ["/usr/local/bin/ternal-anchor"]
+          image: "{{ .Values.image.repository }}{{ if $imageDigest }}@{{ $imageDigest }}{{ else }}:{{ $imageTag }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          ports:
+            - name: anchor
+              containerPort: {{ $port }}
+          env:
+            - name: TERNAL_ANCHOR_BIND
+              value: {{ printf "0.0.0.0:%d" $port | quote }}
+            - name: TERNAL_RECOVERY_ANCHOR_ID
+              # The anchor ID is the trust-anchor ConfigMap name: the external
+              # trustguard pins the anchor container to that ConfigMap, so
+              # deriving it here is what keeps the two from drifting apart.
+              value: {{ $configMap | quote }}
+            - name: TERNAL_TRUST_ANCHOR_CONFIGMAP
+              value: {{ $configMap | quote }}
+            - name: TERNAL_TRUST_ANCHOR_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: TERNAL_ANCHOR_TLS_CERT_FILE
+              value: /etc/ternal-anchor/tls/tls.crt
+            - name: TERNAL_ANCHOR_TLS_KEY_FILE
+              value: /etc/ternal-anchor/tls/tls.key
+            - name: TERNAL_ANCHOR_TOKEN_FILE
+              value: /etc/ternal-anchor/token/{{ $tokenKey }}
+            # The scratch image has no writable /tmp, and the recovered-evidence
+            # helper materialises the archive in a temporary directory.
+            - name: TMPDIR
+              value: /tmp
+            - name: TERNAL_OBJECT_STORE_PROVIDER
+              value: {{ $objectStoreProvider | quote }}
+            - name: TERNAL_OBJECT_STORE_ENDPOINT
+              value: {{ default "" $objectStore.endpoint | quote }}
+            - name: TERNAL_OBJECT_STORE_BUCKET
+              value: {{ $objectStoreBucket | quote }}
+            - name: TERNAL_OBJECT_STORE_PREFIX
+              value: {{ default (printf "clusters/%s" $clusterID) $objectStore.prefix | quote }}
+            - name: TERNAL_OBJECT_STORE_REGION
+              value: {{ default "" $objectStore.region | quote }}
+            - name: TERNAL_OBJECT_STORE_INSECURE
+              value: {{ ternary "true" "false" ($objectStore.insecure | default false) | quote }}
+            - name: TERNAL_OBJECT_STORE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: TERNAL_OBJECT_STORE_ACCESS_KEY
+                  optional: true
+            - name: TERNAL_OBJECT_STORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: TERNAL_OBJECT_STORE_SECRET_KEY
+                  optional: true
+            - name: TERNAL_OBJECT_STORE_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: TERNAL_OBJECT_STORE_SESSION_TOKEN
+                  optional: true
+          resources:
+            {{- toYaml (default dict $anchor.resources) | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: tls
+              mountPath: /etc/ternal-anchor/tls
+              readOnly: true
+            - name: token
+              mountPath: /etc/ternal-anchor/token
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ default "512Mi" $anchor.tmpSizeLimit }}
+        - name: tls
+          secret:
+            secretName: {{ $tlsSecret }}
+        - name: token
+          secret:
+            secretName: {{ $tokenSecret }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-anchor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-anchor
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}-anchor
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: https
+      port: {{ $port }}
+      targetPort: anchor
+---
+{{/*
+The anchor pods carry their own name label, so the Ternal recovery NetworkPolicy
+does not select them.  Under a default-deny namespace the operator could not
+reach the anchor at all, which would fail every recovery; this grants exactly
+that one direction.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-anchor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-anchor
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}-anchor
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rhiza-operator
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      ports:
+        - port: {{ $port }}
+          protocol: TCP
+{{- end }}

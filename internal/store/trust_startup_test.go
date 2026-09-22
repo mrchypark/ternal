@@ -61,6 +61,14 @@ func (c *countingAnchor) pendingCount() int {
 	return c.reservations
 }
 
+// snapshot is the race-free view a concurrent check needs: the anchor service
+// answers requests on its own goroutines while the test reads the record.
+func (c *countingAnchor) snapshot() (trustAnchorRecord, int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.record, c.rv
+}
+
 func (c *countingAnchor) setBootstrap(bootstrap bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

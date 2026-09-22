@@ -70,13 +70,34 @@ def metadata(name, labels=None, namespace=None):
     return value
 
 
+ANCHOR_CONTAINER = "ternal-anchor"
+ANCHOR_EXECUTABLE = "/usr/local/bin/ternal-anchor"
+ANCHOR_ID_ENV = "TERNAL_RECOVERY_ANCHOR_ID"
+FLAT_FIELDS = ("format", "clusterID", "storageID", "epoch", "token", "pendingEpoch", "pendingID", "bootstrap")
+# The application half of the flat projection: the frozen pair and its pending
+# lifecycle.  A recovery commit preserves these and moves only the binding.
+APPLICATION_FIELDS = ("format", "epoch", "token", "pendingEpoch", "pendingID", "bootstrap")
+GUARD_FIELDS = ("recoveryGeneration", "recoveryEvidence", "recoveryTransition", "recoveryReceipt")
+RECOVERY_NULL = "null"
+
+
+def env_pinned(container_path, name, value):
+    return ("{c}.env.filter(e, e.name == '{n}').size() == 1 && "
+            "{c}.env.exists(e, e.name == '{n}' && e.value == '{v}')").format(c=container_path, n=name, v=value)
+
+
 def env_ok(container_path, anchor_name, namespace):
-    return (
-        "{c}.env.filter(e, e.name == 'TERNAL_TRUST_ANCHOR_CONFIGMAP').size() == 1 && "
-        "{c}.env.exists(e, e.name == 'TERNAL_TRUST_ANCHOR_CONFIGMAP' && e.value == '" + anchor_name + "') && "
-        "{c}.env.filter(e, e.name == 'TERNAL_TRUST_ANCHOR_NAMESPACE').size() == 1 && "
-        "{c}.env.exists(e, e.name == 'TERNAL_TRUST_ANCHOR_NAMESPACE' && e.value == '" + namespace + "')"
-    ).format(c=container_path)
+    return (env_pinned(container_path, "TERNAL_TRUST_ANCHOR_CONFIGMAP", anchor_name) + " && " +
+            env_pinned(container_path, "TERNAL_TRUST_ANCHOR_NAMESPACE", namespace))
+
+
+def anchor_container_expr(container_path, anchor_name, namespace, anchor_id):
+    # The anchor service runs the same official image as the API, so its role has
+    # to be spelled out by name, executable, and pinned configuration rather than
+    # exempted by image or service account alone.
+    return ("({c}.name == '{role}' && {c}.command.size() == 1 && {c}.command[0] == '{exe}' && {ident} && {cfg})").format(
+        c=container_path, role=ANCHOR_CONTAINER, exe=ANCHOR_EXECUTABLE,
+        ident=env_pinned(container_path, ANCHOR_ID_ENV, anchor_id), cfg=env_ok(container_path, anchor_name, namespace))
 
 
 def api_container_expr(container_path="c"):
@@ -87,10 +108,32 @@ def api_container_expr(container_path="c"):
             "{c}.image.startsWith('" + OFFICIAL_IMAGE + "@'))").format(c=container_path)
 
 
-def api_policy(name, binding_name, namespace_selector, namespace, service_account_name, anchor_name, image_list, target):
+def kept(keys):
+    return " && ".join("oldObject.data['" + key + "'] == object.data['" + key + "']" for key in keys)
+
+
+def canonical_uint(prefix, key):
+    # Canonical decimal plus overflow rejection: uint() raises on a value that
+    # does not fit, and failurePolicy Fail turns that into a denial.
+    value = prefix + "['" + key + "']"
+    return value + ".matches('^[0-9]+$') && string(uint(" + value + ")) == " + value
+
+
+def projection_ok(prefix, key):
+    value = prefix + "['" + key + "']"
+    return "(" + value + " == '" + RECOVERY_NULL + "' || (" + value + ".startsWith('{') && " + value + ".endsWith('}')))"
+
+
+def api_policy(name, binding_name, namespace_selector, namespace, service_account_name, anchor_service_account, anchor_name, image_list, target):
     containers = "object.spec.containers" if target == "pod" else "object.spec.template.spec.containers"
     service = "object.spec.serviceAccountName" if target == "pod" else "object.spec.template.spec.serviceAccountName"
-    resources = ["pods"] if target == "pod" else ["deployments", "statefulsets", "replicasets"]
+    resources = ["pods", "pods/ephemeralcontainers"] if target == "pod" else ["deployments", "statefulsets", "replicasets"]
+    # The anchor service runs the same official image as the API, so its role is
+    # subtracted by name, executable, and pinned configuration instead of being
+    # exempted by image or by service account alone.  The anchor ID is pinned to
+    # the ConfigMap name this renderer already protects.
+    spec = "object.spec" if target == "pod" else "object.spec.template.spec"
+    role = anchor_container_expr("c", anchor_name, namespace, anchor_name)
     policy = {
         "apiVersion": "admissionregistration.k8s.io/v1",
         "kind": "ValidatingAdmissionPolicy",
@@ -100,12 +143,33 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
             "matchConstraints": {"resourceRules": [{"apiGroups": ["" if target == "pod" else "apps"],
                 "apiVersions": ["v1"], "operations": ["CREATE", "UPDATE"], "resources": resources,
                 "scope": "Namespaced"}]},
-            "variables": [{"name": "apiContainers", "expression": containers + ".filter(c, " + api_container_expr() + ")"}],
+            "variables": [
+                {"name": "anchorContainers", "expression": containers + ".filter(c, " + role + ")"},
+                {"name": "apiContainers", "expression": containers + ".filter(c, " + api_container_expr() + " && !(" + role + "))"},
+            ],
             "validations": [
+                {"expression": service + " != '" + anchor_service_account + "' || (variables.anchorContainers.size() == 1 && "
+                 + containers + ".size() == 1 && (!has(" + spec + ".initContainers) || " + spec + ".initContainers.size() == 0) && "
+                 + "(!has(" + spec + ".ephemeralContainers) || " + spec + ".ephemeralContainers.size() == 0))",
+                 "message": "the recovery identity is reserved for a single approved anchor container"},
+                {"expression": "variables.anchorContainers.all(c, (!has(c.envFrom) || c.envFrom.size() == 0) && "
+                 + "c.env.all(e, !e.name.startsWith('KUBERNETES_')))",
+                 "message": "the recovery authority must use the cluster-provided Kubernetes endpoint"},
+                {"expression": "variables.anchorContainers.all(c, " + " && ".join(
+                    "(!has(c." + probe + ") || !has(c." + probe + ".exec))"
+                    for probe in ("livenessProbe", "readinessProbe", "startupProbe")) + ")",
+                 "message": "the recovery container must not execute probe commands"},
+                {"expression": "variables.anchorContainers.all(c, !has(c.lifecycle) && (!has(c.volumeMounts) || c.volumeMounts.all(m, "
+                 + "m.mountPath in ['/tmp', '/etc/ternal-anchor/tls', '/etc/ternal-anchor/token', '/var/run/secrets/kubernetes.io/serviceaccount'])))",
+                 "message": "the recovery executable must not be replaced or accompanied by lifecycle commands"},
                 {"expression": "variables.apiContainers.size() == 0 || " + service + " == '" + service_account_name + "'",
                  "message": "Ternal API workloads must use the protected service account"},
+                {"expression": "variables.anchorContainers.size() == 0 || " + service + " == '" + anchor_service_account + "'",
+                 "message": "the recovery anchor workload must use its own protected service account"},
                 {"expression": "variables.apiContainers.all(c, '" + image_list + "'.contains(',' + c.image + ','))",
                  "message": "Ternal API image is not approved by the external trustguard"},
+                {"expression": "variables.anchorContainers.all(c, '" + image_list + "'.contains(',' + c.image + ','))",
+                 "message": "recovery anchor image is not approved by the external trustguard"},
                 {"expression": "variables.apiContainers.all(c, " + env_ok("c", anchor_name, namespace) + ")",
                  "message": "Ternal API must directly bind the external trust-anchor ConfigMap and namespace"},
             ],
@@ -124,25 +188,69 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
     return [policy, binding]
 
 
-def anchor_policy(name, binding_name, namespace_selector, anchor_name, cluster_id, object_storage_id, protected_label):
+def anchor_policy(name, binding_name, namespace_selector, anchor_name, cluster_id, object_storage_id, protected_label, namespace, anchor_service_account):
     uuid_re = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-    fields = "['format','clusterID','storageID','epoch','token','pendingEpoch','pendingID','bootstrap']"
-    shape = (fields + ".all(k, k in object.data) && object.data.size() == 8 && "
-             "object.data['format'] == '1' && object.data['clusterID'] == '" + cluster_id + "' && "
-             "object.data['storageID'] == '" + object_storage_id + "' && "
-             "object.data['epoch'].matches('^[0-9]+$') && object.data['token'].matches('" + uuid_re + "') && "
-             "(object.data['pendingEpoch'] == '' ? object.data['pendingID'] == '' : "
-             "(object.data['pendingEpoch'].matches('^[0-9]+$') && int(object.data['pendingEpoch']) == int(object.data['epoch']) + 1 && object.data['pendingID'].matches('" + uuid_re + "'))) && "
-             "(object.data['bootstrap'] == 'true' || object.data['bootstrap'] == 'false')")
-    created = ("object.data['epoch'] == '0' && object.data['pendingEpoch'] == '' && object.data['pendingID'] == '' && object.data['bootstrap'] == 'true'")
-    transition = (
-        "oldObject.data == object.data || "
-        "(oldObject.data['format'] == object.data['format'] && oldObject.data['clusterID'] == object.data['clusterID'] && oldObject.data['storageID'] == object.data['storageID'] && "
-        "oldObject.data['pendingEpoch'] == '' && object.data['epoch'] == oldObject.data['epoch'] && object.data['token'] == oldObject.data['token'] && "
-        "object.data['pendingEpoch'] == string(int(oldObject.data['epoch']) + 1) && object.data['pendingID'].matches('" + uuid_re + "') && object.data['bootstrap'] == oldObject.data['bootstrap']) || "
-        "(oldObject.data['pendingEpoch'] != '' && ((object.data['epoch'] == oldObject.data['pendingEpoch'] && object.data['token'] == oldObject.data['pendingID'] && object.data['pendingEpoch'] == '' && object.data['pendingID'] == '' && object.data['bootstrap'] == 'false') || "
-        "(object.data['epoch'] == oldObject.data['epoch'] && object.data['token'] == oldObject.data['token'] && object.data['pendingEpoch'] == '' && object.data['pendingID'] == '' && object.data['bootstrap'] == oldObject.data['bootstrap'])))"
-    )
+    new = "object.data"
+    old = "oldObject.data"
+    flat = "['" + "','".join(FLAT_FIELDS) + "']"
+    guard = "['" + "','".join(GUARD_FIELDS) + "']"
+    # The flat projection keeps its meaning in both representations; only the
+    # twelve-key shape drops the fixed binding, because a recovery commit is the
+    # one operation that legitimately changes it.  The guard projections are not
+    # a second authority: the Go adapter re-derives and rejects any disagreement
+    # on every read, and CEL compares them without being able to decode them.
+    application = (new + "['format'] == '1' && " + canonical_uint(new, "epoch") + " && " + new + "['token'].matches('" + uuid_re + "') && "
+                   "(" + new + "['pendingEpoch'] == '' ? " + new + "['pendingID'] == '' : (" + canonical_uint(new, "pendingEpoch") + " && "
+                   + new + "['pendingID'].matches('" + uuid_re + "') && int(" + new + "['pendingEpoch']) == int(" + new + "['epoch']) + 1)) && "
+                   "(" + new + "['bootstrap'] == 'true' || " + new + "['bootstrap'] == 'false')")
+    guards = (canonical_uint(new, "recoveryGeneration") + " && " + new + "['recoveryEvidence'].size() > 0 && "
+              + projection_ok(new, "recoveryTransition") + " && " + projection_ok(new, "recoveryReceipt"))
+    legacy = ("object.data.size() == 8 && " + flat + ".all(k, k in object.data) && "
+              + new + "['clusterID'] == '" + cluster_id + "' && " + new + "['storageID'] == '" + object_storage_id + "' && " + application)
+    composite = ("object.data.size() == 12 && " + flat + ".all(k, k in object.data) && " + guard + ".all(k, k in object.data) && "
+                 + application + " && " + guards)
+    created = (new + "['epoch'] == '0' && " + new + "['pendingEpoch'] == '' && " + new + "['pendingID'] == '' && " + new + "['bootstrap'] == 'true'")
+    same_binding = old + "['clusterID'] == " + new + "['clusterID'] && " + old + "['storageID'] == " + new + "['storageID']"
+    reserve = (old + "['format'] == " + new + "['format'] && " + old + "['pendingEpoch'] == '' && " + new + "['epoch'] == " + old + "['epoch'] && "
+               + new + "['token'] == " + old + "['token'] && " + new + "['pendingEpoch'] == string(int(" + old + "['epoch']) + 1) && "
+               + new + "['pendingID'].matches('" + uuid_re + "') && " + new + "['bootstrap'] == " + old + "['bootstrap']")
+    finalize = (old + "['pendingEpoch'] != '' && " + new + "['epoch'] == " + old + "['pendingEpoch'] && " + new + "['token'] == " + old + "['pendingID'] && "
+                + new + "['pendingEpoch'] == '' && " + new + "['pendingID'] == '' && " + new + "['bootstrap'] == 'false'")
+    abort = (old + "['pendingEpoch'] != '' && " + new + "['epoch'] == " + old + "['epoch'] && " + new + "['token'] == " + old + "['token'] && "
+             + new + "['pendingEpoch'] == '' && " + new + "['pendingID'] == '' && " + new + "['bootstrap'] == " + old + "['bootstrap']")
+    # Binding equality wraps every application branch, finalize and abort
+    # included: once a recovered generation may legitimately adopt another
+    # binding, no global pin remains to catch them.
+    application_transition = "(" + same_binding + " && (" + reserve + " || " + finalize + " || " + abort + "))"
+    # Format migration preserves all eight flat values and adds their honest
+    # projection.  It is not a state change, so nothing else moves.  The frozen
+    # evidence bytes stay opaque to CEL and are re-derived by the adapter.
+    migration = (kept(FLAT_FIELDS) + " && " + new + "['recoveryGeneration'] == '0' && "
+                 + new + "['recoveryTransition'] == '" + RECOVERY_NULL + "' && " + new + "['recoveryReceipt'] == '" + RECOVERY_NULL + "'")
+    # Ordinary writes update evidence but cannot acquire or rewrite recovery authority.
+    composite_application = ("(" + old + "['recoveryTransition'] == 'null' && "
+                             + kept(("recoveryGeneration", "recoveryTransition", "recoveryReceipt"))
+                             + " && " + application_transition + ")")
+    identity = "request.userInfo.username == 'system:serviceaccount:" + namespace + ":" + anchor_service_account + "'"
+    recovery_reserve = (identity + " && " + old + "['pendingEpoch'] == '' && " + old + "['bootstrap'] == 'false' && " + old + "['recoveryTransition'] == '" + RECOVERY_NULL + "' && "
+                        + new + "['recoveryTransition'] != '" + RECOVERY_NULL + "' && " + kept(FLAT_FIELDS) + " && "
+                        + new + "['recoveryGeneration'] == " + old + "['recoveryGeneration'] && "
+                        + new + "['recoveryEvidence'] == " + old + "['recoveryEvidence'] && "
+                        + new + "['recoveryReceipt'] == " + old + "['recoveryReceipt']")
+    recovery_commit = (identity + " && " + old + "['recoveryTransition'] != '" + RECOVERY_NULL + "' && "
+                       + new + "['recoveryTransition'] == '" + RECOVERY_NULL + "' && " + new + "['recoveryReceipt'] != '" + RECOVERY_NULL + "' && "
+                       # The commit is the one operation that legitimately moves the
+                       # binding to the recovered target's cluster and storage identity,
+                       # so it preserves the application half only.  The coordinator
+                       # derives both values from the verifier's proof, never from the
+                       # request, and the migration/reserve branches still pin them.
+                       + kept(APPLICATION_FIELDS) + " && " + new + "['recoveryEvidence'] == " + old + "['recoveryEvidence'] && "
+                       + "uint(" + new + "['recoveryGeneration']) == uint(" + old + "['recoveryGeneration']) + 1u")
+    transition = ("oldObject.data == object.data || "
+                  "(" + old + ".size() == 8 && " + new + ".size() == 8 && " + application_transition + ") || "
+                  "(" + old + ".size() == 8 && " + new + ".size() == 12 && " + migration + ") || "
+                  "(" + old + ".size() == 12 && " + new + ".size() == 12 && ("
+                  + composite_application + " || " + recovery_reserve + " || " + recovery_commit + "))")
     policy = {
         "apiVersion": "admissionregistration.k8s.io/v1",
         "kind": "ValidatingAdmissionPolicy",
@@ -157,7 +265,7 @@ def anchor_policy(name, binding_name, namespace_selector, anchor_name, cluster_i
             "validations": [
                 {"expression": "request.operation != 'DELETE'", "message": "the external trust anchor cannot be deleted"},
                 {"expression": "object.metadata.labels['ternal.dev/trustguard-anchor'] == '" + protected_label + "'", "message": "the trust anchor must retain its protected label"},
-                {"expression": shape, "message": "invalid trust-anchor contract"},
+                {"expression": legacy + " || " + composite, "message": "invalid trust-anchor contract"},
                 {"expression": "oldObject == null ? (" + created + ") : (" + transition + ")", "message": "trust-anchor transition is not monotonic"},
             ],
         },
@@ -167,11 +275,16 @@ def anchor_policy(name, binding_name, namespace_selector, anchor_name, cluster_i
     return [policy, binding]
 
 
-def render(namespace, service_account_name, anchor_name, cluster_id, storage_identity, images, token=None):
+def render(namespace, service_account_name, anchor_name, cluster_id, storage_identity, images, token=None, anchor_service_account=None):
     namespace = dns_label(namespace, "namespace")
     service_account_name = service_account(service_account_name)
     anchor_name = dns_label(anchor_name, "anchor ConfigMap")
     cluster_id = dns_label(cluster_id, "cluster ID")
+    if anchor_service_account is None:
+        fail("the recovery anchor service account is required")
+    anchor_service_account = service_account(anchor_service_account)
+    if anchor_service_account == service_account_name:
+        fail("recovery and application service accounts must differ")
     if not re.fullmatch(r"[0-9a-f]{64}", storage_identity):
         fail("storage ID must be a SHA-256 hex digest")
     image_list = approved_images(images)
@@ -192,6 +305,10 @@ def render(namespace, service_account_name, anchor_name, cluster_id, storage_ide
     selector = {"matchLabels": {"ternal.dev/trustguard-scope": scope_label}}
     operator_labels = {"app.kubernetes.io/managed-by": "ternal-trustguard-operator", "ternal.dev/trustguard-scope": scope_label}
     anchor_labels = dict(operator_labels, **{"ternal.dev/trustguard-anchor": anchor_label})
+    # Greenfield provisioning still emits the legacy eight-key bootstrap, which
+    # is also the format migration's starting point.  A recovered generation
+    # never reapplies this output: migration is the only writer that adds the
+    # common representation, and it preserves these values.
     anchor = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": metadata(anchor_name, anchor_labels, namespace), "data":
               {"format": FORMAT, "clusterID": cluster_id, "storageID": storage_identity, "epoch": "0", "token": token,
                "pendingEpoch": "", "pendingID": "", "bootstrap": "true"}}
@@ -200,11 +317,23 @@ def render(namespace, service_account_name, anchor_name, cluster_id, storage_ide
     binding = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": metadata("ternal-trustguard-runtime-" + suffix, operator_labels, namespace),
                "subjects": [{"kind": "ServiceAccount", "name": service_account_name, "namespace": namespace}],
                "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": role["metadata"]["name"]}}
+    # The recovery authority is a separate identity: the admission policy names
+    # it, so the account that may commit a transition must not be the account
+    # that serves application traffic.  It reaches the same ConfigMap and
+    # nothing else.
+    anchor_role = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": metadata("ternal-trustguard-anchor-runtime-" + suffix, operator_labels, namespace),
+                   "rules": [{"apiGroups": [""], "resources": ["configmaps"], "resourceNames": [anchor_name], "verbs": ["get", "update"]}]}
+    anchor_binding = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": metadata("ternal-trustguard-anchor-runtime-" + suffix, operator_labels, namespace),
+                      "subjects": [{"kind": "ServiceAccount", "name": anchor_service_account, "namespace": namespace}],
+                      "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": anchor_role["metadata"]["name"]}}
     namespace_resource = {"apiVersion": "v1", "kind": "Namespace", "metadata": metadata(namespace, {"ternal.dev/trustguard-scope": scope_label, "app.kubernetes.io/managed-by": "ternal-trustguard-operator"})}
-    items = [namespace_resource, anchor, role, binding]
-    items += api_policy(names["api_pods"], names["api_pods"] + "-binding", selector, namespace, service_account_name, anchor_name, image_list, "pod")
-    items += api_policy(names["api_workloads"], names["api_workloads"] + "-binding", selector, namespace, service_account_name, anchor_name, image_list, "workload")
-    items += anchor_policy(names["anchor_policy"], names["anchor_policy"] + "-binding", selector, anchor_name, cluster_id, storage_identity, anchor_label)
+    items = [namespace_resource, anchor, role, binding, anchor_role, anchor_binding]
+    items += api_policy(names["api_pods"], names["api_pods"] + "-binding", selector, namespace, service_account_name,
+                        anchor_service_account, anchor_name, image_list, "pod")
+    items += api_policy(names["api_workloads"], names["api_workloads"] + "-binding", selector, namespace, service_account_name,
+                        anchor_service_account, anchor_name, image_list, "workload")
+    items += anchor_policy(names["anchor_policy"], names["anchor_policy"] + "-binding", selector, anchor_name, cluster_id,
+                           storage_identity, anchor_label, namespace, anchor_service_account)
     return {"apiVersion": "v1", "kind": "List", "items": items}
 
 
@@ -212,6 +341,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--service-account", required=True)
+    parser.add_argument("--anchor-service-account", required=True)
     parser.add_argument("--anchor-configmap", required=True)
     parser.add_argument("--cluster-id", required=True)
     identity = parser.add_mutually_exclusive_group()
@@ -232,7 +362,7 @@ def main(argv=None):
         identity_value = args.storage_id
     try:
         output = render(args.namespace, args.service_account, args.anchor_configmap, args.cluster_id,
-                        identity_value, args.approved_api_image)
+                        identity_value, args.approved_api_image, anchor_service_account=args.anchor_service_account)
     except ValueError as error:
         parser.error(str(error))
     json.dump(output, sys.stdout, sort_keys=True, separators=(",", ":"))
