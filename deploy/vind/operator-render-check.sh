@@ -350,7 +350,8 @@ for missing in \
 	'--set anchor.enabled=true --set-string anchor.tokenSecretName=t --set-string anchor.tokenSecretKey=token' \
 	'--set anchor.enabled=true --set-string anchor.tlsSecretName=t --set-string anchor.tokenSecretKey=token' \
 	'--set anchor.enabled=true --set-string anchor.tlsSecretName=t --set-string anchor.tokenSecretName=t' \
-	'--set anchor.enabled=true --set-string anchor.tlsSecretName=t --set-string anchor.tokenSecretName=t --set-string anchor.tokenSecretKey=token --set-string anchor.serviceAccountName=ternal-trust-runtime'; do
+	'--set anchor.enabled=true --set-string anchor.tlsSecretName=t --set-string anchor.tokenSecretName=t --set-string anchor.tokenSecretKey=token --set-string anchor.serviceAccountName=ternal-trust-runtime' \
+	'--set anchor.enabled=true --set-string anchor.tlsSecretName=t --set-string anchor.tokenSecretName=t --set-string anchor.tokenSecretKey=token --set-string anchor.serviceAccountName=ternal-operator'; do
 	# shellcheck disable=SC2086
 	if helm template ternal "$chart" \
 		--set image.tag=render-check \

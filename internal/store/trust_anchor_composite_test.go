@@ -273,3 +273,18 @@ func TestCompositeAnchorEvidenceIsStableAndStructureIsChecked(t *testing.T) {
 		t.Fatal("receipt generation mismatch accepted")
 	}
 }
+
+func TestCompositeAnchorRejectsMixedLegacyKeys(t *testing.T) {
+	for _, missing := range []string{"pendingEpoch", "pendingID"} {
+		for _, extra := range []string{"recoveryGeneration", "recoveryEvidence", "recoveryTransition", "recoveryReceipt"} {
+			t.Run(missing+"/"+extra, func(t *testing.T) {
+				data := legacyAnchorData(trustAnchorRecord{Format: "1", ClusterID: "c", StorageID: "s", Epoch: 4, Token: uuid.NewString()})
+				delete(data, missing)
+				data[extra] = "7"
+				if _, err := parseAnchorData(data); err == nil {
+					t.Fatal("mixed eight-key representation discarded recovery metadata")
+				}
+			})
+		}
+	}
+}

@@ -375,6 +375,32 @@ for ordinal in 0 1 2; do
 done
 echo "stage 1: three-voter HA reached quorum"
 
+# The real operator principal must not acquire recovery authority by creating
+# a pod or replacing the StatefulSet template with that service account.
+python3 - "$namespace" "$release" <<'PY'
+import copy, json, subprocess, sys
+namespace, release = sys.argv[1:]
+base = ["kubectl", "-n", namespace]
+identity = "system:serviceaccount:" + namespace + ":" + release + "-operator"
+def read(kind, name):
+    return json.loads(subprocess.check_output(base + ["get", kind, name, "-o", "json"]))
+def denied(args, obj):
+    result = subprocess.run(base + ["--as=" + identity] + args + ["--dry-run=server", "-f", "-"],
+                            input=json.dumps(obj), text=True, capture_output=True)
+    assert result.returncode and "denied" in result.stderr.lower(), result.stderr or result.stdout
+rogue = {"name": "helper", "image": "busybox:1.37"}
+anchor_spec = read("deployment", release + "-anchor")["spec"]["template"]["spec"]
+for extra in (False, True):
+    spec = copy.deepcopy(anchor_spec)
+    spec["containers"] = spec["containers"] + [rogue] if extra else [rogue]
+    pod = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "operator-identity-probe"}, "spec": spec}
+    denied(["create"], pod)
+    sts = read("statefulset", release)
+    sts["spec"]["template"]["spec"] = spec
+    denied(["replace"], sts)
+print("operator cannot borrow recovery authority through pods or StatefulSet templates")
+PY
+
 # --- stage 2: observation -------------------------------------------------
 
 wait_phase() {

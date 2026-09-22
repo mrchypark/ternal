@@ -233,7 +233,7 @@ func parseTrustAnchorEvidence(raw []byte) (trustAnchorEvidence, error) {
 
 func anchorDataShape(data map[string]string) bool {
 	for key := range data {
-		if !anchorDataKeys[key] {
+		if !anchorDataKeys[key] || (len(data) == trustAnchorLegacyKeys && strings.HasPrefix(key, "recovery")) {
 			return false
 		}
 	}
