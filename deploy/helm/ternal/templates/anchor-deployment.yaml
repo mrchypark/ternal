@@ -21,6 +21,9 @@ ConfigMap, the shared object store, and its own TLS and bearer credentials.
 {{- $tokenSecret := required "anchor.tokenSecretName is required when the anchor is enabled" $anchor.tokenSecretName -}}
 {{- $tokenKey := required "anchor.tokenSecretKey is required when the anchor is enabled" $anchor.tokenSecretKey -}}
 {{- $serviceAccount := default (printf "%s-anchor" .Release.Name) $anchor.serviceAccountName -}}
+{{- if eq $serviceAccount .Values.serviceAccountName -}}
+{{- fail "anchor.serviceAccountName must differ from serviceAccountName" -}}
+{{- end -}}
 {{- $port := int (default 9191 $anchor.port) -}}
 {{- $secretName := .Values.secrets.existingSecret | default .Release.Name -}}
 {{- $imageTag := default "" .Values.image.tag -}}

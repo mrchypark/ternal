@@ -349,7 +349,8 @@ fi
 for missing in \
 	'--set anchor.enabled=true --set-string anchor.tokenSecretName=t --set-string anchor.tokenSecretKey=token' \
 	'--set anchor.enabled=true --set-string anchor.tlsSecretName=t --set-string anchor.tokenSecretKey=token' \
-	'--set anchor.enabled=true --set-string anchor.tlsSecretName=t --set-string anchor.tokenSecretName=t'; do
+	'--set anchor.enabled=true --set-string anchor.tlsSecretName=t --set-string anchor.tokenSecretName=t' \
+	'--set anchor.enabled=true --set-string anchor.tlsSecretName=t --set-string anchor.tokenSecretName=t --set-string anchor.tokenSecretKey=token --set-string anchor.serviceAccountName=ternal-trust-runtime'; do
 	# shellcheck disable=SC2086
 	if helm template ternal "$chart" \
 		--set image.tag=render-check \
@@ -361,7 +362,7 @@ for missing in \
 		--set-string data.objectStore.bucket=ternal-ha \
 		--set-string secrets.existingSecret=ternal-runtime \
 		$missing >"$tmp/anchor-invalid.yaml" 2>/dev/null; then
-		echo "anchor render accepted incomplete credentials: $missing" >&2
+		echo "anchor render accepted invalid credentials or identity: $missing" >&2
 		exit 1
 	fi
 done

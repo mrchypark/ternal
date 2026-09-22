@@ -141,6 +141,11 @@ class TrustGuardRendererTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, [IMAGE], token=TOKEN)
 
+    def test_recovery_identity_must_differ_from_application_identity(self):
+        with self.assertRaisesRegex(ValueError, "must differ"):
+            trustguard.render("ns", "api", "anchor", "cluster", "a" * 64,
+                              [IMAGE], anchor_service_account="api")
+
     def test_api_guard_inlines_exact_current_and_candidate_images(self):
         candidate = "ghcr.io/mrchypark/ternal@sha256:" + "c" * 64
         result = trustguard.render("ternal-test", "ternal-data", "ternal-trust-anchor",

@@ -276,6 +276,8 @@ def render(namespace, service_account_name, anchor_name, cluster_id, storage_ide
     if anchor_service_account is None:
         fail("the recovery anchor service account is required")
     anchor_service_account = service_account(anchor_service_account)
+    if anchor_service_account == service_account_name:
+        fail("recovery and application service accounts must differ")
     if not re.fullmatch(r"[0-9a-f]{64}", storage_identity):
         fail("storage ID must be a SHA-256 hex digest")
     image_list = approved_images(images)
