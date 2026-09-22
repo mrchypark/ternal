@@ -84,6 +84,12 @@ def main(image):
         overlay["volumes"] = [{"name": "replace", "emptyDir": {}}]
         overlay["containers"][0]["volumeMounts"] = [{"name": "replace", "mountPath": "/usr/local/bin"}]
         workload(overlay, False)
+        endpoint = copy.deepcopy(anchor)
+        endpoint["containers"][0]["env"].append({"name": "KUBERNETES_SERVICE_HOST", "value": "untrusted.invalid"})
+        workload(endpoint, False)
+        indirect = copy.deepcopy(anchor)
+        indirect["containers"][0]["envFrom"] = [{"configMapRef": {"name": "untrusted"}}]
+        workload(indirect, False)
         d = read()["data"]
         d.update(recoveryGeneration="0", recoveryEvidence="evidence", recoveryTransition="null", recoveryReceipt="null")
         write(d)  # Exact legacy migration.

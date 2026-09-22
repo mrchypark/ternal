@@ -152,6 +152,9 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
                  + containers + ".size() == 1 && (!has(" + spec + ".initContainers) || " + spec + ".initContainers.size() == 0) && "
                  + "(!has(" + spec + ".ephemeralContainers) || " + spec + ".ephemeralContainers.size() == 0))",
                  "message": "the recovery identity is reserved for a single approved anchor container"},
+                {"expression": "variables.anchorContainers.all(c, (!has(c.envFrom) || c.envFrom.size() == 0) && "
+                 + "c.env.all(e, !e.name.startsWith('KUBERNETES_')))",
+                 "message": "the recovery authority must use the cluster-provided Kubernetes endpoint"},
                 {"expression": "variables.anchorContainers.all(c, !has(c.lifecycle) && (!has(c.volumeMounts) || c.volumeMounts.all(m, "
                  + "m.mountPath in ['/tmp', '/etc/ternal-anchor/tls', '/etc/ternal-anchor/token', '/var/run/secrets/kubernetes.io/serviceaccount'])))",
                  "message": "the recovery executable must not be replaced or accompanied by lifecycle commands"},
