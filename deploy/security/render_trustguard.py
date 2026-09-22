@@ -155,6 +155,10 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
                 {"expression": "variables.anchorContainers.all(c, (!has(c.envFrom) || c.envFrom.size() == 0) && "
                  + "c.env.all(e, !e.name.startsWith('KUBERNETES_')))",
                  "message": "the recovery authority must use the cluster-provided Kubernetes endpoint"},
+                {"expression": "variables.anchorContainers.all(c, " + " && ".join(
+                    "(!has(c." + probe + ") || !has(c." + probe + ".exec))"
+                    for probe in ("livenessProbe", "readinessProbe", "startupProbe")) + ")",
+                 "message": "the recovery container must not execute probe commands"},
                 {"expression": "variables.anchorContainers.all(c, !has(c.lifecycle) && (!has(c.volumeMounts) || c.volumeMounts.all(m, "
                  + "m.mountPath in ['/tmp', '/etc/ternal-anchor/tls', '/etc/ternal-anchor/token', '/var/run/secrets/kubernetes.io/serviceaccount'])))",
                  "message": "the recovery executable must not be replaced or accompanied by lifecycle commands"},

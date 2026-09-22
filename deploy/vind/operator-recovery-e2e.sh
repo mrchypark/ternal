@@ -390,9 +390,16 @@ def denied(args, obj):
     assert result.returncode and "denied" in result.stderr.lower(), result.stderr or result.stdout
 rogue = {"name": "helper", "image": "busybox:1.37"}
 anchor_spec = read("deployment", release + "-anchor")["spec"]["template"]["spec"]
+specs = []
 for extra in (False, True):
     spec = copy.deepcopy(anchor_spec)
     spec["containers"] = spec["containers"] + [rogue] if extra else [rogue]
+    specs.append(spec)
+for probe in ("livenessProbe", "readinessProbe", "startupProbe"):
+    spec = copy.deepcopy(anchor_spec)
+    spec["containers"][0][probe] = {"exec": {"command": ["/tmp/helper"]}}
+    specs.append(spec)
+for spec in specs:
     pod = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "operator-identity-probe"}, "spec": spec}
     denied(["create"], pod)
     sts = read("statefulset", release)

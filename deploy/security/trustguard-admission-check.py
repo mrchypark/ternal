@@ -71,6 +71,10 @@ def main(image):
                 ("TERNAL_RECOVERY_ANCHOR_ID", "anchor"), ("TERNAL_TRUST_ANCHOR_CONFIGMAP", "anchor"),
                 ("TERNAL_TRUST_ANCHOR_NAMESPACE", namespace))]}]}
         workload(anchor, True)
+        for probe in ("livenessProbe", "readinessProbe", "startupProbe"):
+            execution = copy.deepcopy(anchor)
+            execution["containers"][0][probe] = {"exec": {"command": ["/tmp/helper"]}}
+            workload(execution, False)
         rogue = copy.deepcopy(anchor)
         rogue["containers"] = [{"name": "rogue", "image": "busybox:1.37"}]
         workload(rogue, False)
