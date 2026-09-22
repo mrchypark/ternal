@@ -105,6 +105,15 @@ class TrustGuardRendererTest(unittest.TestCase):
         self.assertIn("uint(object.data['recoveryGeneration']) == uint(oldObject.data['recoveryGeneration']) + 1u", expression)
         self.assertIn("oldObject.data['recoveryTransition'] == 'null'", expression)
         self.assertIn("object.data['recoveryReceipt'] != 'null'", expression)
+        # The commit is the one branch that moves the binding, so it must not
+        # pin it: only the application half survives a recovery commit.
+        # The commit branch is last, so everything after its marker is the
+        # commit branch and nothing else.
+        commit = expression.split("oldObject.data['recoveryTransition'] != 'null'", 1)[1]
+        for key in trustguard.APPLICATION_FIELDS:
+            self.assertIn("oldObject.data['" + key + "'] == object.data['" + key + "']", commit)
+        for key in ("clusterID", "storageID"):
+            self.assertNotIn("oldObject.data['" + key + "'] == object.data['" + key + "']", commit)
         # Every application branch keeps both binding fields, finalize and abort
         # included: no global binding pin remains once recovery may change it.
         self.assertIn("oldObject.data['clusterID'] == object.data['clusterID'] && oldObject.data['storageID'] == object.data['storageID'] && (oldObject.data['format']", expression)

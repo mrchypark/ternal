@@ -124,7 +124,26 @@ func (k *kubernetesTrustAnchor) CAS(ctx context.Context, rv string, next trustAn
 	if actualRV != rv {
 		return "", fmt.Errorf("trust anchor resource version conflict")
 	}
-	wire.Data = anchorData(next)
+	if len(wire.Data) == trustAnchorLegacyKeys {
+		// The deployment applies a greenfield anchor in the legacy shape, and
+		// the admitted way into the common representation is a write of its
+		// own: it has to keep all eight flat values, so carrying it inside the
+		// caller's compare-and-swap would move flat values in the same request
+		// and be denied.  The migration reuses the version it created, so the
+		// caller's write still lands on the record it decided on.
+		legacy, err := parseAnchorData(wire.Data)
+		if err != nil {
+			return "", err
+		}
+		if rv, err = k.put(ctx, wire, rv, legacy); err != nil {
+			return "", err
+		}
+	}
+	return k.put(ctx, wire, rv, next)
+}
+
+func (k *kubernetesTrustAnchor) put(ctx context.Context, wire configMapWire, rv string, record trustAnchorRecord) (string, error) {
+	wire.Data = anchorData(record)
 	wire.setMetadataString("resourceVersion", rv)
 	wire.setMetadataString("name", k.name)
 	wire.setMetadataString("namespace", k.namespace)

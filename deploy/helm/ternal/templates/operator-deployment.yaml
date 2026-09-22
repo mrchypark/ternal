@@ -20,6 +20,12 @@
 {{- $clusterID := required "data.clusterID is required when operator is enabled" $data.clusterID -}}
 {{- $objectStoreProvider := required "data.objectStore.provider is required when operator is enabled" $objectStore.provider -}}
 {{- $objectStoreBucket := required "data.objectStore.bucket is required when operator is enabled" $objectStore.bucket -}}
+{{- $anchor := default dict .Values.anchor -}}
+{{- $anchorEnabled := $anchor.enabled | default false -}}
+{{- $anchorTLSSecret := default "" $anchor.tlsSecretName -}}
+{{- $anchorTokenSecret := default "" $anchor.tokenSecretName -}}
+{{- $anchorTokenKey := default "" $anchor.tokenSecretKey -}}
+{{- $anchorPort := int (default 9191 $anchor.port) -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -192,12 +198,38 @@ spec:
                   name: {{ .Values.secrets.existingSecret | default .Release.Name }}
                   key: TERNAL_OBJECT_STORE_SESSION_TOKEN
                   optional: true
+            {{- if $anchorEnabled }}
+            # The operator's own anchor client. The URL is the in-namespace
+            # Service; the CA is the anchor's own self-signed certificate.
+            - name: RHIZA_RECOVERY_ANCHOR_URL
+              value: {{ printf "https://%s-anchor.%s.svc:%d" .Release.Name .Release.Namespace $anchorPort | quote }}
+            - name: RHIZA_RECOVERY_ANCHOR_TOKEN_FILE
+              value: /etc/rhiza-anchor/token/{{ $anchorTokenKey }}
+            - name: RHIZA_RECOVERY_ANCHOR_CA_FILE
+              value: /etc/rhiza-anchor/ca/tls.crt
+            {{- end }}
           resources:
             {{- toYaml (default dict $operator.resources) | nindent 12 }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if $anchorEnabled }}
+            - name: anchor-token
+              mountPath: /etc/rhiza-anchor/token
+              readOnly: true
+            - name: anchor-ca
+              mountPath: /etc/rhiza-anchor/ca
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if $anchorEnabled }}
+        - name: anchor-token
+          secret:
+            secretName: {{ $anchorTokenSecret }}
+        - name: anchor-ca
+          secret:
+            secretName: {{ $anchorTLSSecret }}
+        {{- end }}
 {{- end }}

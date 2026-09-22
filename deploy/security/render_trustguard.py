@@ -74,6 +74,9 @@ ANCHOR_CONTAINER = "ternal-anchor"
 ANCHOR_EXECUTABLE = "/usr/local/bin/ternal-anchor"
 ANCHOR_ID_ENV = "TERNAL_RECOVERY_ANCHOR_ID"
 FLAT_FIELDS = ("format", "clusterID", "storageID", "epoch", "token", "pendingEpoch", "pendingID", "bootstrap")
+# The application half of the flat projection: the frozen pair and its pending
+# lifecycle.  A recovery commit preserves these and moves only the binding.
+APPLICATION_FIELDS = ("format", "epoch", "token", "pendingEpoch", "pendingID", "bootstrap")
 GUARD_FIELDS = ("recoveryGeneration", "recoveryEvidence", "recoveryTransition", "recoveryReceipt")
 RECOVERY_NULL = "null"
 
@@ -209,21 +212,30 @@ def anchor_policy(name, binding_name, namespace_selector, anchor_name, cluster_i
     # evidence bytes stay opaque to CEL and are re-derived by the adapter.
     migration = (kept(FLAT_FIELDS) + " && " + new + "['recoveryGeneration'] == '0' && "
                  + new + "['recoveryTransition'] == '" + RECOVERY_NULL + "' && " + new + "['recoveryReceipt'] == '" + RECOVERY_NULL + "'")
+    # Ordinary writes update evidence but cannot acquire or rewrite recovery authority.
+    composite_application = ("(" + old + "['recoveryTransition'] == 'null' && "
+                             + kept(("recoveryGeneration", "recoveryTransition", "recoveryReceipt"))
+                             + " && " + application_transition + ")")
     identity = "request.userInfo.username == 'system:serviceaccount:" + namespace + ":" + anchor_service_account + "'"
-    recovery_reserve = (identity + " && " + old + "['recoveryTransition'] == '" + RECOVERY_NULL + "' && "
+    recovery_reserve = (identity + " && " + old + "['pendingEpoch'] == '' && " + old + "['bootstrap'] == 'false' && " + old + "['recoveryTransition'] == '" + RECOVERY_NULL + "' && "
                         + new + "['recoveryTransition'] != '" + RECOVERY_NULL + "' && " + kept(FLAT_FIELDS) + " && "
                         + new + "['recoveryGeneration'] == " + old + "['recoveryGeneration'] && "
                         + new + "['recoveryEvidence'] == " + old + "['recoveryEvidence'] && "
                         + new + "['recoveryReceipt'] == " + old + "['recoveryReceipt']")
     recovery_commit = (identity + " && " + old + "['recoveryTransition'] != '" + RECOVERY_NULL + "' && "
                        + new + "['recoveryTransition'] == '" + RECOVERY_NULL + "' && " + new + "['recoveryReceipt'] != '" + RECOVERY_NULL + "' && "
-                       + kept(FLAT_FIELDS) + " && " + new + "['recoveryEvidence'] == " + old + "['recoveryEvidence'] && "
+                       # The commit is the one operation that legitimately moves the
+                       # binding to the recovered target's cluster and storage identity,
+                       # so it preserves the application half only.  The coordinator
+                       # derives both values from the verifier's proof, never from the
+                       # request, and the migration/reserve branches still pin them.
+                       + kept(APPLICATION_FIELDS) + " && " + new + "['recoveryEvidence'] == " + old + "['recoveryEvidence'] && "
                        + "uint(" + new + "['recoveryGeneration']) == uint(" + old + "['recoveryGeneration']) + 1u")
     transition = ("oldObject.data == object.data || "
                   "(" + old + ".size() == 8 && " + new + ".size() == 8 && " + application_transition + ") || "
                   "(" + old + ".size() == 8 && " + new + ".size() == 12 && " + migration + ") || "
                   "(" + old + ".size() == 12 && " + new + ".size() == 12 && ("
-                  + application_transition + " || " + recovery_reserve + " || " + recovery_commit + "))")
+                  + composite_application + " || " + recovery_reserve + " || " + recovery_commit + "))")
     policy = {
         "apiVersion": "admissionregistration.k8s.io/v1",
         "kind": "ValidatingAdmissionPolicy",
@@ -288,8 +300,17 @@ def render(namespace, service_account_name, anchor_name, cluster_id, storage_ide
     binding = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": metadata("ternal-trustguard-runtime-" + suffix, operator_labels, namespace),
                "subjects": [{"kind": "ServiceAccount", "name": service_account_name, "namespace": namespace}],
                "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": role["metadata"]["name"]}}
+    # The recovery authority is a separate identity: the admission policy names
+    # it, so the account that may commit a transition must not be the account
+    # that serves application traffic.  It reaches the same ConfigMap and
+    # nothing else.
+    anchor_role = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": metadata("ternal-trustguard-anchor-runtime-" + suffix, operator_labels, namespace),
+                   "rules": [{"apiGroups": [""], "resources": ["configmaps"], "resourceNames": [anchor_name], "verbs": ["get", "update"]}]}
+    anchor_binding = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": metadata("ternal-trustguard-anchor-runtime-" + suffix, operator_labels, namespace),
+                      "subjects": [{"kind": "ServiceAccount", "name": anchor_service_account, "namespace": namespace}],
+                      "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": anchor_role["metadata"]["name"]}}
     namespace_resource = {"apiVersion": "v1", "kind": "Namespace", "metadata": metadata(namespace, {"ternal.dev/trustguard-scope": scope_label, "app.kubernetes.io/managed-by": "ternal-trustguard-operator"})}
-    items = [namespace_resource, anchor, role, binding]
+    items = [namespace_resource, anchor, role, binding, anchor_role, anchor_binding]
     items += api_policy(names["api_pods"], names["api_pods"] + "-binding", selector, namespace, service_account_name,
                         anchor_service_account, anchor_name, image_list, "pod")
     items += api_policy(names["api_workloads"], names["api_workloads"] + "-binding", selector, namespace, service_account_name,

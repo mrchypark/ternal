@@ -15,6 +15,7 @@ exempts only operator-* chart files and the operator guide.
 {{- $objectStore := default dict $data.objectStore -}}
 {{- $clusterID := required "data.clusterID is required when the operator is enabled" $data.clusterID -}}
 {{- $secretName := .Values.secrets.existingSecret | default .Release.Name -}}
+{{- $anchorEnabled := (default dict .Values.anchor).enabled | default false -}}
 - name: RHIZA_NODE_ID
   valueFrom:
     fieldRef:
@@ -43,4 +44,12 @@ exempts only operator-* chart files and the operator guide.
   value: {{ default (printf "clusters/%s" $clusterID) $objectStore.prefix | quote }}
 - name: RHIZA_OBJSTORE_DURABILITY
   value: {{ default "before-ack" $objectStore.durability | quote }}
+{{- if $anchorEnabled }}
+# The upstream controller refuses an anchorID unless the target pod carries the
+# same value and opts in to reconfiguration, so both ride with the same block.
+- name: RHIZA_RECOVERY_ANCHOR_ID
+  value: {{ required "data.trustAnchorConfigMap is required when the anchor is enabled" $data.trustAnchorConfigMap | quote }}
+- name: RHIZA_ENABLE_RECONFIGURATION
+  value: "true"
+{{- end }}
 {{- end -}}

@@ -9,9 +9,8 @@
 # pinned upstream operator and Ternal for the cluster's own architecture
 # (from the module cache and this working tree) and imports both into the
 # vCluster. MinIO stands in for the shared object store. It applies the trust
-# anchor ConfigMap and its RBAC through deploy/security/render_trustguard.py and
-# deliberately skips that renderer's admission policies, which require an
-# immutable registry digest the locally built image does not have.
+# anchor and all admission policies through deploy/security/render_trustguard.py.
+# The imported local image is pinned by its containerd digest.
 #
 # Knobs: VCLUSTER_NAME, TERNAL_E2E_REUSE_CLUSTER=1 (reuse an existing vCluster),
 # TERNAL_E2E_IMAGE, TERNAL_E2E_OPERATOR_IMAGE, TERNAL_E2E_SKIP_RECOVERY=1.
@@ -24,7 +23,7 @@ need() {
 	}
 }
 
-for tool in docker helm kubectl python3 vcluster yq go; do
+for tool in docker helm kubectl python3 vcluster yq go openssl curl; do
 	need "$tool"
 done
 
@@ -53,10 +52,12 @@ admin_token=$(derive "$cluster_id:admin")
 session_key=$(derive "$cluster_id:session")
 work=$(mktemp -d "${TMPDIR:-/tmp}/ternal-operator-e2e.XXXXXX")
 created=0
+forward_pid=
 
 cleanup() {
 	status=$?
 	trap - EXIT INT TERM HUP
+	[ -z "$forward_pid" ] || kill "$forward_pid" 2>/dev/null || true
 	if [ "$created" -eq 1 ] && [ -z "${TERNAL_E2E_KEEP_CLUSTER:-}" ]; then
 		vcluster delete "$name" --driver docker --ignore-not-found >/dev/null 2>&1 || true
 	elif [ "$created" -eq 1 ]; then
@@ -154,6 +155,12 @@ fi
 
 import_image "$ternal_image"
 import_image "$operator_image"
+ternal_digest=$(docker exec "$container" ctr -n k8s.io images ls | awk -v image="docker.io/library/$ternal_image" '$1 == image {print $3}')
+[ -n "$ternal_digest" ] || { echo "imported image digest missing" >&2; exit 1; }
+ternal_pinned="ghcr.io/mrchypark/ternal@$ternal_digest"
+docker exec "$container" ctr -n k8s.io images tag --force "docker.io/library/$ternal_image" "$ternal_pinned" >/dev/null
+
+python3 "$repo_dir/deploy/security/trustguard-admission-check.py" "$ternal_pinned"
 
 # --- CRDs, storage, namespace -------------------------------------------
 
@@ -162,6 +169,10 @@ for crd in crd.yaml cluster-crd.yaml fence-crd.yaml; do
 done
 
 kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+# Stop the previous disposable run before clearing its shared object store.
+kubectl -n "$namespace" delete deployment "$release-operator" "$release-anchor" --ignore-not-found --wait=true >/dev/null
+kubectl -n "$namespace" delete statefulset "$release" --ignore-not-found --wait=true >/dev/null
+kubectl -n "$namespace" delete rhizarecovery "$release-observe" "$release-recovery" --ignore-not-found >/dev/null
 
 kubectl -n "$namespace" apply -f - >/dev/null <<EOF
 apiVersion: apps/v1
@@ -256,24 +267,42 @@ EOF
 
 kubectl -n "$namespace" create serviceaccount "$release" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-# The anchor ConfigMap and its RBAC come from the same renderer production uses;
-# its admission policies need an immutable registry digest that a locally built
-# image cannot have, so this check leaves them out.
-# The anchor is reset with the object store: a pending epoch left by an earlier
-# run would otherwise block a greenfield bootstrap, exactly as designed.
-kubectl -n "$namespace" delete configmap "$release-anchor" --ignore-not-found >/dev/null
-python3 - "$repo_dir" "$namespace" "$release" "$cluster_id" "$endpoint" "$bucket" "$prefix" > "$work/trustguard.json" <<'PY'
+# Provisioning reset occurs only before establishing the source generation.
+# A reused disposable cluster may still enforce the prior run's policy.
+python3 - "$repo_dir" "$namespace" "$release" "$cluster_id" "$endpoint" "$bucket" "$prefix" "$ternal_pinned" > "$work/trustguard.json" <<'PY'
 import json, sys
-repo, namespace, release, cluster_id, endpoint, bucket, prefix = sys.argv[1:8]
+repo, namespace, release, cluster_id, endpoint, bucket, prefix, image = sys.argv[1:]
 sys.path.insert(0, repo + "/deploy/security")
 import render_trustguard as tg
 identity = tg.storage_id("s3", endpoint, bucket, prefix, cluster_id)
-doc = tg.render(namespace, release, release + "-anchor", cluster_id, identity,
-                [tg.OFFICIAL_IMAGE + "@sha256:" + "0" * 64])
-items = [item for item in doc["items"] if item["kind"] in ("ConfigMap", "Role", "RoleBinding")]
-json.dump({"apiVersion": "v1", "kind": "List", "items": items}, sys.stdout)
+json.dump(tg.render(namespace, release, release + "-anchor", cluster_id, identity,
+                    [image], anchor_service_account=release + "-anchor"), sys.stdout)
 PY
-kubectl -n "$namespace" apply -f "$work/trustguard.json" >/dev/null
+# Delete only this test's named policies; never disable another namespace's guards.
+python3 - "$work/trustguard.json" <<'PY' > "$work/policies.txt"
+import json, sys
+for item in json.load(open(sys.argv[1]))["items"]:
+    if item["kind"] in ("ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"):
+        print(item["kind"] + "/" + item["metadata"]["name"])
+PY
+while IFS= read -r policy; do
+    kubectl delete "$policy" --ignore-not-found >/dev/null
+done < "$work/policies.txt"
+kubectl -n "$namespace" delete statefulset "$release" --ignore-not-found --wait=true >/dev/null
+kubectl -n "$namespace" delete deployment "$release-anchor" "$release-operator" --ignore-not-found --wait=true >/dev/null
+kubectl -n "$namespace" delete configmap "$release-anchor" --ignore-not-found >/dev/null
+kubectl apply -f "$work/trustguard.json" >/dev/null
+
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+    -subj "/CN=$release-anchor.$namespace.svc" \
+    -addext "subjectAltName=DNS:$release-anchor.$namespace.svc,DNS:$release-anchor.$namespace.svc.cluster.local" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign" \
+    -addext "extendedKeyUsage=serverAuth" \
+    -keyout "$work/tls.key" -out "$work/tls.crt" 2>/dev/null
+kubectl -n "$namespace" create secret tls "$release-anchor-tls" --cert="$work/tls.crt" --key="$work/tls.key" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+derive "$cluster_id:anchor" > "$work/anchor-token"
+kubectl -n "$namespace" create secret generic "$release-anchor-token" --from-file=token="$work/anchor-token" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 echo "Ternal secret and trust anchor are provisioned"
 
@@ -281,8 +310,8 @@ echo "Ternal secret and trust anchor are provisioned"
 
 cat > "$work/values.yaml" <<EOF
 image:
-  repository: ${ternal_image%:*}
-  tag: ${ternal_image##*:}
+  repository: ghcr.io/mrchypark/ternal
+  digest: $ternal_digest
   pullPolicy: IfNotPresent
 oidc:
   issuer: https://auth.ternal.example.invalid/auth/v1/
@@ -301,7 +330,14 @@ data:
     provider: s3
     endpoint: $endpoint
     bucket: $bucket
+    prefix: $prefix
     insecure: true
+anchor:
+  enabled: true
+  tlsSecretName: $release-anchor-tls
+  tokenSecretName: $release-anchor-token
+  tokenSecretKey: token
+  serviceAccountName: $release-anchor
 operator:
   enabled: true
   image:
@@ -369,6 +405,7 @@ spec:
   statefulSet: $release
   container: ternal-api
   sourceClusterID: $cluster_id
+  anchorID: $release-anchor
   durability: before-ack
   recoveryID: ""
 EOF
@@ -393,6 +430,38 @@ if [ "${TERNAL_E2E_SKIP_RECOVERY:-0}" = 1 ]; then
 	exit 0
 fi
 
+# Exercise an ordinary authenticated API mutation, including legacy migration.
+ordinary_write() {
+    kubectl -n "$namespace" port-forward "svc/$release" 13000:3000 > "$work/forward.log" 2>&1 &
+    forward_pid=$!
+    python3 - "$session_key" "$1" <<'PY'
+import base64, hashlib, hmac, json, time, sys, urllib.request, urllib.error
+key, name = sys.argv[1:]
+enc = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+payload = enc(json.dumps({"user": {"iss": "https://auth.ternal.example.invalid/auth/v1/", "sub": "e2e", "groups": ["ternal-admins"]}, "csrf_token": "e2e-csrf", "expires_at": int(time.time()) + 3600}).encode())
+cookie = "v1." + payload + "." + enc(hmac.new(key.encode(), payload.encode(), hashlib.sha256).digest())
+# Retry connection establishment only, never retry a possibly committed mutation.
+for attempt in range(60):
+    try:
+        urllib.request.urlopen("http://127.0.0.1:13000/healthz", timeout=2).close()
+        break
+    except urllib.error.HTTPError:
+        break
+    except urllib.error.URLError:
+        time.sleep(1)
+else:
+    raise RuntimeError("port forward did not become available")
+req = urllib.request.Request("http://127.0.0.1:13000/hosts/", data=json.dumps({"name": name}).encode(), headers={"Content-Type": "application/json", "Cookie": "ternal_session=" + cookie, "X-CSRF-Token": "e2e-csrf"})
+with urllib.request.urlopen(req, timeout=120) as response:
+    assert response.status == 201, response.status
+PY
+    kill "$forward_pid"
+    wait "$forward_pid" 2>/dev/null || true
+    forward_pid=
+}
+ordinary_write before-recovery
+kubectl -n "$namespace" get configmap "$release-anchor" -o json > "$work/anchor-before.json"
+
 recovery_id="e2e-$(date +%s)"
 cat > "$work/recovery.yaml" <<EOF
 apiVersion: rhiza.mrchypark.dev/v1alpha1
@@ -403,6 +472,7 @@ spec:
   statefulSet: $release
   container: ternal-api
   sourceClusterID: $cluster_id
+  anchorID: $release-anchor
   durability: before-ack
   recoveryID: $recovery_id
 EOF
@@ -432,30 +502,49 @@ if [ "$cluster_now" != "$target" ]; then
 	exit 1
 fi
 
-# The recovered generation runs under the target cluster ID, but the trust
-# anchor still binds the source one, so Ternal must refuse to serve it.  That
-# fail-closed start is the contract until the anchor transition exists (#104),
-# and this check asserts it rather than waiting for a readiness that must not
-# arrive: a recovered voter that became ready would be serving unfenced data.
 for ordinal in 0 1 2; do
-	pod="$release-$ordinal"
-	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
-		phase=$(kubectl -n "$namespace" get "pod/$pod" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-		[ "$phase" = Running ] && break
-		sleep 2
-	done
-	if [ "$(kubectl -n "$namespace" get "pod/$pod" -o jsonpath='{.status.phase}')" != Running ]; then
-		echo "recovered $pod is not running" >&2
-		exit 1
-	fi
-	if [ "$(kubectl -n "$namespace" get "pod/$pod" -o jsonpath='{.status.containerStatuses[0].ready}')" = true ]; then
-		echo "recovered $pod reports ready while the anchor still binds $cluster_id" >&2
-		exit 1
-	fi
-	if ! kubectl -n "$namespace" logs "$pod" | grep -q 'trust anchor unsettled, Ternal readiness withheld'; then
-		echo "recovered $pod did not record the withheld readiness" >&2
-		exit 1
-	fi
+    wait_pod "$release-$ordinal"
 done
-echo "stage 3: generation recovery completed from $cluster_id to $target at tip $recovered_tip; the recovered generation runs fail-closed on the source anchor"
+kubectl -n "$namespace" get configmap "$release-anchor" -o json > "$work/anchor-after.json"
+python3 - "$repo_dir" "$work/anchor-before.json" "$work/anchor-after.json" "$target" "$endpoint" "$bucket" "$prefix" <<'PY'
+import json, sys
+repo, before, after, target, endpoint, bucket, prefix = sys.argv[1:]
+sys.path.insert(0, repo + "/deploy/security")
+import render_trustguard as tg
+before, after = json.load(open(before)), json.load(open(after))
+a, b = before["data"], after["data"]
+assert before["metadata"]["uid"] == after["metadata"]["uid"]
+assert int(a["epoch"]) >= 1 and a["bootstrap"] == "false"
+assert b["clusterID"] == target
+assert b["storageID"] == tg.storage_id("s3", endpoint, bucket, prefix, target)
+for key in ("epoch", "token", "pendingEpoch", "pendingID", "bootstrap", "recoveryEvidence"):
+    assert a[key] == b[key], (key, a[key], b[key])
+assert b["recoveryGeneration"] == "1"
+assert b["recoveryTransition"] == "null"
+receipt = json.loads(b["recoveryReceipt"])
+assert receipt["target"] == {"cluster_id": target, "storage_id": b["storageID"]}, receipt
+PY
+
+# These are server-side dry runs: a missing policy fails the check without
+# actually deleting or resetting the established trust anchor.
+if kubectl -n "$namespace" delete configmap "$release-anchor" --dry-run=server > "$work/delete.log" 2>&1; then
+    echo "anchor deletion was admitted" >&2; exit 1
+fi
+grep -q 'denied' "$work/delete.log"
+if kubectl -n "$namespace" patch configmap "$release-anchor" --type=merge -p '{"data":{"bootstrap":"true"}}' --dry-run=server > "$work/reset.log" 2>&1; then
+    echo "bootstrap reset was admitted" >&2; exit 1
+fi
+grep -q 'denied' "$work/reset.log"
+
+ordinary_write after-recovery
+kubectl -n "$namespace" get configmap "$release-anchor" -o json > "$work/anchor-written.json"
+python3 - "$work/anchor-after.json" "$work/anchor-written.json" <<'PY'
+import json, sys
+a, b = [json.load(open(p))["data"] for p in sys.argv[1:]]
+assert int(b["epoch"]) == int(a["epoch"]) + 1
+assert b["token"] != a["token"]
+assert b["recoveryGeneration"] == a["recoveryGeneration"]
+assert b["clusterID"] == a["clusterID"] and b["storageID"] == a["storageID"]
+PY
+echo "stage 3: recovered three ready voters; preserved anchor identity and evidence; subsequent write succeeded"
 echo "operator recovery e2e passed"

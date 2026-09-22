@@ -10,12 +10,14 @@ RUN go mod download
 COPY . .
 RUN ./frontend/build.sh
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w -buildid=' -o /out/ternal-api ./cmd/ternal-api \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w -buildid=' -o /out/ternal-anchor ./cmd/ternal-anchor \
     && install -d -o 65532 -g 65532 -m 0700 /out/data/ternal
 
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chown=65532:65532 /out/data /data
 COPY --from=build --chown=65532:65532 /out/ternal-api /usr/local/bin/ternal-api
+COPY --from=build --chown=65532:65532 /out/ternal-anchor /usr/local/bin/ternal-anchor
 
 ENV TERNAL_BIND=0.0.0.0:3000 \
     TERNAL_DATA_DIR=/data/ternal
