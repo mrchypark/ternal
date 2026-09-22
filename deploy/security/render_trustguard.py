@@ -127,11 +127,12 @@ def projection_ok(prefix, key):
 def api_policy(name, binding_name, namespace_selector, namespace, service_account_name, anchor_service_account, anchor_name, image_list, target):
     containers = "object.spec.containers" if target == "pod" else "object.spec.template.spec.containers"
     service = "object.spec.serviceAccountName" if target == "pod" else "object.spec.template.spec.serviceAccountName"
-    resources = ["pods"] if target == "pod" else ["deployments", "statefulsets", "replicasets"]
+    resources = ["pods", "pods/ephemeralcontainers"] if target == "pod" else ["deployments", "statefulsets", "replicasets"]
     # The anchor service runs the same official image as the API, so its role is
     # subtracted by name, executable, and pinned configuration instead of being
     # exempted by image or by service account alone.  The anchor ID is pinned to
     # the ConfigMap name this renderer already protects.
+    spec = "object.spec" if target == "pod" else "object.spec.template.spec"
     role = anchor_container_expr("c", anchor_name, namespace, anchor_name)
     policy = {
         "apiVersion": "admissionregistration.k8s.io/v1",
@@ -147,6 +148,13 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
                 {"name": "apiContainers", "expression": containers + ".filter(c, " + api_container_expr() + " && !(" + role + "))"},
             ],
             "validations": [
+                {"expression": service + " != '" + anchor_service_account + "' || (variables.anchorContainers.size() == 1 && "
+                 + containers + ".size() == 1 && (!has(" + spec + ".initContainers) || " + spec + ".initContainers.size() == 0) && "
+                 + "(!has(" + spec + ".ephemeralContainers) || " + spec + ".ephemeralContainers.size() == 0))",
+                 "message": "the recovery identity is reserved for a single approved anchor container"},
+                {"expression": "variables.anchorContainers.all(c, !has(c.lifecycle) && (!has(c.volumeMounts) || c.volumeMounts.all(m, "
+                 + "m.mountPath in ['/tmp', '/etc/ternal-anchor/tls', '/etc/ternal-anchor/token', '/var/run/secrets/kubernetes.io/serviceaccount'])))",
+                 "message": "the recovery executable must not be replaced or accompanied by lifecycle commands"},
                 {"expression": "variables.apiContainers.size() == 0 || " + service + " == '" + service_account_name + "'",
                  "message": "Ternal API workloads must use the protected service account"},
                 {"expression": "variables.anchorContainers.size() == 0 || " + service + " == '" + anchor_service_account + "'",

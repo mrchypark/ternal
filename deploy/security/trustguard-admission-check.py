@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the rendered policy on a real API server in a disposable namespace."""
 import json
+import copy
 import subprocess
 import sys
 import uuid
@@ -21,7 +22,7 @@ def require(result):
 
 def main(image):
     namespace = "ternal-admission-" + uuid.uuid4().hex[:10]
-    doc = tg.render(namespace, "api", "anchor", "source", "a" * 64, [image],
+    doc = tg.render(namespace, "api", "anchor", namespace, "a" * 64, [image],
                     anchor_service_account="recovery")
     policies = [x for x in doc["items"] if x["kind"].startswith("ValidatingAdmission")]
     def read():
@@ -41,6 +42,20 @@ def main(image):
 
     try:
         require(kubectl("apply", "-f", "-", data=doc))
+        require(kubectl("-n", namespace, "create", "serviceaccount", "recovery"))
+        def workload(spec, allowed):
+            for kind in ("Pod", "Deployment"):
+                obj = {"apiVersion": "v1" if kind == "Pod" else "apps/v1", "kind": kind,
+                       "metadata": {"name": "identity-probe", "namespace": namespace}}
+                obj["spec"] = spec if kind == "Pod" else {
+                    "selector": {"matchLabels": {"app": "probe"}},
+                    "template": {"metadata": {"labels": {"app": "probe"}}, "spec": spec}}
+                result = kubectl("create", "--dry-run=server", "-f", "-", data=obj)
+                if allowed:
+                    require(result)
+                else:
+                    assert result.returncode and "denied" in result.stderr.lower(), result.stderr or result.stdout
+
         # Wait for enforcement by probing a forbidden reset, without mutating it.
         import time
         for _ in range(30):
@@ -50,6 +65,25 @@ def main(image):
             time.sleep(1)
         else:
             raise AssertionError("DELETE guard never became active")
+        anchor = {"serviceAccountName": "recovery", "containers": [{
+            "name": tg.ANCHOR_CONTAINER, "image": image, "command": [tg.ANCHOR_EXECUTABLE],
+            "env": [{"name": name, "value": value} for name, value in (
+                ("TERNAL_RECOVERY_ANCHOR_ID", "anchor"), ("TERNAL_TRUST_ANCHOR_CONFIGMAP", "anchor"),
+                ("TERNAL_TRUST_ANCHOR_NAMESPACE", namespace))]}]}
+        workload(anchor, True)
+        rogue = copy.deepcopy(anchor)
+        rogue["containers"] = [{"name": "rogue", "image": "busybox:1.37"}]
+        workload(rogue, False)
+        sidecar = copy.deepcopy(anchor)
+        sidecar["containers"].append(rogue["containers"][0])
+        workload(sidecar, False)
+        init = copy.deepcopy(anchor)
+        init["initContainers"] = rogue["containers"]
+        workload(init, False)
+        overlay = copy.deepcopy(anchor)
+        overlay["volumes"] = [{"name": "replace", "emptyDir": {}}]
+        overlay["containers"][0]["volumeMounts"] = [{"name": "replace", "mountPath": "/usr/local/bin"}]
+        workload(overlay, False)
         d = read()["data"]
         d.update(recoveryGeneration="0", recoveryEvidence="evidence", recoveryTransition="null", recoveryReceipt="null")
         write(d)  # Exact legacy migration.

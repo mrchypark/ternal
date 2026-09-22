@@ -57,7 +57,7 @@ class TrustGuardRendererTest(unittest.TestCase):
         self.assertIn("TER NAL", rendered.replace("TERNAL", "TER NAL"))
         self.assertIn("request.operation != 'DELETE'", rendered)
         self.assertIn("pendingEpoch", rendered)
-        self.assertNotIn("secret", rendered.lower())
+        self.assertEqual(self.by_kind(result, "Secret"), [])
         api = [p for p in policies if "api-" in p["metadata"]["name"]]
         self.assertEqual({p["spec"]["matchConstraints"]["resourceRules"][0]["resources"][0] for p in api}, {"pods", "deployments"})
         for policy in policies:
