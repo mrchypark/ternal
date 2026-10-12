@@ -997,10 +997,13 @@ func (s *Store) UpdateHost(ctx context.Context, id string, h NewHost, actor stri
 	}
 	tagsJSON, _ := json.Marshal(h.Tags)
 	now := nowUnix()
+	const changed = ` WHERE id=? AND (name IS NOT ? OR endpoint_id IS NOT ? OR ssh_user IS NOT ? OR tags IS NOT ? OR ssh_port IS NOT ? OR status IS NOT ? OR owner IS NOT ? OR last_seen IS NOT ?)`
+	changedArgs := []any{id, h.Name, h.EndpointID, h.SSHUser, string(tagsJSON), h.SSHPort, h.Status, h.Owner, h.LastSeen}
 	statement := rhiza.SQLStatement{SQL: `UPDATE hosts SET name=?, endpoint_id=?, ssh_user=?, tags=?, ssh_port=?, status=?, owner=?, last_seen=?, updated_at=?
-		WHERE id=? AND (name IS NOT ? OR endpoint_id IS NOT ? OR ssh_user IS NOT ? OR tags IS NOT ? OR ssh_port IS NOT ? OR status IS NOT ? OR owner IS NOT ? OR last_seen IS NOT ?)`, Args: []any{h.Name, h.EndpointID, h.SSHUser, string(tagsJSON), h.SSHPort, h.Status, h.Owner, h.LastSeen, now, id, h.Name, h.EndpointID, h.SSHUser, string(tagsJSON), h.SSHPort, h.Status, h.Owner, h.LastSeen}}
-	_, err := s.db.ExecTransactionResult(ctx, statement,
-		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'host.updated', 'host', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, now}})
+		` + changed, Args: append([]any{h.Name, h.EndpointID, h.SSHUser, string(tagsJSON), h.SSHPort, h.Status, h.Owner, h.LastSeen, now}, changedArgs...)}
+	_, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'host.updated', 'host', ?, ?, ? FROM hosts` + changed, Args: append([]any{newID(), id, actor, now}, changedArgs...)},
+		statement)
 	return err
 }
 
@@ -1018,14 +1021,14 @@ func (s *Store) DeleteHost(ctx context.Context, id, actor string) error {
 	// device can authenticate and no serial stays ambiguous. History
 	// (requests, audit) is kept. Reenrollment after delete gets a clean slate.
 	_, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'host.deleted', 'host', ?, ?, ? FROM hosts WHERE id=?`, Args: []any{newID(), id, actor, nowUnix(), id}},
 		rhiza.SQLStatement{SQL: `DELETE FROM authorized_keys_snapshot_grants WHERE host_id = ?`, Args: []any{id}},
 		rhiza.SQLStatement{SQL: `DELETE FROM authorized_keys_snapshots WHERE host_id = ?`, Args: []any{id}},
 		rhiza.SQLStatement{SQL: `DELETE FROM access_grants WHERE host_id = ?`, Args: []any{id}},
 		rhiza.SQLStatement{SQL: `DELETE FROM relay_access_grants WHERE host_id = ?`, Args: []any{id}},
 		rhiza.SQLStatement{SQL: `DELETE FROM endpoint_discovery WHERE host_id = ?`, Args: []any{id}},
 		rhiza.SQLStatement{SQL: `DELETE FROM devices WHERE host_id = ?`, Args: []any{id}},
-		rhiza.SQLStatement{SQL: `DELETE FROM hosts WHERE id=?`, Args: []any{id}},
-		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'host.deleted', 'host', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, nowUnix()}})
+		rhiza.SQLStatement{SQL: `DELETE FROM hosts WHERE id=?`, Args: []any{id}})
 	return err
 }
 
@@ -1089,10 +1092,13 @@ func (s *Store) UpdatePolicy(ctx context.Context, id string, p NewPolicy, actor 
 	}
 	sshUsersJSON, _ := json.Marshal(p.SSHUsers)
 	now := nowUnix()
+	const changed = ` WHERE id=? AND (name IS NOT ? OR principal IS NOT ? OR host_selector IS NOT ? OR ssh_users IS NOT ? OR expires_at IS NOT ?)`
+	changedArgs := []any{id, p.Name, p.Principal, p.HostSelector, string(sshUsersJSON), p.ExpiresAt}
 	statement := rhiza.SQLStatement{SQL: `UPDATE policies SET name=?, principal=?, host_selector=?, ssh_users=?, expires_at=?, updated_at=?
-		WHERE id=? AND (name IS NOT ? OR principal IS NOT ? OR host_selector IS NOT ? OR ssh_users IS NOT ? OR expires_at IS NOT ?)`, Args: []any{p.Name, p.Principal, p.HostSelector, string(sshUsersJSON), p.ExpiresAt, now, id, p.Name, p.Principal, p.HostSelector, string(sshUsersJSON), p.ExpiresAt}}
-	_, err := s.db.ExecTransactionResult(ctx, statement,
-		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'policy.updated', 'policy', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, now}})
+		` + changed, Args: append([]any{p.Name, p.Principal, p.HostSelector, string(sshUsersJSON), p.ExpiresAt, now}, changedArgs...)}
+	_, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'policy.updated', 'policy', ?, ?, ? FROM policies` + changed, Args: append([]any{newID(), id, actor, now}, changedArgs...)},
+		statement)
 	return err
 }
 
@@ -1106,8 +1112,8 @@ func (s *Store) DeletePolicy(ctx context.Context, id, actor string) error {
 		return fmt.Errorf("audit actor is required")
 	}
 	_, err := s.db.ExecTransactionResult(ctx,
-		rhiza.SQLStatement{SQL: `DELETE FROM policies WHERE id=?`, Args: []any{id}},
-		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'policy.deleted', 'policy', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, nowUnix()}})
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'policy.deleted', 'policy', ?, ?, ? FROM policies WHERE id=?`, Args: []any{newID(), id, actor, nowUnix(), id}},
+		rhiza.SQLStatement{SQL: `DELETE FROM policies WHERE id=?`, Args: []any{id}})
 	return err
 }
 
@@ -1396,8 +1402,8 @@ func (s *Store) DeleteSSHKeyForUser(ctx context.Context, id, userID string, admi
 	args := []any{id, userID}
 	if admin {
 		response, err := s.db.ExecTransactionResult(ctx,
-			rhiza.SQLStatement{SQL: `DELETE FROM ssh_keys WHERE id = ?`, Args: []any{id}},
-			rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'ssh_key.deleted', 'ssh_key', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, userID, nowUnix()}})
+			rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'ssh_key.deleted', 'ssh_key', ?, ?, ? FROM ssh_keys WHERE id=?`, Args: []any{newID(), id, userID, nowUnix(), id}},
+			rhiza.SQLStatement{SQL: `DELETE FROM ssh_keys WHERE id = ?`, Args: []any{id}})
 		return response.RowsAffected >= 1, err
 	}
 	response, err := s.db.ExecContext(ctx, statement, args...)
@@ -1931,8 +1937,9 @@ func (s *Store) CloseManufacturingBatch(ctx context.Context, id, actor string) e
 	}
 	now := nowUnix()
 	statement := rhiza.SQLStatement{SQL: `UPDATE manufacturing_batches SET status='closed', closed_at=? WHERE id=? AND status='open'`, Args: []any{now, id}}
-	_, err := s.db.ExecTransactionResult(ctx, statement,
-		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'manufacturing.batch.closed', 'manufacturing_batch', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, now}})
+	_, err := s.db.ExecTransactionResult(ctx,
+		rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'manufacturing.batch.closed', 'manufacturing_batch', ?, ?, ? FROM manufacturing_batches WHERE id=? AND status='open'`, Args: []any{newID(), id, actor, now, id}},
+		statement)
 	return err
 }
 
@@ -2217,9 +2224,9 @@ func (s *Store) DeleteDevice(ctx context.Context, id, actor string) error {
 	}
 	now := nowUnix()
 	statements := []rhiza.SQLStatement{
+		{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'device.revoked', 'device', ?, ?, ? FROM devices WHERE id=? AND state != 'revoked'`, Args: []any{newID(), id, actor, now, id}},
 		{SQL: `UPDATE devices SET state = 'revoked', last_seen_at = ? WHERE id = ? AND state != 'revoked'`, Args: []any{now, id}},
 	}
-	statements = append(statements, rhiza.SQLStatement{SQL: `INSERT INTO audit_events (id, action, resource, resource_id, user_id, created_at) SELECT ?, 'device.revoked', 'device', ?, ?, ? WHERE changes() = 1`, Args: []any{newID(), id, actor, now}})
 	statements = append(statements,
 		rhiza.SQLStatement{SQL: `UPDATE hosts SET status = 'revoked', last_seen = ?, updated_at = ? WHERE id = ?`, Args: []any{now, now, hostID}},
 		rhiza.SQLStatement{SQL: `UPDATE access_grants SET expires_at = ? WHERE host_id = ? AND expires_at > ?`, Args: []any{now, hostID, now}},

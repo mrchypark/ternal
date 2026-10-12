@@ -80,7 +80,7 @@ configuration root, such as an isolated test directory; the session remains at
 | `TERNAL_DATA_NODE_ID` | `node-1` | Node identity |
 | `TERNAL_DATA_BIND_ADDR` | `127.0.0.1:0` | Data-node listen address |
 | `TERNAL_DATA_PEER_ADDR` | `127.0.0.1:0` | Address advertised to peers |
-| `TERNAL_DATA_CLUSTER_MEMBERS` | empty | JSON member list |
+| `TERNAL_DATA_CLUSTER_MEMBERS` | empty | JSON member list carrying each member's `public_key` |
 | `TERNAL_DATA_MULTI_NODE` | `0` | Requires exactly three configured members when `1` |
 | `TERNAL_DATA_EXPECTED_MEMBER_IDS` | empty | Optional comma-separated exact member-ID set |
 | `TERNAL_DATA_CHECKPOINT_INTERVAL` | `15m` | Interval for native certified checkpoints; must be positive |
@@ -126,6 +126,19 @@ different random token of at least 32 bytes. Voter tokens must also differ from
 optional session token in the same Secret as `TERNAL_OBJECT_STORE_ACCESS_KEY`,
 `TERNAL_OBJECT_STORE_SECRET_KEY`, and `TERNAL_OBJECT_STORE_SESSION_TOKEN`.
 Never put member tokens or object-store credentials in Helm values.
+
+Each entry also carries `public_key`, the official derivation of that member's
+own token for the configured cluster ID. Prepare the value rather than writing
+it by hand: `ternalctl prepare-members <cluster-id>` reads the same array with
+its `token` fields on stdin and writes it back with a `public_key` per member,
+refusing a key that is already present but does not match its credential. The
+recovery operator reads this exact key from the same Secret entry and rejects a
+membership without it, and Ternal refuses a mismatched key at startup instead of
+replacing it.
+
+The output still contains private member tokens. Set `umask 077` before
+redirecting it to a file, keep it out of version control, and install it only in
+the runtime Secret.
 
 For GCS on GKE, set `serviceAccountName` to an existing Kubernetes
 ServiceAccount bound through Workload Identity. Rhiza then uses Application

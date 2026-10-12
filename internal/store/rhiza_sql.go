@@ -17,6 +17,16 @@ import (
 	"github.com/mrchypark/rhiza"
 )
 
+// memberCredential is one entry of TERNAL_DATA_CLUSTER_MEMBERS as Ternal
+// deploys it: an upstream public member plus the token that seeds its private
+// peer identity. Rhiza v0.19 keeps only PublicKey in a replicated membership,
+// so the token never reaches rhiza.Member; it is projected into the public key
+// and this node's Config.PeerToken instead.
+type memberCredential struct {
+	rhiza.Member
+	Token string `json:"token"`
+}
+
 // errTrustUnsettled is returned while a store that must be fenced has not yet
 // established its anchored pair on this node.
 var errTrustUnsettled = errors.New("trust anchor is not settled")
@@ -261,7 +271,11 @@ func (d *rhizaSQL) execute(ctx context.Context, request rhiza.ExecuteRequest, or
 	one := int64(1)
 	// Request statement results solely so the wrapper can remove this tail from
 	// the public receipt; callers retain the pre-fence projection below.
-	request.Statements = append(request.Statements, rhiza.SQLStatement{SQL: `UPDATE trust_state SET epoch=?, token=? WHERE id=1 AND epoch=? AND token=? RETURNING last_insert_rowid()`, Args: []any{nextEpoch, nextToken, current.Epoch, current.Token}, WantRows: true, ExpectedReturnedRows: &one})
+	// The tail returns the row it just moved, so ExpectedReturnedRows still
+	// proves the compare-and-swap matched exactly one row. It cannot return
+	// last_insert_rowid(): Rhiza v0.19 denies that function on replicated
+	// writes because it reads connection-local state.
+	request.Statements = append(request.Statements, rhiza.SQLStatement{SQL: `UPDATE trust_state SET epoch=?, token=? WHERE id=1 AND epoch=? AND token=? RETURNING epoch`, Args: []any{nextEpoch, nextToken, current.Epoch, current.Token}, WantRows: true, ExpectedReturnedRows: &one})
 	if err := rhiza.ValidateExecuteRequest(request); err != nil {
 		return rhiza.ExecuteResponse{}, fmt.Errorf("validate fenced write: %w", err)
 	}
@@ -476,7 +490,12 @@ func rhizaConfigFromEnv(dataDir string) (rhiza.Config, error) {
 	if os.Getenv("TERNAL_REQUIRE_DATA_ADMIN_TOKEN") == "1" && len(adminToken) < 32 {
 		return rhiza.Config{}, fmt.Errorf("TERNAL_DATA_ADMIN_TOKEN must be at least 32 bytes")
 	}
-	var members []rhiza.Member
+	// Rhiza v0.19 keeps only public identity in a replicated membership; the
+	// private peer secret moved to Config.PeerToken and is derived from the
+	// cluster and node ID. Ternal keeps its own credential contract, where each
+	// member carries the token that seeds that key, so membership is projected
+	// here instead of changing the Secret schema every deployment already has.
+	var members []memberCredential
 	if raw := os.Getenv("TERNAL_DATA_CLUSTER_MEMBERS"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &members); err != nil {
 			return rhiza.Config{}, fmt.Errorf("parse TERNAL_DATA_CLUSTER_MEMBERS: %w", err)
@@ -535,6 +554,12 @@ func rhizaConfigFromEnv(dataDir string) (rhiza.Config, error) {
 	} else if len(members) != 0 || expectedMemberIDs != "" {
 		return rhiza.Config{}, fmt.Errorf("HA member configuration requires TERNAL_DATA_MULTI_NODE=1")
 	}
+	clusterID := envOr("TERNAL_DATA_CLUSTER_ID", "ternal")
+	nodeID := envOr("TERNAL_DATA_NODE_ID", "node-1")
+	publicMembers, peerToken, err := rhizaIdentity(clusterID, nodeID, members)
+	if err != nil {
+		return rhiza.Config{}, err
+	}
 	syncInterval, err := durationEnv("TERNAL_OBJECT_STORE_SYNC_INTERVAL", time.Minute)
 	if err != nil {
 		return rhiza.Config{}, err
@@ -548,13 +573,14 @@ func rhizaConfigFromEnv(dataDir string) (rhiza.Config, error) {
 		return rhiza.Config{}, err
 	}
 	return rhiza.Config{
-		ClusterID:            envOr("TERNAL_DATA_CLUSTER_ID", "ternal"),
-		NodeID:               envOr("TERNAL_DATA_NODE_ID", "node-1"),
+		ClusterID:            clusterID,
+		NodeID:               nodeID,
 		DataDir:              dataDir,
 		BindAddr:             envOr("TERNAL_DATA_BIND_ADDR", "127.0.0.1:0"),
 		PeerAddr:             envOr("TERNAL_DATA_PEER_ADDR", "127.0.0.1:0"),
 		AdminToken:           adminToken,
-		Members:              members,
+		PeerToken:            peerToken,
+		Members:              publicMembers,
 		ObjStoreEndpoint:     os.Getenv("TERNAL_OBJECT_STORE_ENDPOINT"),
 		ObjStoreBucket:       os.Getenv("TERNAL_OBJECT_STORE_BUCKET"),
 		ObjStoreProvider:     os.Getenv("TERNAL_OBJECT_STORE_PROVIDER"),
@@ -570,6 +596,29 @@ func rhizaConfigFromEnv(dataDir string) (rhiza.Config, error) {
 		ObjStoreBatchDelay:   batchDelay,
 		CheckpointInterval:   checkpointInterval,
 	}, nil
+}
+
+// rhizaIdentity projects Ternal's member credentials onto the identity shape
+// Rhiza v0.19 expects: a public key per member derived from its token, and this
+// node's own token as the private peer secret. It returns the projected
+// membership and the peer token for nodeID, empty when nodeID is not a member.
+// A supplied public key is kept only when it is that derivation; a key from
+// another credential or cluster would republish an identity never held here.
+func rhizaIdentity(clusterID, nodeID string, members []memberCredential) ([]rhiza.Member, string, error) {
+	projected := make([]rhiza.Member, 0, len(members))
+	peerToken := ""
+	for _, member := range members {
+		derived := rhiza.PeerPublicKey(clusterID, string(member.ID), member.Token)
+		if member.PublicKey != (rhiza.PublicKey{}) && member.PublicKey != derived {
+			return nil, "", fmt.Errorf("member %s public key does not match its credential for cluster %s", member.ID, clusterID)
+		}
+		member.Member.PublicKey = derived
+		if string(member.ID) == nodeID {
+			peerToken = member.Token
+		}
+		projected = append(projected, member.Member)
+	}
+	return projected, peerToken, nil
 }
 
 func envOr(key, fallback string) string {

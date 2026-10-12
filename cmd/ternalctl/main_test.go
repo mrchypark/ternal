@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/mrchypark/rhiza"
 )
 
 func TestDevicePollingPreservesProviderPendingResponse(t *testing.T) {
@@ -445,5 +448,204 @@ func TestRecursiveCTLResolvesAbsolutePath(t *testing.T) {
 	}
 	if out := rewriteCTLPath("StrictHostKeyChecking=yes", plain); out != "StrictHostKeyChecking=yes" {
 		t.Fatalf("unrelated arg changed: %q", out)
+	}
+}
+
+// prepareFixture is the private credential JSON an HA deployment writes before
+// preparation: tokens and endpoints only, no public keys yet.
+func prepareFixture(t *testing.T) (string, map[string]string) {
+	t.Helper()
+	tokens := map[string]string{
+		"ternal-0": strings.Repeat("0", 64),
+		"ternal-1": strings.Repeat("1", 64),
+	}
+	members := []memberCredential{}
+	for _, id := range []string{"ternal-0", "ternal-1"} {
+		host := id + ".ternal-data.default.svc.cluster.local:9090"
+		members = append(members, memberCredential{
+			Member: rhiza.Member{
+				ID:      rhiza.NodeID(id),
+				URL:     "quic://" + host,
+				PeerURL: "quic://" + host,
+				LogURL:  "quic://" + host,
+			},
+			Token: tokens[id],
+		})
+	}
+	encoded, err := json.Marshal(members)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded), tokens
+}
+
+func TestPrepareMembersDerivesPublicKeyPerCredential(t *testing.T) {
+	input, tokens := prepareFixture(t)
+	var out bytes.Buffer
+	if err := prepareMembers("ternal-ha", strings.NewReader(input), &out); err != nil {
+		t.Fatalf("prepareMembers: %v", err)
+	}
+	var prepared []memberCredential
+	if err := json.Unmarshal(out.Bytes(), &prepared); err != nil {
+		t.Fatalf("output is not a member list: %v", err)
+	}
+	if len(prepared) != len(tokens) {
+		t.Fatalf("prepared members = %d, want %d", len(prepared), len(tokens))
+	}
+	for _, member := range prepared {
+		id := string(member.ID)
+		if member.Token != tokens[id] {
+			t.Fatalf("member %s token changed", id)
+		}
+		if member.PublicKey != rhiza.PeerPublicKey("ternal-ha", id, tokens[id]) {
+			t.Fatalf("member %s public key is not the derivation of its own credential", id)
+		}
+		if member.URL == "" || member.PeerURL == "" || member.LogURL == "" {
+			t.Fatalf("member %s endpoints were dropped", id)
+		}
+	}
+	var again bytes.Buffer
+	if err := prepareMembers("ternal-ha", bytes.NewReader(out.Bytes()), &again); err != nil {
+		t.Fatalf("re-preparing the output: %v", err)
+	}
+	if again.String() != out.String() {
+		t.Fatal("preparation is not idempotent")
+	}
+}
+
+func TestPrepareMembersRejectsPublicKeyFromAnotherCluster(t *testing.T) {
+	input, tokens := prepareFixture(t)
+	var members []memberCredential
+	if err := json.Unmarshal([]byte(input), &members); err != nil {
+		t.Fatal(err)
+	}
+	members[0].PublicKey = rhiza.PeerPublicKey("other-cluster", string(members[0].ID), tokens[string(members[0].ID)])
+	encoded, err := json.Marshal(members)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = prepareMembers("ternal-ha", bytes.NewReader(encoded), &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("public key from another cluster was accepted")
+	}
+	if !strings.Contains(err.Error(), "public key") {
+		t.Fatalf("error does not report the mismatch: %v", err)
+	}
+	for _, token := range tokens {
+		if strings.Contains(err.Error(), token) {
+			t.Fatalf("error exposes a token value: %v", err)
+		}
+	}
+}
+
+func TestPrepareMembersRejectsUnsafeCredentials(t *testing.T) {
+	input, tokens := prepareFixture(t)
+	var base []memberCredential
+	if err := json.Unmarshal([]byte(input), &base); err != nil {
+		t.Fatal(err)
+	}
+	short := append([]memberCredential(nil), base...)
+	short[0].Token = strings.Repeat("s", 31)
+	repeated := append([]memberCredential(nil), base...)
+	repeated[1].Token = repeated[0].Token
+	duplicate := append([]memberCredential(nil), base...)
+	duplicate[1].ID = duplicate[0].ID
+	emptyToken := append([]memberCredential(nil), base...)
+	emptyToken[0].Token = ""
+
+	for name, members := range map[string][]memberCredential{
+		"short token":       short,
+		"repeated token":    repeated,
+		"duplicate node ID": duplicate,
+		"missing token":     emptyToken,
+	} {
+		t.Run(name, func(t *testing.T) {
+			encoded, err := json.Marshal(members)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = prepareMembers("ternal-ha", bytes.NewReader(encoded), &bytes.Buffer{})
+			if err == nil {
+				t.Fatalf("%s was accepted", name)
+			}
+			for _, token := range tokens {
+				if strings.Contains(err.Error(), token) {
+					t.Fatalf("error exposes a token value: %v", err)
+				}
+			}
+		})
+	}
+
+	for name, raw := range map[string]string{
+		"trailing JSON":    input + input,
+		"unknown field":    `[{"node_id":"ternal-0","tokn":"x"}]`,
+		"empty membership": `[]`,
+		"empty input":      "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := prepareMembers("ternal-ha", strings.NewReader(raw), &bytes.Buffer{}); err == nil {
+				t.Fatalf("%s was accepted", name)
+			}
+		})
+	}
+	if err := prepareMembers("", strings.NewReader(input), &bytes.Buffer{}); err == nil {
+		t.Fatal("empty cluster ID was accepted")
+	}
+}
+
+func builtTernalctl(t *testing.T) string {
+	t.Helper()
+	binary := filepath.Join(t.TempDir(), "ternalctl")
+	cmd := exec.Command("go", "build", "-trimpath", "-o", binary, ".")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build ternalctl: %v\n%s", err, output)
+	}
+	return binary
+}
+
+// cliEnv pins the API URL so a developer's TERNAL_API_URL cannot fail the
+// build's own dispatch before a command is reached.
+func cliEnv() []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "TERNAL_API_URL=") {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "TERNAL_API_URL=http://127.0.0.1:3000")
+}
+
+func TestPrepareMembersRoutesThroughBuiltCLI(t *testing.T) {
+	binary := builtTernalctl(t)
+	input, _ := prepareFixture(t)
+
+	cmd := exec.Command(binary, "prepare-members", "ternal-ha")
+	cmd.Env = cliEnv()
+	cmd.Stdin = strings.NewReader(input)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("prepare-members failed: %v\n%s", err, stderr.String())
+	}
+	var prepared []memberCredential
+	if err := json.Unmarshal(stdout.Bytes(), &prepared); err != nil {
+		t.Fatalf("stdout is not membership JSON: %v\n%s", err, stdout.String())
+	}
+	for _, member := range prepared {
+		if member.PublicKey == (rhiza.PublicKey{}) {
+			t.Fatalf("member %s has no public key", member.ID)
+		}
+	}
+
+	missing := exec.Command(binary, "prepare-members")
+	missing.Env = cliEnv()
+	if err := missing.Run(); err == nil {
+		t.Fatal("prepare-members without a cluster ID succeeded")
+	}
+
+	unknown := exec.Command(binary, "prepare-members-unknown")
+	unknown.Env = cliEnv()
+	if err := unknown.Run(); err == nil {
+		t.Fatal("an unknown command succeeded")
 	}
 }

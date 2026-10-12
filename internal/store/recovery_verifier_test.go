@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mrchypark/rhiza/pkg/checkpoint"
 	"github.com/mrchypark/rhiza/pkg/materializer"
+	"github.com/mrchypark/rhiza/pkg/network"
 	"github.com/mrchypark/rhiza/pkg/qlog"
 	"github.com/mrchypark/rhiza/pkg/quepaxa"
 	"github.com/mrchypark/rhiza/pkg/recovery"
@@ -28,9 +29,9 @@ func recoveryFixture(t *testing.T) (objstore.Bucket, recoveryStorage, recoveryan
 	ctx := context.Background()
 	bucket := objstore.NewInMemBucket()
 	storage := recoveryStorage{Provider: "s3", Endpoint: "minio.ternal-operator-e2e.svc:9000", Bucket: "ternal-e2e", Prefix: "clusters/ternal-e2e-a1"}
-	sourceID, targetID := "ternal-e2e-a1", "rhiza-r-recovered"
+	const sourceID, targetID = "ternal-e2e-a1", "rhiza-r-recovered"
 	sourcePrefix, targetPrefix := storage.prefix(sourceID), storage.prefix(targetID)
-	sourceMembers := []quepaxa.Member{{ID: "a1", Token: "a1-token"}}
+	sourceMembers := []quepaxa.Member{{ID: "a1", PublicKey: quepaxa.PublicKey{1}}}
 	wal, err := qlog.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -41,26 +42,22 @@ func recoveryFixture(t *testing.T) (objstore.Bucket, recoveryStorage, recoveryan
 		t.Fatal(err)
 	}
 	token := uuid.NewString()
-	for _, statement := range []string{
-		`CREATE TABLE trust_state (id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL, token TEXT NOT NULL)`,
-		`INSERT INTO trust_state (id, epoch, token) VALUES (1, 3, '` + token + `')`,
-	} {
-		if _, _, err := core.Propose(ctx, []byte(statement)); err != nil {
-			t.Fatal(err)
-		}
-	}
 	state, err := materializer.Open(filepath.Join(t.TempDir(), "sqlite.db"), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer state.Close()
-	for slot := quepaxa.Slot(1); slot <= core.Tip(); slot++ {
-		decision, ok := core.CertifiedValue(slot)
-		if !ok {
-			t.Fatalf("missing decision at slot %d", slot)
-		}
-		if err := state.ApplyBatch(ctx, []quepaxa.DecidedValue{decision}); err != nil {
-			t.Fatal(err)
+	// Use the public executor to create certified SQL with the current policy.
+	// Raw SQL proposals are incompatible history in Rhiza v0.19.
+	executor := network.NewServer(core, state, sourceID, true, nil)
+	defer executor.Close()
+	for _, statement := range []string{
+		`CREATE TABLE trust_state (id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL, token TEXT NOT NULL)`,
+		`INSERT INTO trust_state (id, epoch, token) VALUES (1, 3, '` + token + `')`,
+	} {
+		response, err := executor.Execute(ctx, network.ExecuteRequest{RequestID: uuid.NewString(), SQL: statement})
+		if err != nil || response.Status != "committed" {
+			t.Fatalf("execute fixture SQL: response=%#v err=%v", response, err)
 		}
 	}
 	claim := publishCheckpoint(t, ctx, bucket, state, core, sourcePrefix)
@@ -87,7 +84,7 @@ func recoveryFixture(t *testing.T) (objstore.Bucket, recoveryStorage, recoveryan
 	if err := recovery.Seal(ctx, bucket, sourcePrefix, opID); err != nil {
 		t.Fatal(err)
 	}
-	targetMembers := []quepaxa.Member{{ID: "a2", Token: "a2-token"}}
+	targetMembers := []quepaxa.Member{{ID: "a2", PublicKey: quepaxa.PublicKey{2}}}
 	targetMembership := recovery.NewMembershipRecord(targetID, targetMembers, "async")
 	result, err := recovery.Fork(ctx, bucket, recovery.ForkOptions{
 		SourcePrefix: sourcePrefix, TargetPrefix: targetPrefix,
@@ -213,7 +210,7 @@ func TestRecoveryActivationCommitsOnlyProvenEvidence(t *testing.T) {
 			req.TargetAnchorHash = hex64()
 		},
 		"target membership differs from the archived registration": func(req *recoveryanchor.Request, _ *trustAnchorRecord) {
-			req.TargetMembership = recovery.NewMembershipRecord(req.TargetClusterID, []quepaxa.Member{{ID: "other", Token: "other"}}, "async")
+			req.TargetMembership = recovery.NewMembershipRecord(req.TargetClusterID, []quepaxa.Member{{ID: "other", PublicKey: quepaxa.PublicKey{3}}}, "async")
 		},
 		"fork result differs from the archived fork": func(req *recoveryanchor.Request, _ *trustAnchorRecord) {
 			req.Fork.Tip++

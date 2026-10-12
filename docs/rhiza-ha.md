@@ -7,13 +7,30 @@ Operator는 opt-in이며 operator.enabled=true로 별도 Deployment로 실행한
 
 기존 standalone 배포는 HA로 전환할 수 없다. HA는 불변 identity를 사용하므로 새 클러스터를 처음부터 배포해야 한다.
 
-## CRD 설치 (v0.15.0 고정)
+## CRD 설치 (v0.19.0 고정)
 
 Operator 사용 전 CRD를 먼저 설치한다:
 
-    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.15.0/deploy/operator/crd.yaml
-    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.15.0/deploy/operator/cluster-crd.yaml
-    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.15.0/deploy/operator/fence-crd.yaml
+    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.19.0/deploy/operator/crd.yaml
+    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.19.0/deploy/operator/cluster-crd.yaml
+    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.19.0/deploy/operator/fence-crd.yaml
+
+CRD 정의는 v0.15.0과 v0.19.0 사이에 바뀌지 않았다. 이미 설치된 CRD가 있으면 다시 적용해도 무방하다.
+
+## v0.19.0 업그레이드 경계
+
+Rhiza v0.19.0은 호환성 파괴 릴리스이며 SQL 실행 정책 7을 요구한다. SQL 및 그래프 히스토리, 머티리얼라이제이션, 체크포인트는 현재 정책과 호환되어야 한다. 이전 정책의 히스토리와 정책 표시가 없거나 정책 1~6인 물리 상태는 거부되며 자동 마이그레이션이나 구 히스토리 재생 경로가 없다.
+
+따라서 기존 v0.15.0 설치에서 v0.19.0으로의 인플레이스 업그레이드는 불가능하다.
+
+1. 기존 설치 디렉터리와 백업을 그대로 보존한다.
+2. 구 바이너리로 검증된 애플리케이션 상태를 논리적으로 export 한다(체크포인트/그래프 파일 재사용 금지).
+3. 새 디렉터리, 새 스토리지 네임스페이스, 새 identity를 가진 새 클러스터에 import 한다.
+4. 구 물리 상태에 새 정책 메타데이터를 직접 쓰거나 stamp 하지 않는다. 혼합 버전 클러스터와 다운그레이드는 지원되지 않는다.
+
+선택 사항이 아닌 절차 요약은 upstream 문서를 따른다: https://github.com/mrchypark/rhiza/blob/v0.19.0/docs/sql-execution-policy.md
+
+이 저장소의 변경은 의존성 핀, operator 이미지 태그, 공개 멤버십 모델과 SQL 실행 정책에 맞춘 호출부 및 검증을 다룬다. 배포나 데이터 마이그레이션은 수행하지 않는다.
 
 ## Operator 활성화
 
@@ -65,15 +82,26 @@ kubectl get rhizarecoveries -n YOUR_NAMESPACE 으로 peer Ready/Quorum과 상태
 전체 세대 복구는 대상 Ternal 시작 전 별도의 신뢰된 외부 fencing과 복구 작업에 맞춘 trust-anchor 전환이 모두 필요하다. 전환은 epoch, token, pending 증거와 단조 증명(monotonic proof)을 보존해야 하며, 조건을 충족하지 못하면 대상은 fail-closed된다. 이 설명은 소스 archive 확보 전에 trust anchor를 변경하라는 절차가 아니다.
 
 
-## v0.15.0 복구 앵커 현황
+## v0.19.0 복구 앵커 현황
 
-Rhiza v0.15.0은 Coordinator의 Activate/Verify, CheckBinding(Ternal 시작 시 바인딩 검증), UpdateApplication(Ternal 쓰기 경로에서 애플리케이션 상태 갱신)을 제공한다. upstream 복구 앵커 문서는 docs/recovery-anchor.md (v0.15.0)를 참고한다: https://github.com/mrchypark/rhiza/blob/v0.15.0/docs/recovery-anchor.md
+Rhiza v0.19.0은 Coordinator의 Activate/Verify, CheckBinding(Ternal 시작 시 바인딩 검증), UpdateApplication(Ternal 쓰기 경로에서 애플리케이션 상태 갱신)을 제공한다. upstream 복구 앵커 문서는 docs/recovery-anchor.md (v0.19.0)를 참고한다: https://github.com/mrchypark/rhiza/blob/v0.19.0/docs/recovery-anchor.md
 
 Ternal은 위 구성 요소를 갖췄다. 어댑터는 기존 trust-anchor ConfigMap을 그대로 두고 flat 필드와 공통 Record를 한 번의 compare-and-swap으로 함께 쓴다(internal/store/trust_anchor_composite.go). 검증기는 복원된 아카이브의 trust_state에서 애플리케이션 쌍을 다시 읽어 동결된 증거와 비교하므로, 요청을 되풀이하는 대상은 커밋되지 않는다(internal/store/recovery_verifier.go). 앵커 서비스는 같은 이미지의 별도 실행 파일(ternal-anchor)과 별도 Deployment로 뜬다(internal/store/anchor_service.go, cmd/ternal-anchor). admission 정책은 전환을 앵커 서비스 계정으로만 허용한다.
 
 아직 구현되지 않은 것은 멤버 교체(Ternal의 rhizaConfigFromEnv가 TERNAL_DATA_ENABLE_RECONFIGURATION과 TERNAL_DATA_LEARNER를 rhiza.Config로 옮기지 않는다)와 펜싱 실행기다. 대상의 voter endpoint가 소스와 다르면 operator가 거부하므로, 재구성 opt-in은 voter 교체 권한이 아니다.
 
 자동 복구(automaticRecovery) 가드는 그대로 유지된다.
+
+멤버십 계약도 upstream v0.19 공개 모델을 따른다. `TERNAL_DATA_CLUSTER_MEMBERS` 항목은 Ternal 배포 계약대로 `token`을 그대로 입력받지만, upstream `rhiza.Member`에는 `PeerPublicKey(clusterID, memberID, token)`로 유도한 `public_key`만 실린다. 토큰은 복제 멤버십에 없고, 이 노드에 해당하는 토큰만 `Config.PeerToken`으로 쓰인다. 토큰 길이 32바이트 이상, 서로 다른 토큰, admin 토큰과 다름, 멤버 ID 중복 검증은 그대로 유지된다.
+
+소스 멤버십은 operator가 거부하지 않도록 `public_key`를 이미 포함해야 한다. 손으로 키를 쓰지 말고 자격 증명 JSON을 준비 명령에 넘긴다:
+
+    umask 077
+    ternalctl prepare-members YOUR_CLUSTER_ID < members.json > prepared.json
+
+stdin은 `node_id`, `url`, `peer_url`, `log_url`, `token`을 가진 배열을 읽고, 같은 배열에 멤버별 `public_key`를 붙여 출력한다. 이미 있는 키가 이 자격 증명과 다른 거면 값을 바꾸지 않고 실패한다. 이 값이 `secrets.existingSecret`의 `TERNAL_DATA_CLUSTER_MEMBERS` 키에 들어가며, 소스 관찰과 세대 복구 모두 같은 값을 읽는다.
+
+세대 복구를 시작할 때 operator는 대상 멤버십을 공개 키만 남긴 목록으로 다시 쓰고, 상태별 peer 토큰을 `RHIZA_PEER_TOKENS` 맵으로 따로 준다(pod 템플릿이 복제마다 다른 Secret을 못 얹기 때문이다). `internal/operatoridentity`가 시작 시 그 맵을 node_id로 `TERNAL_DATA_CLUSTER_MEMBERS` 항목에 붙인다. 맵이 깨졌거나 멤버에 없는 노드, 대응하는 토큰이 없으면 시작 전에 실패하고, 공개 키가 자기 자격 증명과 clusterID의 유도값과 다르면 설정 검증에서 실패한다. 에러는 토큰 값을 절대 담지 않는다.
 
 ## 복구 앵커 활성화
 
@@ -102,8 +130,8 @@ GCS Workload Identity를 사용하면 시크릿 키를 생략할 수 있다.
 
 ## 참고
 
-- Embedded Operator Guide: https://github.com/mrchypark/rhiza/blob/v0.15.0/docs/embedded-operator.md
-- Operator README: https://github.com/mrchypark/rhiza/blob/v0.15.0/deploy/operator/README.md
+- Embedded Operator Guide: https://github.com/mrchypark/rhiza/blob/v0.19.0/docs/embedded-operator.md
+- Operator README: https://github.com/mrchypark/rhiza/blob/v0.19.0/deploy/operator/README.md
 - 복구 후 helm upgrade 하면 복구된 세대가 손상될 수 있다. CR과 상태를 먼저 확인한다.
 
 ## Ternal 설정과의 경계

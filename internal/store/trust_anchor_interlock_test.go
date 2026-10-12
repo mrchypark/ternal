@@ -60,7 +60,9 @@ func recoveryRequest(anchorID string) recoveryanchor.Request {
 		FenceHash:        hex64(),
 		TargetAnchorHash: hex64(),
 		Fork:             recovery.ForkResult{Tip: 9, PrefixHash: hex64(), ManifestHash: hex64()},
-		TargetMembership: recovery.MembershipRecord{Version: 1, Cluster: "rhiza-r-target", Membership: "membership", Durability: "async"},
+		// Rhiza v0.19 rejects version-1 membership records: they hashed the
+		// retired private peer token, and version 2 binds identity by public key.
+		TargetMembership: recovery.MembershipRecord{Version: recovery.MembershipRecordVersion, Cluster: "rhiza-r-target", Membership: "membership", Durability: "async"},
 	}
 }
 

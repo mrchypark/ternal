@@ -236,19 +236,23 @@ echo "MinIO is serving bucket $bucket"
 
 # --- Ternal secret and trust anchor --------------------------------------
 
-python3 - "$namespace" "$release" "$cluster_id" <<'PY' > "$work/members.json"
-import hashlib, json, sys
-namespace, release, cluster_id = sys.argv[1:4]
-members = []
-seen = set()
-for ordinal in range(3):
-    token = hashlib.sha256(f"{cluster_id}:voter:{ordinal}".encode()).hexdigest()
-    assert token not in seen
-    seen.add(token)
-    host = f"{release}-{ordinal}.{release}-data.{namespace}.svc.cluster.local"
-    members.append({"node_id": f"{release}-{ordinal}", "url": f"quic://{host}:9090", "peer_url": f"quic://{host}:9090", "log_url": f"quic://{host}:9090", "token": token})
-print(json.dumps(members))
-PY
+# The membership Secret is prepared through ternalctl, the command the HA
+# documentation hands to operators: private credential JSON on stdin, the same
+# list with every public key derived from its own token on stdout. The
+# recovery operator rejects a source membership whose keys are missing.
+{
+	printf '['
+	ordinal=0
+	while [ "$ordinal" -lt 3 ]; do
+		[ "$ordinal" -eq 0 ] || printf ','
+		token=$(printf '%s' "$cluster_id:voter:$ordinal" | openssl dgst -sha256 -hex | awk '{print $NF}')
+		host="$release-$ordinal.$release-data.$namespace.svc.cluster.local"
+		printf '{"node_id":"%s-%s","url":"quic://%s:9090","peer_url":"quic://%s:9090","log_url":"quic://%s:9090","token":"%s"}' \
+			"$release" "$ordinal" "$host" "$host" "$host" "$token"
+		ordinal=$((ordinal + 1))
+	done
+	printf ']'
+} | (CDPATH='' cd "$repo_dir" && go run ./cmd/ternalctl prepare-members "$cluster_id") > "$work/members.json"
 
 kubectl -n "$namespace" apply -f - >/dev/null <<EOF
 apiVersion: v1
