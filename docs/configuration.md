@@ -99,8 +99,8 @@ The Helm chart exposes two explicit storage modes:
   no object store it is intentionally ephemeral and suitable only for local
   development.
 - `data.mode=ha` runs exactly three voters with parallel bootstrap, stable pod
-  DNS, disposable `emptyDir` caches, required hostname anti-affinity, a
-  two-voter disruption budget, and coordinated `OnDelete` upgrades.
+  DNS, `emptyDir`-backed local WAL and voter identity, required hostname
+  anti-affinity, a two-voter disruption budget, and `OnDelete` updates.
 
 Durable standalone sets `data.requireObjectStore=true`. HA implies that setting.
 Every configured object store requires `before-ack` durability; durable
@@ -189,10 +189,14 @@ The regular Service sends API traffic only to ready voters. `/ready` performs a
 linearizable read, so an isolated voter remains alive but leaves Service
 endpoints when it cannot reach quorum.
 
-An HA upgrade is ordinal and sequential: delete one voter, wait for its
-replacement to become ready and pass a linearizable query, then continue with
-the next voter. Never delete two voters together. `OnDelete` deliberately makes
-this operator action explicit instead of restarting the whole cluster.
+Do not implement an HA upgrade by deleting voter pods. With Rhiza 0.19, losing
+an `emptyDir` loses the local WAL and voter identity; the registered voter then
+fails closed with `ErrVoterStateLost`. A surviving quorum requires fencing the
+lost voter and replacing it with a fresh learner; lost quorum requires fenced
+whole-generation recovery. Follow [Rhiza recovery](https://github.com/mrchypark/rhiza/blob/v0.19.0/docs/recovery.md)
+before replacing pods. `OnDelete` prevents automatic replacement; it does not
+provide that recovery. A container restart within the same pod retains its
+`emptyDir` and is a different operation.
 
 The data mode, cluster ID, voter IDs, object-store location/prefix, schema
 version, and Secret name form one immutable data identity. Helm
@@ -203,9 +207,11 @@ conversion or other identity changes; never use `helm upgrade --force` to bypass
 this boundary. Voter IDs, peer tokens, and peer URLs are fixed for the lifetime
 of an HA cluster.
 
-The chart never creates a PVC. Each pod rebuilds its local cache from Rhiza's
-certified object-store state. `persistence.enabled=true` is retained only as a
-fail-closed guard for the retired setting and is rejected during rendering.
+The chart never creates a PVC. Certified object-store state does not replace
+the continuity proof supplied by an HA voter's local WAL and identity. A
+single-voter archive restore requires permanent fencing of the old instance;
+HA requires the recovery procedure above. `persistence.enabled=true` is retained
+only as a fail-closed guard for the retired setting and is rejected during rendering.
 
 The trust anchor must not be restored with the bucket or managed by a Helm
 rollback. Its one-time bootstrap permit binds the initial database to the

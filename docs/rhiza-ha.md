@@ -5,6 +5,8 @@
 Ternal HA는 data.mode=ha로 3-voter StatefulSet + emptyDir(no-PVC) + 공유 오브젝트 저장소를 사용한다.
 Operator는 opt-in이며 operator.enabled=true로 별도 Deployment로 실행한다. 현재 지원 플랫폼은 linux/amd64이다.
 
+Rhiza 0.19에서 HA Pod를 삭제하면 emptyDir의 WAL과 voter identity를 잃으므로 같은 voter의 일반 재시작은 `ErrVoterStateLost`로 거부된다. 살아 있는 quorum이 있으면 잃은 voter를 펜싱하고 새 learner로 교체하며, quorum을 잃으면 전체 세대를 펜싱한 복구가 필요하다. `OnDelete`는 자동 교체를 막을 뿐 복구를 수행하지 않는다. 같은 Pod 안에서 컨테이너만 재시작하면 emptyDir는 유지된다. 단일 voter의 아카이브 복원도 이전 인스턴스의 영구 펜싱을 전제로 한다. [Rhiza 복구 절차](https://github.com/mrchypark/rhiza/blob/v0.19.0/docs/recovery.md)를 따른다.
+
 기존 standalone 배포는 HA로 전환할 수 없다. HA는 불변 identity를 사용하므로 새 클러스터를 처음부터 배포해야 한다.
 
 ## CRD 설치 (v0.19.0 고정)

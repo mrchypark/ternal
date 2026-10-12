@@ -34,7 +34,7 @@ data:
   checkpointInterval: 15m
   objectStore:
     # Rhiza-certified S3-compatible or native GCS storage is the persistence
-    # authority. /data is always a disposable emptyDir cache.
+    # authority. HA emptyDir WAL/identity loss requires fenced voter recovery.
     provider: ""
     endpoint: ""
     bucket: ""

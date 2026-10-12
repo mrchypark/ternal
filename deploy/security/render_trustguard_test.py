@@ -130,8 +130,46 @@ class TrustGuardRendererTest(unittest.TestCase):
         self.assertIn(trustguard.ANCHOR_EXECUTABLE, rendered)
         self.assertIn("c.command.size() == 1", rendered)
         self.assertIn("c.env.exists(e, e.name == 'TERNAL_RECOVERY_ANCHOR_ID' && e.value == 'ternal-trust-anchor')", rendered)
-        self.assertIn("variables.anchorContainers.size() == 0 || object.spec.serviceAccountName == 'ternal-anchor'", rendered)
-        self.assertIn("variables.apiContainers.size() == 0 || object.spec.serviceAccountName == 'ternal-data'", rendered)
+        self.assertIn("(has(object.spec.serviceAccountName) ? object.spec.serviceAccountName : 'default') == 'ternal-anchor'", rendered)
+        self.assertIn("(has(object.spec.serviceAccountName) ? object.spec.serviceAccountName : 'default') == 'ternal-data'", rendered)
+        self.assertIn("variables.anchorContainers.size() == 0 || ", rendered)
+        self.assertIn("variables.apiContainers.size() == 0 || ", rendered)
+
+    def api_policies(self, result):
+        return [p for p in self.by_kind(result, "ValidatingAdmissionPolicy")
+                if p["spec"]["matchConstraints"]["resourceRules"][0]["resources"][0] != "configmaps"]
+
+    def test_omitted_service_account_is_default_not_an_evaluation_error(self):
+        result = self.render()
+        for policy in self.api_policies(result):
+            resources = policy["spec"]["matchConstraints"]["resourceRules"][0]["resources"]
+            path = "object.spec.serviceAccountName" if resources == ["pods", "pods/ephemeralcontainers"] \
+                else "object.spec.template.spec.serviceAccountName"
+            # VAP evaluates before the ServiceAccount admission plugin defaults
+            # an omitted name; a bare key access would be "no such key" and
+            # fail-closed deny every controller/Pod that omits the field.
+            guard = "(has({p}) ? {p} : 'default')".format(p=path)
+            expressions = [v["expression"] for v in policy["spec"]["validations"]]
+            self.assertTrue(any(guard in e for e in expressions), policy["metadata"]["name"])
+            self.assertFalse(any("has(" not in e and path in e for e in expressions), policy["metadata"]["name"])
+
+    def test_protected_service_account_gates_remain_fail_closed(self):
+        result = self.render()
+        pods, workloads = sorted(self.api_policies(result),
+                                 key=lambda p: p["metadata"]["name"])
+        pod_guard = "(has(object.spec.serviceAccountName) ? object.spec.serviceAccountName : 'default')"
+        workload_guard = "(has(object.spec.template.spec.serviceAccountName) ? object.spec.template.spec.serviceAccountName : 'default')"
+        for policy, guard, protected, anchor in (
+                (pods, pod_guard, "ternal-data", "ternal-anchor"),
+                (workloads, workload_guard, "ternal-data", "ternal-anchor")):
+            expressions = [v["expression"] for v in policy["spec"]["validations"]]
+            self.assertIn("variables.apiContainers.size() == 0 || " + guard + " == '" + protected + "'", expressions)
+            self.assertIn("variables.anchorContainers.size() == 0 || " + guard + " == '" + anchor + "'", expressions)
+            # An omitted name defaults to 'default', which never equals either
+            # protected account, so protected containers stay denied.
+            self.assertNotEqual("default", protected)
+            self.assertNotEqual("default", anchor)
+            self.assertEqual(policy["spec"]["failurePolicy"], "Fail")
 
     def test_rejects_tag_and_missing_image(self):
         with self.assertRaises(ValueError):
