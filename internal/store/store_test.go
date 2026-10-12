@@ -473,6 +473,46 @@ func TestAdminAuditEventsRequireActorAndSkipNoops(t *testing.T) {
 	}
 }
 
+func TestAuditedUpdateRollsBackOnMutationFailure(t *testing.T) {
+	ctx := t.Context()
+	s, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	input := NewHost{Name: "original", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 22}
+	host, err := s.CreateHost(ctx, input, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Name = "taken"
+	if _, err := s.CreateHost(ctx, input, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateHost(ctx, host.ID, input, "admin"); err == nil {
+		t.Fatal("duplicate host name update succeeded")
+	}
+	persisted, err := s.GetHost(ctx, host.ID)
+	if err != nil || persisted.Name != "original" {
+		t.Fatalf("failed update changed host: %#v, %v", persisted, err)
+	}
+	events, err := s.ListAuditEvents(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasAuditEvent(events, "host.updated", host.ID, "admin") {
+		t.Fatal("failed update committed its audit event")
+	}
+	input.Name = "updated"
+	if err := s.UpdateHost(ctx, host.ID, input, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	events, err = s.ListAuditEvents(ctx, 100)
+	if err != nil || !hasAuditEvent(events, "host.updated", host.ID, "admin") {
+		t.Fatalf("successful update has no audit event: %#v, %v", events, err)
+	}
+}
+
 func TestRecordPolicyDeniedPropagatesDatabaseFailure(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(ctx, t.TempDir())

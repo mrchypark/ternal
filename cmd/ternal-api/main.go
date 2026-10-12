@@ -39,8 +39,10 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 
 func run() error {
 	// Operator-managed generation identity first: it must be in place before the
-	// store reads its configuration.
-	operatoridentity.Apply()
+	// store reads its configuration, and an unadaptable token map must not start.
+	if err := operatoridentity.Apply(); err != nil {
+		return err
+	}
 	s, err := store.OpenFromEnv(context.Background())
 	if err != nil {
 		return err

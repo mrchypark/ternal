@@ -126,7 +126,9 @@ def projection_ok(prefix, key):
 
 def api_policy(name, binding_name, namespace_selector, namespace, service_account_name, anchor_service_account, anchor_name, image_list, target):
     containers = "object.spec.containers" if target == "pod" else "object.spec.template.spec.containers"
-    service = "object.spec.serviceAccountName" if target == "pod" else "object.spec.template.spec.serviceAccountName"
+    service_path = "object.spec.serviceAccountName" if target == "pod" else "object.spec.template.spec.serviceAccountName"
+    # Controller templates may omit the account; read that as Kubernetes' default.
+    service = "(has(" + service_path + ") ? " + service_path + " : 'default')"
     resources = ["pods", "pods/ephemeralcontainers"] if target == "pod" else ["deployments", "statefulsets", "replicasets"]
     # The anchor service runs the same official image as the API, so its role is
     # subtracted by name, executable, and pinned configuration instead of being

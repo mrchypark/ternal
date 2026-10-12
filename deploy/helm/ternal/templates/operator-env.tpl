@@ -24,6 +24,8 @@ exempts only operator-* chart files and the operator guide.
   value: /data/ternal
 - name: RHIZA_CLUSTER_ID
   value: {{ $clusterID | quote }}
+# This Secret entry must already carry each member's public_key; the controller
+# rejects a source membership without one (see ternalctl prepare-members).
 - name: RHIZA_CLUSTER_MEMBERS
   valueFrom:
     secretKeyRef:

@@ -169,7 +169,7 @@ func TestAnchorServiceRefusesAnUnprovenTarget(t *testing.T) {
 	client, backend := anchorServiceFixture(t, record, fixtureVerifier(t, bucket, storage))
 
 	unproven := request
-	unproven.TargetMembership = recovery.NewMembershipRecord(request.TargetClusterID, []quepaxa.Member{{ID: "other", Token: "other"}}, "async")
+	unproven.TargetMembership = recovery.NewMembershipRecord(request.TargetClusterID, []quepaxa.Member{{ID: "other", PublicKey: quepaxa.PublicKey{3}}}, "async")
 	if _, err := client.Activate(context.Background(), unproven); err == nil {
 		t.Fatal("an unproven target was committed")
 	}

@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/mrchypark/rhiza"
 )
 
 const (
@@ -51,6 +53,17 @@ func main() {
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
+	}
+	if os.Args[1] == "prepare-members" {
+		if len(os.Args) != 3 {
+			fmt.Fprintf(os.Stderr, "usage: ternalctl prepare-members <cluster-id>\n")
+			os.Exit(1)
+		}
+		if err := prepareMembers(os.Args[2], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "prepare-members: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	apiURL := getEnv("TERNAL_API_URL", defaultAPIURL)
@@ -160,6 +173,9 @@ func printUsage() {
 	fmt.Println("  endpoint       Show endpoint discovery")
 	fmt.Println("  proxy          SSH ProxyCommand handler")
 	fmt.Println("  known-host-key KnownHostsCommand handler")
+	fmt.Println("  prepare-members <cluster-id>")
+	fmt.Println("                 Write HA member credentials read on stdin as the")
+	fmt.Println("                 JSON member list that carries each public key")
 }
 
 func cmdLogin(client *http.Client, apiURL string) {
@@ -640,6 +656,64 @@ func writeKnownHostKey(w io.Writer, expected string, args []string) error {
 		return fmt.Errorf("key does not match fingerprint")
 	}
 	_, err = fmt.Fprintf(w, "* %s %s\n", keyType, keyData)
+	return err
+}
+
+// memberCredential is one TERNAL_DATA_CLUSTER_MEMBERS entry: public identity plus its private token.
+type memberCredential struct {
+	rhiza.Member
+	Token string `json:"token"`
+}
+
+// prepareMembers derives every public key the operator requires from the
+// credential that already owns it, so preparation never invents a key; errors name nodes, never tokens.
+func prepareMembers(clusterID string, in io.Reader, out io.Writer) error {
+	if clusterID == "" {
+		return fmt.Errorf("cluster ID is required")
+	}
+	var members []memberCredential
+	decoder := json.NewDecoder(in)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&members); err != nil {
+		return fmt.Errorf("read membership credentials: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("read membership credentials: trailing JSON")
+	}
+	if len(members) == 0 {
+		return fmt.Errorf("membership requires at least one member")
+	}
+	seen := make(map[string]struct{}, len(members))
+	tokenSeen := make(map[string]struct{}, len(members))
+	for i := range members {
+		id := string(members[i].ID)
+		if id == "" {
+			return fmt.Errorf("membership contains an empty node ID")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return fmt.Errorf("membership contains duplicate node ID %s", id)
+		}
+		seen[id] = struct{}{}
+		// Same contract rhizaConfigFromEnv enforces at startup, checked here so
+		// a bad Secret is refused before it is written.
+		if len(members[i].Token) < 32 {
+			return fmt.Errorf("member %s token must contain at least 32 bytes", id)
+		}
+		if _, duplicate := tokenSeen[members[i].Token]; duplicate {
+			return fmt.Errorf("membership tokens must be distinct")
+		}
+		tokenSeen[members[i].Token] = struct{}{}
+		derived := rhiza.PeerPublicKey(clusterID, id, members[i].Token)
+		if members[i].PublicKey != (rhiza.PublicKey{}) && members[i].PublicKey != derived {
+			return fmt.Errorf("member %s public key does not match its credential", id)
+		}
+		members[i].PublicKey = derived
+	}
+	encoded, err := json.Marshal(members)
+	if err != nil {
+		return fmt.Errorf("write membership credentials: %w", err)
+	}
+	_, err = fmt.Fprintln(out, string(encoded))
 	return err
 }
 

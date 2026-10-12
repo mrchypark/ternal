@@ -34,7 +34,7 @@ data:
   checkpointInterval: 15m
   objectStore:
     # Rhiza-certified S3-compatible or native GCS storage is the persistence
-    # authority. /data is always a disposable emptyDir cache.
+    # authority. HA emptyDir WAL/identity loss requires fenced voter recovery.
     provider: ""
     endpoint: ""
     bucket: ""
@@ -58,7 +58,7 @@ operator:
   serviceAccountAnnotations: {}
   image:
     repository: ghcr.io/mrchypark/rhiza-operator
-    tag: v0.15.0
+    tag: v0.19.0
     digest: ""
     pullPolicy: IfNotPresent
   # Not yet qualified. The operator template rejects true. See docs/rhiza-ha.md.
