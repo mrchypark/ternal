@@ -603,42 +603,51 @@ func builtTernalctl(t *testing.T) string {
 	return binary
 }
 
-// cliEnv pins the API URL so a developer's TERNAL_API_URL cannot fail the
-// build's own dispatch before a command is reached.
-func cliEnv() []string {
+func cliEnv(overrides ...string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "TERNAL_API_URL=") {
+		if !strings.HasPrefix(entry, "TERNAL_API_URL=") && !strings.HasPrefix(entry, "TERNAL_DEV_HEADERS=") {
 			env = append(env, entry)
 		}
 	}
-	return append(env, "TERNAL_API_URL=http://127.0.0.1:3000")
+	return append(env, overrides...)
 }
 
 func TestPrepareMembersRoutesThroughBuiltCLI(t *testing.T) {
 	binary := builtTernalctl(t)
 	input, _ := prepareFixture(t)
 
-	cmd := exec.Command(binary, "prepare-members", "ternal-ha")
-	cmd.Env = cliEnv()
-	cmd.Stdin = strings.NewReader(input)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("prepare-members failed: %v\n%s", err, stderr.String())
-	}
-	var prepared []memberCredential
-	if err := json.Unmarshal(stdout.Bytes(), &prepared); err != nil {
-		t.Fatalf("stdout is not membership JSON: %v\n%s", err, stdout.String())
-	}
-	for _, member := range prepared {
-		if member.PublicKey == (rhiza.PublicKey{}) {
-			t.Fatalf("member %s has no public key", member.ID)
-		}
+	for _, tt := range []struct {
+		name string
+		env  []string
+	}{
+		{"valid API URL", cliEnv("TERNAL_API_URL=http://127.0.0.1:3000")},
+		{"invalid API URL", cliEnv("TERNAL_API_URL=invalid")},
+		{"development headers with non-loopback API URL", cliEnv("TERNAL_API_URL=https://ternal.example", "TERNAL_DEV_HEADERS=1")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command(binary, "prepare-members", "ternal-ha")
+			cmd.Env = tt.env
+			cmd.Stdin = strings.NewReader(input)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("prepare-members failed: %v\n%s", err, stderr.String())
+			}
+			var prepared []memberCredential
+			if err := json.Unmarshal(stdout.Bytes(), &prepared); err != nil {
+				t.Fatalf("stdout is not membership JSON: %v\n%s", err, stdout.String())
+			}
+			for _, member := range prepared {
+				if member.PublicKey == (rhiza.PublicKey{}) {
+					t.Fatalf("member %s has no public key", member.ID)
+				}
+			}
+		})
 	}
 
 	missing := exec.Command(binary, "prepare-members")
-	missing.Env = cliEnv()
+	missing.Env = cliEnv("TERNAL_API_URL=http://127.0.0.1:3000")
 	if err := missing.Run(); err == nil {
 		t.Fatal("prepare-members without a cluster ID succeeded")
 	}

@@ -54,6 +54,17 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+	if os.Args[1] == "prepare-members" {
+		if len(os.Args) != 3 {
+			fmt.Fprintf(os.Stderr, "usage: ternalctl prepare-members <cluster-id>\n")
+			os.Exit(1)
+		}
+		if err := prepareMembers(os.Args[2], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "prepare-members: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	apiURL := getEnv("TERNAL_API_URL", defaultAPIURL)
 	if err := validateAPIURL(apiURL); err != nil {
@@ -108,15 +119,6 @@ func main() {
 		}
 		if err := writeKnownHostKey(os.Stdout, os.Args[2], os.Args[3:]); err != nil {
 			fmt.Fprintf(os.Stderr, "host key rejected: %v\n", err)
-			os.Exit(1)
-		}
-	case "prepare-members":
-		if len(os.Args) != 3 {
-			fmt.Fprintf(os.Stderr, "usage: ternalctl prepare-members <cluster-id>\n")
-			os.Exit(1)
-		}
-		if err := prepareMembers(os.Args[2], os.Stdin, os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "prepare-members: %v\n", err)
 			os.Exit(1)
 		}
 	default:
