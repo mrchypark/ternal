@@ -286,7 +286,11 @@ helm install ternal-notes "$chart" --dry-run=client \
 	>"$tmp/production-notes.txt"
 
 grep -q 'ephemeral standalone development mode' "$tmp/default-notes.txt"
-grep -q 'Rhiza-certified object storage is authoritative' "$tmp/production-notes.txt"
+grep -q 'Rhiza-certified object storage preserves certified application state' "$tmp/production-notes.txt"
+grep -q 'HA pod replacement also requires the documented voter recovery procedure' "$tmp/production-notes.txt"
+if grep -q 'replacement pod rebuilds' "$tmp/production-notes.txt"; then
+	echo "notes promise unsafe automatic HA voter restoration" >&2; exit 1
+fi
 if grep -q 'test-oidc-secret' "$tmp/production.yaml"; then
 	echo "production render contains an inline test credential" >&2
 	exit 1
