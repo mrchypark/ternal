@@ -17,8 +17,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-
-	"github.com/mrchypark/rhiza"
 )
 
 func TestDevicePollingPreservesProviderPendingResponse(t *testing.T) {
@@ -463,13 +461,11 @@ func prepareFixture(t *testing.T) (string, map[string]string) {
 	for _, id := range []string{"ternal-0", "ternal-1"} {
 		host := id + ".ternal-data.default.svc.cluster.local:9090"
 		members = append(members, memberCredential{
-			Member: rhiza.Member{
-				ID:      rhiza.NodeID(id),
-				URL:     "quic://" + host,
-				PeerURL: "quic://" + host,
-				LogURL:  "quic://" + host,
-			},
-			Token: tokens[id],
+			ID:      id,
+			URL:     "quic://" + host,
+			PeerURL: "quic://" + host,
+			LogURL:  "quic://" + host,
+			Token:   tokens[id],
 		})
 	}
 	encoded, err := json.Marshal(members)
@@ -493,11 +489,11 @@ func TestPrepareMembersDerivesPublicKeyPerCredential(t *testing.T) {
 		t.Fatalf("prepared members = %d, want %d", len(prepared), len(tokens))
 	}
 	for _, member := range prepared {
-		id := string(member.ID)
+		id := member.ID
 		if member.Token != tokens[id] {
 			t.Fatalf("member %s token changed", id)
 		}
-		if member.PublicKey != rhiza.PeerPublicKey("ternal-ha", id, tokens[id]) {
+		if member.PublicKey != peerPublicKey("ternal-ha", id, tokens[id]) {
 			t.Fatalf("member %s public key is not the derivation of its own credential", id)
 		}
 		if member.URL == "" || member.PeerURL == "" || member.LogURL == "" {
@@ -519,7 +515,7 @@ func TestPrepareMembersRejectsPublicKeyFromAnotherCluster(t *testing.T) {
 	if err := json.Unmarshal([]byte(input), &members); err != nil {
 		t.Fatal(err)
 	}
-	members[0].PublicKey = rhiza.PeerPublicKey("other-cluster", string(members[0].ID), tokens[string(members[0].ID)])
+	members[0].PublicKey = peerPublicKey("other-cluster", members[0].ID, tokens[members[0].ID])
 	encoded, err := json.Marshal(members)
 	if err != nil {
 		t.Fatal(err)
@@ -577,10 +573,12 @@ func TestPrepareMembersRejectsUnsafeCredentials(t *testing.T) {
 	}
 
 	for name, raw := range map[string]string{
-		"trailing JSON":    input + input,
-		"unknown field":    `[{"node_id":"ternal-0","tokn":"x"}]`,
-		"empty membership": `[]`,
-		"empty input":      "",
+		"trailing JSON":      input + input,
+		"unknown field":      `[{"node_id":"ternal-0","tokn":"x"}]`,
+		"invalid public key": `[{"node_id":"ternal-0","url":"quic://ternal-0","log_url":"quic://ternal-0","public_key":"not-base64","token":"00000000000000000000000000000000"}]`,
+		"short public key":   `[{"node_id":"ternal-0","url":"quic://ternal-0","log_url":"quic://ternal-0","public_key":"AA==","token":"00000000000000000000000000000000"}]`,
+		"empty membership":   `[]`,
+		"empty input":        "",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := prepareMembers("ternal-ha", strings.NewReader(raw), &bytes.Buffer{}); err == nil {
@@ -639,7 +637,7 @@ func TestPrepareMembersRoutesThroughBuiltCLI(t *testing.T) {
 				t.Fatalf("stdout is not membership JSON: %v\n%s", err, stdout.String())
 			}
 			for _, member := range prepared {
-				if member.PublicKey == (rhiza.PublicKey{}) {
+				if member.PublicKey == (memberPublicKey{}) {
 					t.Fatalf("member %s has no public key", member.ID)
 				}
 			}
