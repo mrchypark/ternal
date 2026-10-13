@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -347,12 +348,19 @@ func TestRecoveryStorageKeepsTheConfiguredRoot(t *testing.T) {
 		}
 	}
 
-	// A provider this integration cannot verify against is an error, never a
-	// silent fall back to local storage.
-	for _, unsupported := range []recoveryStorage{{Provider: "gcs", Bucket: "b"}, {Provider: ""}, {Provider: "s3"}} {
+	for _, unsupported := range []recoveryStorage{{Provider: ""}, {Provider: "s3"}} {
 		if _, err := unsupported.bucket(); err == nil {
 			t.Fatalf("built a bucket for %#v", unsupported)
 		}
+	}
+	if _, err := (recoveryStorage{Provider: "gcs"}).bucket(); err == nil {
+		t.Fatal("built a gcs bucket without a name")
+	}
+	// A missing ADC file forces the GCS constructor to fail before I/O. It
+	// proves provider selection without adding test credentials or falling back.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "missing-adc.json"))
+	if _, err := (recoveryStorage{Provider: "gcs", Bucket: "ternal-e2e"}).bucket(); err == nil || !strings.Contains(err.Error(), "missing-adc.json") {
+		t.Fatalf("gcs bucket selection error = %v", err)
 	}
 	if _, err := (recoveryStorage{Provider: "filesystem", Dir: t.TempDir()}).bucket(); err != nil {
 		t.Fatal(err)
