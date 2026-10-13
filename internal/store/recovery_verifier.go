@@ -12,6 +12,7 @@ import (
 	"github.com/mrchypark/rhiza/pkg/recoveryanchor"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
+	"github.com/thanos-io/objstore/providers/gcs"
 	"github.com/thanos-io/objstore/providers/s3"
 )
 
@@ -47,9 +48,6 @@ func (c recoveryStorage) prefix(clusterID string) string { return path.Join(c.Pr
 // through.  An unsupported or incomplete provider is an error: silently
 // falling back to local storage would verify a different root than the voters
 // run on.
-//
-// ponytail: s3 and filesystem only, the two paths this integration is deployed
-// and tested with; add gcs/azure constructors when recovery runs on them.
 func (c recoveryStorage) bucket() (objstore.Bucket, error) {
 	switch c.Provider {
 	case "s3":
@@ -60,6 +58,13 @@ func (c recoveryStorage) bucket() (objstore.Bucket, error) {
 			Bucket: c.Bucket, Endpoint: c.Endpoint, Region: c.Region, Insecure: c.Insecure,
 			AWSSDKAuth: c.AccessKey == "", AccessKey: c.AccessKey, SecretKey: c.SecretKey, SessionToken: c.SessionToken,
 		}, "ternal-anchor", nil)
+	case "gcs":
+		if c.Bucket == "" {
+			return nil, fmt.Errorf("TERNAL_OBJECT_STORE_BUCKET is required for a gcs recovery store")
+		}
+		config := gcs.DefaultConfig
+		config.Bucket = c.Bucket
+		return gcs.NewBucketWithConfig(context.Background(), kitlog.NewNopLogger(), config, "ternal-anchor", nil)
 	case "filesystem":
 		dir := c.Dir
 		if dir == "" {
