@@ -6,9 +6,9 @@ Ternal is a self-hosted SSH access control plane for private devices. It gives
 users short-lived, policy-checked SSH access without exposing device SSH ports
 to the public internet.
 
-The server, CLI, device agent, and web UI are written in Go. The web UI is
-server-rendered with [gomponents](https://github.com/maragudk/gomponents), htmx,
-and Tailwind CSS; it has no Node.js runtime or client-side application framework.
+The server, CLI, device agent, and web UI are written in Go. The web UI uses Go
+`html/template` and bundled [Ely HTMX](https://github.com/mrchypark/ely-htmx)
+assets. It has no Node.js runtime or client-side application framework.
 
 > Ternal is under active development. The current code uses a greenfield data
 > model and do not migrate older Ternal databases.
@@ -54,7 +54,7 @@ Run the loopback-only smoke test:
 ./deploy/e2e/local-go-smoke.sh
 ```
 
-The smoke test starts a temporary server, verifies the embedded web assets, and
+The smoke test starts a temporary server, verifies the bundled web assets, and
 performs authenticated host CRUD. It uses development headers that the server
 rejects on non-loopback addresses.
 

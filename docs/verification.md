@@ -4,11 +4,11 @@
 
 Run `./scripts/run-all-tests.sh`. It verifies:
 
-- generated htmx/Tailwind assets and a clean asset diff;
+- copied local branding assets and a clean asset diff;
 - Go formatting, race-enabled tests, vet, and all three binaries;
 - data-store reopen, empty-cache recovery from object storage, and offline
   archive readback (not trust-state reactivation);
-- gomponents rendering, escaping, htmx fragments, and embedded asset hash;
+- `html/template` rendering, escaping, htmx fragments, and exact Ely asset responses;
 - OIDC state/session integrity and old-origin rejection;
 - S256 PKCE, issuer-bound sessions, and distinct `(issuer, sub)` principals;
 - persistent logout revocation and captured-cookie replay rejection;
