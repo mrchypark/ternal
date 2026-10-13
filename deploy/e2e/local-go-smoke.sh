@@ -64,4 +64,4 @@ curl -fsS "$base/hosts/$host_id" $headers | jq -e '.name == "go-smoke" and .ssh_
 # shellcheck disable=SC2086
 curl -fsS -X DELETE "$base/hosts/$host_id" $headers -H 'X-CSRF-Token: dev-csrf' | jq -e '.status == "ok"' >/dev/null
 
-printf 'Go API, gomponents portal, htmx asset, and authenticated CRUD smoke passed\n'
+printf 'Go API, html/template portal, Ely bundled asset, and authenticated CRUD smoke passed\n'

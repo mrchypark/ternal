@@ -1,0 +1,44 @@
+{{define "head"}}<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Secure SSH access for managed devices">
+<meta name="htmx-config" content='{"noSwap":[204,304,"4xx","5xx"]}'>
+<title>Ternal · {{if .Identity}}Control plane{{else}}SSH for device management{{end}}</title>
+<link rel="icon" type="image/png" sizes="214x256" href="/assets/ternal-icon-256.png">
+<link rel="stylesheet" href="/assets/app.css">
+{{template "ui-component-assets"}}
+<link rel="stylesheet" href="/assets/portal.css">
+<script src="/assets/theme.js"></script>
+<script src="/assets/htmx.min.js" defer></script>
+</head>{{end}}
+
+{{define "brand"}}<a href="/" aria-label="Ternal home" class="portal-brand"><img src="/assets/ternal-logo-640.png" alt="Ternal logo" width="640" height="251"></a>{{end}}
+
+{{define "landing"}}<!doctype html><html lang="en">{{template "head" .}}<body>
+<main class="portal-landing">
+<header>{{template "brand"}}<span class="portal-eyebrow">CONTROL PLANE</span></header>
+<section class="portal-hero"><div><p class="portal-eyebrow">ZERO STANDING CREDENTIALS</p><h1>Reach managed devices without leaving permanent SSH access behind.</h1></div>
+<div><p>Short-lived grants, explicit policy, and strict host identity verification for every session.</p>{{template "button" (dict "Href" "/auth/login" "Label" "Sign in with your organization" "Size" "lg")}}</div></section>
+<footer><span>01 · Identity verified</span><span>02 · Policy evaluated</span><span>03 · Access expires</span></footer>
+</main></body></html>{{end}}
+
+{{define "page"}}<!doctype html><html lang="en">{{template "head" .}}<body>
+<a href="#workspace" class="portal-skip">Skip to workspace</a>
+<div class="portal-shell"><aside class="portal-sidebar">
+{{template "brand"}}{{template "navigation" .}}
+<div class="portal-account"><p>{{.Identity.User.Subject}}</p><p class="ui-muted">{{role .Identity}}</p>
+<form method="post" action="/auth/logout"><input type="hidden" name="_csrf" value="{{.Identity.CSRFToken}}">{{template "button" (dict "Type" "submit" "Variant" "ghost" "Label" "Sign out")}}</form></div>
+</aside><main>{{template "workspace" .}}</main></div>
+</body></html>{{end}}
+
+{{define "navigation"}}<nav id="workspace-navigation" aria-label="Workspace" class="portal-navigation"{{if .OutOfBand}} hx-swap-oob="outerHTML"{{end}}>
+{{range .Navigation}}{{$url := printf "/?view=%s" .View}}{{$attrs := dict "hx-get" $url "hx-target" "#workspace" "hx-swap" "outerHTML" "hx-push-url" "true"}}
+{{if eq .View $.View}}{{template "button" (dict "Href" $url "Label" .Label "Variant" "secondary" "Attrs" (withProps $attrs "aria-current" "page"))}}{{else}}{{template "button" (dict "Href" $url "Label" .Label "Variant" "ghost" "Attrs" $attrs)}}{{end}}{{end}}
+</nav>{{end}}
+
+{{define "fragment"}}{{template "workspace" .}}{{template "navigation" .}}{{end}}
+{{define "workspace"}}<section id="workspace" tabindex="-1" class="portal-workspace">
+<header class="portal-workspace-header"><div><p class="portal-eyebrow">CONTROL PLANE / {{.View}}</p><h1>{{.Title}}</h1><p class="ui-muted">{{.Description}}</p></div>
+{{template "button" (dict "Type" "button" "Variant" "outline" "Label" "Refresh data" "Attrs" (dict "hx-get" (printf "/?view=%s" .View) "hx-target" "#workspace" "hx-swap" "outerHTML"))}}</header>
+<div class="portal-tables">{{range .Tables}}<section class="portal-table"><p class="portal-count">{{len .Rows}} TOTAL</p>{{template "table" .}}</section>{{end}}</div>
+</section>{{end}}

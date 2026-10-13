@@ -3,15 +3,12 @@ package web
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	g "maragu.dev/gomponents"
-	h "maragu.dev/gomponents/html"
+	ui "github.com/mrchypark/ely-htmx"
 
 	"github.com/mrchypark/ternal/internal/auth"
 	"github.com/mrchypark/ternal/internal/store"
@@ -53,8 +50,11 @@ func TestPortalRendersHTMXAndEscapesData(t *testing.T) {
 		`hx-target="#workspace"`,
 		`id="workspace" tabindex="-1"`,
 		`aria-current="page"`,
-		`aria-label="Registered SSH hosts"`,
-		`name="htmx-config" content="{&#34;noSwap&#34;:[204,304,&#34;4xx&#34;,&#34;5xx&#34;]}"`,
+		`<caption>Registered SSH hosts</caption>`,
+		`name="htmx-config" content='{"noSwap":[204,304,"4xx","5xx"]}'`,
+		`data-slot="button"`,
+		`class="ui-table"`,
+		`name="_csrf" value="dev-csrf"`,
 		`&lt;script&gt;alert(&#34;x&#34;)&lt;/script&gt;`,
 	} {
 		if !strings.Contains(body, expected) {
@@ -112,36 +112,67 @@ func TestPortalRejectsAdminViewsForRegularUsers(t *testing.T) {
 	}
 }
 
-func TestPinnedAssetsAndHTMXV4Attributes(t *testing.T) {
-	javascript, err := assets.ReadFile("static/htmx.min.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(javascript)
-	if got, want := hex.EncodeToString(sum[:]), "e484d9171a9db30a39c8f16e3d709d4137f3211c659f8e6125816635033d593f"; got != want {
-		t.Fatalf("htmx asset digest = %s, want %s", got, want)
-	}
-	css, err := assets.ReadFile("static/app.css")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(css, []byte(".bg-ink-900")) {
-		t.Fatal("Tailwind did not scan gomponents classes")
-	}
-	for _, asset := range []string{"ternal-logo-640.png", "ternal-icon-256.png"} {
-		request := httptest.NewRequest(http.MethodGet, "/assets/"+asset, nil)
-		response := httptest.NewRecorder()
-		Assets().ServeHTTP(response, request)
-		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/png" || !bytes.HasPrefix(response.Body.Bytes(), []byte("\x89PNG\r\n\x1a\n")) {
-			t.Errorf("asset %s response = status=%d content-type=%q png=%t", asset, response.Code, response.Header().Get("Content-Type"), bytes.HasPrefix(response.Body.Bytes(), []byte("\x89PNG\r\n\x1a\n")))
+func TestElyAndBrandAssets(t *testing.T) {
+	handler := Assets()
+	for _, name := range []string{"app.css", "htmx.min.js", "theme.js", "ely-controls.css", "ely-patterns.css", "ely-controls.js", "ely-patterns.js"} {
+		want, err := ui.Files.ReadFile("assets/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/assets/"+name, nil))
+		if res.Code != http.StatusOK || !bytes.Equal(res.Body.Bytes(), want) || res.Header().Get("ETag") == "" {
+			t.Errorf("Ely asset %s not served intact: status=%d", name, res.Code)
 		}
 	}
+	for _, asset := range []string{"ternal-logo-640.png", "ternal-icon-256.png"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/"+asset, nil))
+		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/png" || !bytes.HasPrefix(response.Body.Bytes(), []byte("\x89PNG\r\n\x1a\n")) {
+			t.Errorf("brand asset %s not served as PNG", asset)
+		}
+	}
+}
 
-	var rendered bytes.Buffer
-	if err := h.Div(g.Attr("hx-confirm:inherited", "Continue?")).Render(&rendered); err != nil {
+func TestAllViewsAndLandingUseEly(t *testing.T) {
+	s, err := store.Open(context.Background(), t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if rendered.String() != `<div hx-confirm:inherited="Continue?"></div>` {
-		t.Fatalf("unexpected htmx v4 attribute output: %s", rendered.String())
+	t.Cleanup(func() { _ = s.Close() })
+	handler := auth.AuthMiddleware(strings.Repeat("s", 32), true, "ternal-admins")(http.HandlerFunc(New(s).Index))
+	for _, admin := range []bool{false, true} {
+		for _, view := range []string{"hosts", "keys", "policies", "access", "audit"} {
+			if !admin && (view == "policies" || view == "audit") {
+				continue
+			}
+			for _, fragment := range []bool{false, true} {
+				req := httptest.NewRequest(http.MethodGet, "/?view="+view, nil)
+				req.Header.Set("X-Ternal-User", "user@example.com")
+				if admin {
+					req.Header.Set("X-Ternal-Groups", "ternal-admins")
+				}
+				if fragment {
+					req.Header.Set("HX-Request", "true")
+				}
+				res := httptest.NewRecorder()
+				handler.ServeHTTP(res, req)
+				body := res.Body.String()
+				if res.Code != http.StatusOK || !strings.Contains(body, `class="ui-table"`) || !strings.Contains(body, `data-slot="button"`) {
+					t.Fatalf("view=%s admin=%v fragment=%v: %d %s", view, admin, fragment, res.Code, body)
+				}
+				if !admin && (strings.Contains(body, `hx-get="/?view=policies"`) || strings.Contains(body, `hx-get="/?view=audit"`)) {
+					t.Fatal("admin navigation exposed")
+				}
+				if fragment == strings.Contains(body, "<!doctype html>") {
+					t.Fatal("incorrect document/fragment response")
+				}
+			}
+		}
+	}
+	res := httptest.NewRecorder()
+	New(s).Index(res, httptest.NewRequest(http.MethodGet, "/", nil))
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `href="/auth/login"`) || !strings.Contains(res.Body.String(), `data-slot="button"`) {
+		t.Fatalf("landing: %d %s", res.Code, res.Body.String())
 	}
 }
