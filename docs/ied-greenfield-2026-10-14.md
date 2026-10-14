@@ -47,6 +47,7 @@ Do not delete or roll the voter Pods as a routine upgrade: losing local voter id
 - HTTPRoute: Accepted and ResolvedRefs.
 - Browser: landing page renders and sign-in opens the preserved Ternal-branded Goauthy login.
 - Public client logo SHA-256 remains `7e84abb826766e0b96b33f08f9255c3f213e56b7dd44d46986d716e994857f3f`.
-- Authenticated callback and temporary SSH-key write/delete: pending the Goauthy management session, which holds the existing administrator credentials.
+- Thirty additional external root/health/ready requests: all HTTP 200.
+- Authenticated callback and temporary SSH-key write/delete: not verified. The Goauthy management session holds the existing administrator credentials; requests were sent, but its remote host became unavailable before a result could be obtained. No account or credential was reset to bypass this limit.
 
 No live destructive failover/recovery test was run against this fresh deployment.
