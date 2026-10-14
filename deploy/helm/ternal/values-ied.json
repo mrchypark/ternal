@@ -1,0 +1,93 @@
+{
+  "anchor": {
+    "enabled": true,
+    "serviceAccountName": "ternal-greenfield-20261014-anchor",
+    "tlsSecretName": "ternal-greenfield-20261014-anchor-tls",
+    "tokenSecretKey": "token",
+    "tokenSecretName": "ternal-greenfield-20261014-anchor-token"
+  },
+  "data": {
+    "clusterID": "ternal-greenfield-20261014-437ddf9a",
+    "mode": "ha",
+    "objectStore": {
+      "bucket": "ternal-ied-602454948273",
+      "durability": "before-ack",
+      "prefix": "ternal/greenfield-20261014-437ddf9a",
+      "provider": "gcs"
+    },
+    "requireObjectStore": true,
+    "trustAnchorConfigMap": "ternal-greenfield-20261014-trust"
+  },
+  "gateway": {
+    "enabled": true,
+    "host": "ternal.dev.conalog.com",
+    "parentRef": {
+      "name": "dev-gateway",
+      "namespace": "haproxy-gateway-system",
+      "sectionName": "https-ternal-dev-conalog-com"
+    },
+    "scheme": "https"
+  },
+  "image": {
+    "digest": "sha256:952674f539668696d4d6674a85ef8ace5288078432e4542f89074188fb68e172",
+    "repository": "ghcr.io/mrchypark/ternal"
+  },
+  "oidc": {
+    "adminGroup": "ternal-auth-admins",
+    "clientId": "ternal",
+    "groupsClaim": "groups",
+    "issuer": "https://ternal-auth.dev.conalog.com",
+    "redirectUrl": "https://ternal.dev.conalog.com/auth/callback"
+  },
+  "operator": {
+    "automaticRecovery": false,
+    "enabled": true,
+    "image": {
+      "repository": "ghcr.io/mrchypark/rhiza-operator",
+      "tag": "v0.19.0"
+    }
+  },
+  "persistence": {
+    "enabled": false
+  },
+  "secrets": {
+    "existingSecret": "ternal-greenfield-20261014-runtime",
+    "version": "greenfield-20261014"
+  },
+  "serviceAccountName": "ternal-greenfield-20261014",
+  "transport": {
+    "managedRelay": {
+      "access": {
+        "enabled": true,
+        "path": "/internal/iroh-relay/access"
+      },
+      "enabled": true,
+      "gcpBackendPolicy": {
+        "connectionDraining": {
+          "drainingTimeoutSec": 300
+        },
+        "enabled": false,
+        "timeoutSec": 86400
+      },
+      "image": {
+        "digest": "sha256:7805aaf67ca59e04cd54999d142c85ed72e38e5bd4515c902fa5c8d838674747",
+        "pullPolicy": "IfNotPresent",
+        "repository": "n0computer/iroh-relay",
+        "tag": "v1.1.0"
+      },
+      "pdb": {
+        "enabled": false,
+        "minAvailable": 1
+      },
+      "preStopDelaySeconds": 60,
+      "replicas": 1,
+      "terminationGracePeriodSeconds": 120,
+      "topologySpread": {
+        "enabled": true,
+        "maxSkew": 1,
+        "topologyKey": "kubernetes.io/hostname",
+        "whenUnsatisfiable": "ScheduleAnyway"
+      }
+    }
+  }
+}
