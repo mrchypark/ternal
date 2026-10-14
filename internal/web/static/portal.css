@@ -40,3 +40,4 @@ body { margin: 0; min-width: 320px; background: var(--color-background); color: 
 }
 @media (pointer: coarse) { [data-slot="button"] { min-height: 44px; } }
 @media (prefers-reduced-motion: reduce) { *, ::before, ::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+#portal-error { margin: 1.25rem; padding: 1rem; border: 1px solid var(--color-destructive); border-radius: var(--radius-md); }

@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="/assets/portal.css">
 <script src="/assets/theme.js"></script>
 <script src="/assets/htmx.min.js" defer></script>
+<script src="/assets/portal.js" defer></script>
 </head>{{end}}
 
 {{define "brand"}}<a href="/" aria-label="Ternal home" class="portal-brand"><img src="/assets/ternal-logo-640.png" alt="Ternal logo" width="640" height="251"></a>{{end}}
@@ -28,7 +29,7 @@
 {{template "brand"}}{{template "navigation" .}}
 <div class="portal-account"><p>{{.Identity.User.Subject}}</p><p class="ui-muted">{{role .Identity}}</p>
 <form method="post" action="/auth/logout"><input type="hidden" name="_csrf" value="{{.Identity.CSRFToken}}">{{template "button" (dict "Type" "submit" "Variant" "ghost" "Label" "Sign out")}}</form></div>
-</aside><main>{{template "workspace" .}}</main></div>
+</aside><main><p id="portal-error" role="alert" hidden></p>{{template "workspace" .}}</main></div>
 </body></html>{{end}}
 
 {{define "navigation"}}<nav id="workspace-navigation" aria-label="Workspace" class="portal-navigation"{{if .OutOfBand}} hx-swap-oob="outerHTML"{{end}}>
@@ -39,6 +40,6 @@
 {{define "fragment"}}{{template "workspace" .}}{{template "navigation" .}}{{end}}
 {{define "workspace"}}<section id="workspace" tabindex="-1" class="portal-workspace">
 <header class="portal-workspace-header"><div><p class="portal-eyebrow">CONTROL PLANE / {{.View}}</p><h1>{{.Title}}</h1><p class="ui-muted">{{.Description}}</p></div>
-{{template "button" (dict "Type" "button" "Variant" "outline" "Label" "Refresh data" "Attrs" (dict "hx-get" (printf "/?view=%s" .View) "hx-target" "#workspace" "hx-swap" "outerHTML"))}}</header>
+{{template "button" (dict "Href" (printf "/?view=%s" .View) "Variant" "outline" "Label" "Refresh data" "Attrs" (dict "hx-get" (printf "/?view=%s" .View) "hx-target" "#workspace" "hx-swap" "outerHTML"))}}</header>
 <div class="portal-tables">{{range .Tables}}<section class="portal-table"><p class="portal-count">{{len .Rows}} TOTAL</p>{{template "table" .}}</section>{{end}}</div>
 </section>{{end}}

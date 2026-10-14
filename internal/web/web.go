@@ -61,8 +61,18 @@ func (s *Server) Index(w http.ResponseWriter, r *http.Request) {
 	if data.View == "" {
 		data.View = "hosts"
 	}
+	if data.Identity == nil && r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", "/")
+		return
+	}
 	name := "landing"
 	if data.Identity != nil {
+		switch data.View {
+		case "hosts", "keys", "policies", "access", "audit":
+		default:
+			http.NotFound(w, r)
+			return
+		}
 		if !data.Identity.IsAdmin && (data.View == "policies" || data.View == "audit") {
 			http.Error(w, "Administrator access required.", http.StatusForbidden)
 			return
@@ -79,7 +89,7 @@ func (s *Server) Index(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		name = "page"
-		if r.Header.Get("HX-Request") == "true" {
+		if r.Header.Get("HX-Request") == "true" && r.Header.Get("HX-History-Restore-Request") != "true" {
 			name = "fragment"
 			data.OutOfBand = true
 		}
