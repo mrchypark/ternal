@@ -274,7 +274,10 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
                  "(m.name == 'data' && m.mountPath == '/data' && (!has(m.readOnly) || !m.readOnly)) || "
                  "(m.mountPath == '/var/run/secrets/kubernetes.io/serviceaccount' && has(m.readOnly) && m.readOnly && "
                  "variables.serviceAccountVolumes.exists(v, v.name == m.name))))) && "
-                 "has(" + spec + ".volumes) && " + spec + ".volumes.exists(v, v.name == 'local-staging' && has(v.emptyDir) && has(v.emptyDir.sizeLimit)) && "
+                 # Quantity's oneOf schema is not declared by Kubernetes v1.34 CEL.
+                 # Defer only this presence lookup, not the surrounding policy:
+                 # https://github.com/kubernetes/kubernetes/blob/v1.34.3/staging/src/k8s.io/apiserver/pkg/cel/common/schemas.go
+                 "has(" + spec + ".volumes) && " + spec + ".volumes.exists(v, v.name == 'local-staging' && has(v.emptyDir) && has(dyn(v.emptyDir).sizeLimit)) && "
                  + spec + ".volumes.exists(v, v.name == 'data' && has(v.emptyDir)) && (" + local_identity + ") && "
                  "has(" + spec + ".securityContext) && " + spec + ".securityContext.fsGroup == 65532 && "
                  "has(" + spec + ".securityContext.seccompProfile) && " + spec + ".securityContext.seccompProfile.type == 'RuntimeDefault' && "

@@ -108,6 +108,9 @@ class TrustGuardRendererTest(unittest.TestCase):
                              "s.configMap.name == 'kube-root-ca.crt'", "fieldPath == 'metadata.namespace'"):
                 self.assertIn(required, variables["serviceAccountVolumes"])
             envelope = policy["spec"]["validations"][-1]["expression"]
+            self.assertIn("has(v.emptyDir) && has(dyn(v.emptyDir).sizeLimit)", envelope)
+            self.assertNotIn("has(v.emptyDir.sizeLimit)", envelope)
+            self.assertEqual(envelope.count("dyn("), 1)
             container_path = "object.spec.containers" if policy["spec"]["matchConstraints"]["resourceRules"][0]["resources"][0] == "pods" else "object.spec.template.spec.containers"
             self.assertIn(container_path + ".size() == 1", envelope)
             self.assertIn("variables.apiContainers[0].name == 'ternal-api'", envelope)

@@ -266,6 +266,7 @@ def local_matrix(image, kubeconfig, context, diagnostics):
         duplicate["metadata"]["name"] = "duplicate-local-0"
         probe("duplicate-pod", duplicate, envelope)
         mutations = {
+            "staging-limit-missing": lambda p: p["volumes"][1]["emptyDir"].pop("sizeLimit"),
             "staging-rw": lambda p: p["containers"][0]["volumeMounts"][1].update(readOnly=False),
             "staging-rw-alias": lambda p: p["containers"][0]["volumeMounts"].append({"name": "local-staging", "mountPath": "/alias"}),
             "staging-subpath": lambda p: p["containers"][0]["volumeMounts"][1].update(subPath="receipt"),
@@ -291,7 +292,7 @@ def local_matrix(image, kubeconfig, context, diagnostics):
             obj = copy.deepcopy(pod)
             mutate(obj["spec"])
             probe(label, obj, envelope)
-            if label in ("extra-sidecar", "sidecar-staging-rw"):
+            if label in ("extra-sidecar", "sidecar-staging-rw", "staging-limit-missing"):
                 controller = copy.deepcopy(fixture)
                 # Replace, not create, so the exact owned controller name is
                 # retained and the sidecar is the isolated denial condition.
