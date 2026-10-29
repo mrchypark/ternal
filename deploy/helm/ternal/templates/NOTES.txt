@@ -2,11 +2,28 @@ Port-forward:
   kubectl port-forward svc/{{ .Release.Name }} {{ .Values.service.port }}:{{ .Values.service.port }}
 
 DATA MODE: {{ default "standalone" .Values.data.mode }}
+{{- if eq (default "standalone" .Values.data.mode) "local" }}
+  One Local process, no Operator or recovery-anchor service. The application-owned
+  local-restore init verifies a manually seeded supported archive, then opens
+  and closes Rhiza on the shared /data/ternal volume without application SQL or
+  services. Main opens the same DataDir and object store, reconciles history,
+  and signals readiness only after its own initialization succeeds.
+  Staging remains separate and read-only in main. Init does not create genesis,
+  migrate legacy archives, convert HA data, or prove fencing.
+  Writer/GC acknowledgement is manual setup, not a fencing proof. Held or
+  unknown state remains fail-closed. Init does not rerun on app-container restarts.
+  OnDelete prevents automatic rolling replacement. Container restart retains
+  /data; Pod loss loses it and needs the intact archive plus writer exclusion.
+  Provision a fresh external trust guard with --data-mode=local and
+  --local-workload-name={{ .Release.Name }}. Local storage
+  identity includes the effective <prefix>/<clusterID>/local/v1 namespace and
+  ternal-local-v1 domain; a legacy trust anchor must not be reused.
+{{- end }}
 {{- if eq (default "standalone" .Values.data.mode) "ha" }}
   Three embedded voters use emptyDir-backed local WAL and identity state, the
   {{ .Release.Name }}-data headless Service, fixed Secret-backed membership,
   and shared Rhiza-certified object storage.
-  OnDelete prevents automatic pod replacement. With Rhiza 0.19, deleting a pod
+  OnDelete prevents automatic pod replacement. With Rhiza 0.21, deleting a pod
   loses its local voter state and requires fenced replacement/recovery, not an
   ordinary restart. Do not delete voters as a rolling upgrade procedure.
 {{- end }}

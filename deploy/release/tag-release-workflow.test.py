@@ -34,6 +34,39 @@ if not uses or any(
 if workflow.count(f"uses: {allowed_local}") != 1:
     raise SystemExit("tag release must call the local native build exactly once")
 
+ci = pathlib.Path(".github/workflows/ci.yaml").read_text()
+for name, source in (("CI", ci), ("tag release", workflow)):
+    for required in (
+        "https://github.com/kubernetes-sigs/kind/releases/download/v0.31.0/kind-linux-amd64",
+        "eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa",
+        "https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl",
+        "cfda68cba5848bc3b6c6135ae2f20ba2c78de20059f68789c090166d6abc3e2c",
+    ):
+        if required not in source:
+            raise SystemExit(f"{name} Local admission tool pin is missing: {required}")
+    call = "          sh deploy/security/local-admission-check.sh"
+    if source.splitlines().count(call) != 1:
+        raise SystemExit(f"{name} must run actual Local admission exactly once without a shell skip")
+    step = next(part for part in re.split(r"(?m)^      - name: ", source) if call in part)
+    if re.search(r"(?m)^\s*(?:if|continue-on-error):", step):
+        raise SystemExit(f"{name} Local admission must not be optional")
+    if "          sh deploy/security/local-admission-check.test.sh" not in step:
+        raise SystemExit(f"{name} Local admission wrapper regression must run before the gate")
+
+for required in (
+    'docker build --tag "$image" --label "ternal.probe.owner=$owner" .',
+    "for command in local-preflight local-restore; do",
+    'timeout --kill-after=5s 60s docker run --name "$name"',
+    '--label "ternal.probe.owner=$owner" --rm --network none --read-only --cap-drop=ALL',
+    "test \"$status\" -eq 1",
+    "ternal-api: local-preflight requires TERNAL_DATA_LOCAL=1",
+):
+    if required not in ci:
+        raise SystemExit(f"CI scratch command probe is missing: {required}")
+probe = next(part for part in re.split(r"(?m)^      - name: ", ci) if 'docker build --tag "$image" --label' in part)
+if re.search(r"(?m)^\s*(?:if|continue-on-error):", probe):
+    raise SystemExit("CI scratch command probe must not be optional")
+
 for required in (
     "IMAGE_NAME: ghcr.io/mrchypark/ternal",
     "packages: write",

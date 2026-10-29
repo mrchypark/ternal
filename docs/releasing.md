@@ -4,12 +4,15 @@ The previous v0.2.0 RC manifests and qualification workflow belonged to the
 pre-port application and were removed. Their digests must never be reused for
 this breaking runtime.
 
-This release accepts only an empty Go data directory. Startup rejects known
-Ternal tables without the Go schema marker; there is no in-place importer or
-mixed-version rollback. Qualification must use fresh disposable state,
-start from a fresh schema, and enroll devices again. Restoring a pre-cutover or
-older trust database is unsupported until a security-epoch recovery protocol
-is implemented and reviewed.
+The legacy pre-port cutover accepts only an empty Go data directory. Startup
+rejects known Ternal tables without the Go schema marker; there is no in-place
+importer or mixed-version rollback. Qualify that cutover with fresh disposable
+state, a fresh schema, and newly enrolled devices. This does not prohibit the
+separate [Local init and recovery contract](local-single-node.md): a compatible
+seeded Local archive may restore a fresh DataDir, and init/main reopen the same
+restored DataDir with matching identity and external trust. It does not migrate
+pre-cutover, old-format, unknown nonempty, or HA roots into Local state. Preserve
+those original roots and authorities; never clear evidence to bypass refusal.
 
 1. Merge an exact reviewed Go commit after GitHub Actions is green.
 2. Build and qualify the Go CLI/agent candidate archives from that commit with

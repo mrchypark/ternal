@@ -222,14 +222,17 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 	if expected := os.Getenv("TERNAL_DATA_SCHEMA_VERSION"); expected != "" && expected != fmt.Sprint(schemaVersion) {
 		return nil, fmt.Errorf("TERNAL_DATA_SCHEMA_VERSION must be %d for this binary", schemaVersion)
 	}
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, fmt.Errorf("create data dir: %w", err)
-	}
-	dbPath := filepath.Join(dataDir, "ternal.db")
 	config, err := rhizaConfigFromEnv(dataDir)
 	if err != nil {
 		return nil, err
 	}
+	if err := prepareLocalOpen(ctx, config); err != nil {
+		return nil, fmt.Errorf("data mode preflight: %w", err)
+	}
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return nil, fmt.Errorf("create data dir: %w", err)
+	}
+	dbPath := filepath.Join(dataDir, "ternal.db")
 	db, err := openRhiza(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)

@@ -5,6 +5,9 @@ import copy
 import subprocess
 import sys
 import uuid
+import argparse
+from pathlib import Path
+from urllib.parse import urlparse
 
 import render_trustguard as tg
 
@@ -125,5 +128,235 @@ def main(image):
         require(kubectl("delete", "namespace", namespace, "--ignore-not-found", "--wait=false"))
 
 
+def local_matrix(image, kubeconfig, context, diagnostics):
+    """Dry-run the Local envelope on an explicitly owned loopback API only."""
+    import time
+    directory = Path(diagnostics)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    sequence = 0
+
+    def run(label, *args, data=None):
+        nonlocal sequence
+        sequence += 1
+        command = ["kubectl", "--kubeconfig", kubeconfig, "--context", context, *args]
+        try:
+            result = subprocess.run(command, input=json.dumps(data) if data is not None else None,
+                                    text=True, capture_output=True, timeout=45)
+        except subprocess.TimeoutExpired as error:
+            def decoded(value):
+                return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+            result = subprocess.CompletedProcess(command, 124, decoded(error.stdout), decoded(error.stderr) + "\ncommand timed out after 45s\n")
+        stem = directory / ("%03d-%s" % (sequence, label))
+        stem.with_suffix(".stdout").write_text(result.stdout)
+        stem.with_suffix(".stderr").write_text(result.stderr)
+        stem.with_suffix(".exit").write_text(str(result.returncode) + "\n")
+        return result
+
+    server = require(run("endpoint", "config", "view", "--minify", "-o", "jsonpath={.clusters[0].cluster.server}")).stdout
+    if not context.startswith("kind-ternal-local-admission-") or urlparse(server).hostname not in ("127.0.0.1", "localhost", "::1"):
+        raise ValueError("Local admission tests require an explicitly owned kind loopback context")
+    namespace = "ternal-local-admission-" + uuid.uuid4().hex[:10]
+    workload = "ternal-local"
+    doc = tg.render(namespace, "api", "anchor", namespace, "a" * 64, [image],
+                    anchor_service_account="recovery", data_mode="local", local_workload_name=workload)
+    policies = [item for item in doc["items"] if item["kind"] == "ValidatingAdmissionPolicy"]
+    bindings = [item for item in doc["items"] if item["kind"] == "ValidatingAdmissionPolicyBinding"]
+    envelope = "Local recovery requires the exact approved non-root initializer, matching shared data configuration, and isolated staging"
+    scale_message = "the owned Local workload permits only zero or one replica; scale is not fencing"
+    security = {"runAsNonRoot": True, "runAsUser": 65532, "runAsGroup": 65532,
+                "allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
+                "capabilities": {"drop": ["ALL"]}}
+    values = ["1", "0", "/data/ternal", namespace, "node-1", "/staging", "/staging/preflight.json", "1",
+              "anchor", namespace, "s3", "http://127.0.0.1:1", "disposable-test", "clusters/test", "us-east-1", "true", "before-ack"]
+    names = ["TERNAL_DATA_LOCAL", "TERNAL_DATA_MULTI_NODE", "TERNAL_DATA_DIR", "TERNAL_DATA_CLUSTER_ID", "TERNAL_DATA_NODE_ID",
+             "TERNAL_LOCAL_PREFLIGHT_STAGING_DIR", "TERNAL_LOCAL_PREFLIGHT_RECEIPT_FILE", "TERNAL_LOCAL_WRITER_GC_QUIESCENCE_ACK",
+             "TERNAL_TRUST_ANCHOR_CONFIGMAP", "TERNAL_TRUST_ANCHOR_NAMESPACE", "TERNAL_OBJECT_STORE_PROVIDER",
+             "TERNAL_OBJECT_STORE_ENDPOINT", "TERNAL_OBJECT_STORE_BUCKET", "TERNAL_OBJECT_STORE_PREFIX", "TERNAL_OBJECT_STORE_REGION",
+             "TERNAL_OBJECT_STORE_INSECURE", "TERNAL_OBJECT_STORE_DURABILITY"]
+    data_env = [{"name": name, "value": value} for name, value in zip(names, values)]
+    data_env.append({"name": "TERNAL_LOCAL_PREFLIGHT_SCOPE", "valueFrom": {"fieldRef": {"apiVersion": "v1", "fieldPath": "metadata.uid"}}})
+    credentials = [{"name": name, "valueFrom": {"secretKeyRef": {"name": "runtime", "key": name, "optional": True}}}
+                   for name in ("TERNAL_OBJECT_STORE_ACCESS_KEY", "TERNAL_OBJECT_STORE_SECRET_KEY", "TERNAL_OBJECT_STORE_SESSION_TOKEN")]
+    init = {"name": "ternal-local-restore", "image": image, "command": ["/usr/local/bin/ternal-api"], "args": ["local-restore"],
+            "securityContext": copy.deepcopy(security), "env": copy.deepcopy(data_env) + credentials,
+            "volumeMounts": [{"name": "local-staging", "mountPath": "/staging"}, {"name": "data", "mountPath": "/data"}]}
+    api = {"name": "ternal-api", "image": image, "securityContext": copy.deepcopy(security),
+           "env": copy.deepcopy(data_env) + [{"name": "TERNAL_REQUIRE_DATA_ADMIN_TOKEN", "value": "0"}, {"name": "TERNAL_OPERATOR_BIND", "value": ""}],
+           "envFrom": [{"secretRef": {"name": "runtime"}}],
+           "volumeMounts": [{"name": "data", "mountPath": "/data"}, {"name": "local-staging", "mountPath": "/staging", "readOnly": True}]}
+    pod_spec = {"serviceAccountName": "api", "securityContext": {"fsGroup": 65532, "seccompProfile": {"type": "RuntimeDefault"}},
+                "containers": [api], "initContainers": [init],
+                "volumes": [{"name": "data", "emptyDir": {}}, {"name": "local-staging", "emptyDir": {"sizeLimit": "1Gi"}}]}
+    fixture = {"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": {"name": workload, "namespace": namespace},
+               "spec": {"replicas": 0, "serviceName": workload, "selector": {"matchLabels": {"app": workload}},
+                        "updateStrategy": {"type": "OnDelete"}, "template": {"metadata": {"labels": {"app": workload}}, "spec": pod_spec}}}
+
+    def probe(label, obj, message=None):
+        result = run(label, "create", "--dry-run=server", "-f", "-", data=obj)
+        if message is None:
+            require(result)
+        elif not (result.returncode and message in result.stderr and "ValidatingAdmissionPolicy" in result.stderr):
+            raise AssertionError(label + ": expected exact policy denial: " + result.stderr)
+
+    try:
+        require(run("apply-policy", "apply", "-f", "-", data=doc))
+        require(run("create-api-sa", "-n", namespace, "create", "serviceaccount", "api"))
+        require(run("create-relay-sa", "-n", namespace, "create", "serviceaccount", "relay"))
+        for policy in policies:
+            name = policy["metadata"]["name"]
+            checked = None
+            for _ in range(30):
+                checked = json.loads(require(run("typecheck", "get", "validatingadmissionpolicy", name, "-o", "json")).stdout)
+                if checked.get("status", {}).get("observedGeneration") == checked["metadata"]["generation"]:
+                    break
+                time.sleep(1)
+            else:
+                raise AssertionError("policy type-check status did not become current: " + name)
+            warnings = checked.get("status", {}).get("typeChecking", {}).get("expressionWarnings", [])
+            if warnings:
+                raise AssertionError("CEL type-check warnings: " + json.dumps(warnings))
+        time.sleep(2)  # Let newly observed bindings reach the admission dispatcher.
+        probe("separate-relay", {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "separate-relay", "namespace": namespace},
+                                 "spec": {"serviceAccountName": "relay", "containers": [{"name": "ternal-relay", "image": "busybox:1.37"}]}})
+        require(run("fixture-zero", "create", "-f", "-", data=fixture))
+        live = json.loads(require(run("fixture-get", "-n", namespace, "get", "statefulset", workload, "-o", "json")).stdout)
+        scale_path = "/apis/apps/v1/namespaces/" + namespace + "/statefulsets/" + workload + "/scale"
+        for replicas in (0, 1, 2):
+            obj = {"apiVersion": "autoscaling/v1", "kind": "Scale", "metadata": {"name": workload, "namespace": namespace}, "spec": {"replicas": replicas}}
+            result = run("scale-" + str(replicas), "replace", "--raw", scale_path + "?dryRun=All", "-f", "-", data=obj)
+            if replicas < 2:
+                require(result)
+            elif not (result.returncode and scale_message in result.stderr and "ValidatingAdmissionPolicy" in result.stderr):
+                raise AssertionError("scale2 did not reach exact owned scale policy: " + result.stderr)
+        base = copy.deepcopy(fixture)
+        base["metadata"]["name"] = "duplicate-local"
+        probe("duplicate-controller", base, envelope)
+        base["spec"]["replicas"] = 2
+        probe("duplicate-controller-two", base, envelope)
+        pod = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": workload + "-0", "namespace": namespace,
+               "ownerReferences": [{"apiVersion": "apps/v1", "kind": "StatefulSet", "name": workload, "uid": live["metadata"]["uid"], "controller": True}]},
+               "spec": copy.deepcopy(pod_spec)}
+        probe("approved-pod", pod)
+        standalone = copy.deepcopy(pod)
+        del standalone["metadata"]["ownerReferences"]
+        probe("standalone-pod", standalone, envelope)
+        duplicate = copy.deepcopy(pod)
+        duplicate["metadata"]["name"] = "duplicate-local-0"
+        probe("duplicate-pod", duplicate, envelope)
+        mutations = {
+            "staging-rw": lambda p: p["containers"][0]["volumeMounts"][1].update(readOnly=False),
+            "staging-rw-alias": lambda p: p["containers"][0]["volumeMounts"].append({"name": "local-staging", "mountPath": "/alias"}),
+            "staging-subpath": lambda p: p["containers"][0]["volumeMounts"][1].update(subPath="receipt"),
+            "staging-subpath-expr": lambda p: p["containers"][0]["volumeMounts"][1].update(subPathExpr="$(POD_NAME)"),
+            "receipt-shadow": lambda p: p["containers"][0]["volumeMounts"].append({"name": "data", "mountPath": "/staging/preflight.json"}),
+            "init-data": lambda p: p["initContainers"][0]["volumeMounts"].append({"name": "data", "mountPath": "/elsewhere"}),
+            "init-data-missing": lambda p: p["initContainers"][0]["volumeMounts"].pop(),
+            "init-data-readonly": lambda p: p["initContainers"][0]["volumeMounts"][1].update(readOnly=True),
+            "init-data-subpath": lambda p: p["initContainers"][0]["volumeMounts"][1].update(subPath="other"),
+            "init-data-shadow": lambda p: p["initContainers"][0]["volumeMounts"].append({"name": "local-staging", "mountPath": "/data/ternal"}),
+            "extra-init": lambda p: p["initContainers"].append({"name": "other", "image": "busybox:1.37"}),
+            "extra-sidecar": lambda p: p["containers"].append({"name": "rogue", "image": "busybox:1.37"}),
+            "sidecar-staging-rw": lambda p: p["containers"].append({"name": "rogue", "image": "busybox:1.37", "volumeMounts": [{"name": "local-staging", "mountPath": "/staging"}]}),
+            "init-command": lambda p: p["initContainers"][0].update(args=["serve"]),
+            "init-preflight-only": lambda p: p["initContainers"][0].update(args=["local-preflight"]),
+            "init-image": lambda p: p["initContainers"][0].update(image=tg.OFFICIAL_IMAGE + "@sha256:" + "b" * 64),
+            "init-inline-credential": lambda p: p["initContainers"][0]["env"].__setitem__(-1, {"name": "TERNAL_OBJECT_STORE_SESSION_TOKEN", "value": "test"}),
+            "init-ack": lambda p: p["initContainers"][0]["env"][7].update(value="0"),
+            "scope-literal": lambda p: p["initContainers"][0]["env"].__setitem__(17, {"name": "TERNAL_LOCAL_PREFLIGHT_SCOPE", "value": "fixed"}),
+            "scope-wrong-field": lambda p: p["containers"][0]["env"][17]["valueFrom"]["fieldRef"].update(fieldPath="metadata.name"),
+        }
+        for label, mutate in mutations.items():
+            obj = copy.deepcopy(pod)
+            mutate(obj["spec"])
+            probe(label, obj, envelope)
+            if label in ("extra-sidecar", "sidecar-staging-rw"):
+                controller = copy.deepcopy(fixture)
+                # Replace, not create, so the exact owned controller name is
+                # retained and the sidecar is the isolated denial condition.
+                controller["metadata"]["resourceVersion"] = live["metadata"]["resourceVersion"]
+                controller["spec"]["template"]["spec"] = obj["spec"]
+                result = run(label + "-controller", "replace", "--dry-run=server", "-f", "-", data=controller)
+                if not (result.returncode and envelope in result.stderr and "ValidatingAdmissionPolicy" in result.stderr):
+                    raise AssertionError(label + " controller: expected exact policy denial: " + result.stderr)
+        token = copy.deepcopy(pod)
+        token["spec"]["volumes"].append({"name": "token", "projected": {"sources": [{"serviceAccountToken": {"path": "token"}}]}})
+        for container in token["spec"]["containers"] + token["spec"]["initContainers"]:
+            container["volumeMounts"].append({"name": "token", "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount", "readOnly": True})
+        probe("projected-token", token)
+        token["spec"]["volumes"][-1] = {"name": "token", "secret": {"secretName": "fake"}}
+        probe("secret-token", token, envelope)
+        token["spec"]["volumes"][-1] = {"name": "token", "emptyDir": {}}
+        probe("emptydir-token", token, envelope)
+        # The ephemeralcontainers subresource needs an existing Pod. A single
+        # explicitly gated controller fixture cannot be assigned a node or pull
+        # an image; only this owned fixture is materialized, never an app run.
+        gated = copy.deepcopy(fixture)
+        gated["metadata"]["resourceVersion"] = live["metadata"]["resourceVersion"]
+        gated["spec"]["replicas"] = 1
+        gated["spec"]["template"]["spec"]["schedulingGates"] = [{"name": "ternal.dev/admission-test"}]
+        require(run("gated-controller", "replace", "-f", "-", data=gated))
+        pending = None
+        for _ in range(30):
+            result = require(run("gated-pod-get", "-n", namespace, "get", "pod", workload + "-0", "--ignore-not-found", "-o", "json"))
+            if result.stdout.strip():
+                pending = json.loads(result.stdout)
+                if pending.get("status", {}).get("phase") == "Pending":
+                    break
+            time.sleep(1)
+        else:
+            raise AssertionError("owned gated Pod did not become Pending")
+
+        def assert_unexecuted(obj):
+            status = obj.get("status", {})
+            if (obj["spec"].get("nodeName") or status.get("phase") != "Pending" or
+                    status.get("containerStatuses") or status.get("initContainerStatuses") or status.get("ephemeralContainerStatuses") or
+                    obj["spec"].get("schedulingGates") != [{"name": "ternal.dev/admission-test"}]):
+                raise AssertionError("owned fixture was not safely scheduling-gated before container execution")
+
+        assert_unexecuted(pending)
+        pending["spec"]["ephemeralContainers"] = [{"name": "ephemeral-sidecar", "image": "busybox:1.37", "command": ["sleep", "1"],
+                                                   "volumeMounts": [{"name": "local-staging", "mountPath": "/staging"}]}]
+        path = "/api/v1/namespaces/" + namespace + "/pods/" + workload + "-0/ephemeralcontainers?dryRun=All"
+        result = run("ephemeral-sidecar", "replace", "--raw", path, "-f", "-", data=pending)
+        if not (result.returncode and envelope in result.stderr and "ValidatingAdmissionPolicy" in result.stderr):
+            raise AssertionError("ephemeral subresource did not reach exact Local policy denial: " + result.stderr)
+        pending = json.loads(require(run("gated-pod-after", "-n", namespace, "get", "pod", workload + "-0", "-o", "json")).stdout)
+        assert_unexecuted(pending)
+        require(run("delete-gated-controller", "-n", namespace, "delete", "statefulset", workload,
+                    "--cascade=foreground", "--wait=true", "--timeout=40s"))
+        pods = json.loads(require(run("verify-no-pods", "-n", namespace, "get", "pods", "-o", "json")).stdout)
+        if pods["items"]:
+            raise AssertionError("unexpected running app Pod")
+        print("Local CEL type-check and admission matrix passed; no application container executed; owned gated Pod removed")
+    finally:
+        original_failure = sys.exc_info()[0] is not None
+        errors = []
+        for item in bindings + policies:
+            result = run("cleanup-policy", "delete", item["kind"], item["metadata"]["name"], "--ignore-not-found", "--wait=true")
+            if result.returncode:
+                errors.append(result.stderr)
+        result = run("cleanup-namespace", "delete", "namespace", namespace, "--ignore-not-found", "--wait=true", "--timeout=40s")
+        if result.returncode:
+            errors.append(result.stderr)
+        if errors:
+            message = "owned cleanup failed: " + "\n".join(errors)
+            if original_failure:
+                print(message, file=sys.stderr)
+            else:
+                raise RuntimeError(message)
+
+
 if __name__ == "__main__":
-    main(sys.argv[1])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("image")
+    parser.add_argument("--local", action="store_true")
+    parser.add_argument("--kubeconfig")
+    parser.add_argument("--context")
+    parser.add_argument("--diagnostics")
+    args = parser.parse_args()
+    if args.local:
+        if not all((args.kubeconfig, args.context, args.diagnostics)):
+            parser.error("--local requires --kubeconfig, --context and --diagnostics")
+        local_matrix(args.image, args.kubeconfig, args.context, args.diagnostics)
+    else:
+        main(args.image)

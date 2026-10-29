@@ -49,6 +49,10 @@ func (c recoveryStorage) prefix(clusterID string) string { return path.Join(c.Pr
 // falling back to local storage would verify a different root than the voters
 // run on.
 func (c recoveryStorage) bucket() (objstore.Bucket, error) {
+	return c.bucketWithContext(context.Background())
+}
+
+func (c recoveryStorage) bucketWithContext(ctx context.Context) (objstore.Bucket, error) {
 	switch c.Provider {
 	case "s3":
 		if c.Bucket == "" {
@@ -64,7 +68,7 @@ func (c recoveryStorage) bucket() (objstore.Bucket, error) {
 		}
 		config := gcs.DefaultConfig
 		config.Bucket = c.Bucket
-		return gcs.NewBucketWithConfig(context.Background(), kitlog.NewNopLogger(), config, "ternal-anchor", nil)
+		return gcs.NewBucketWithConfig(ctx, kitlog.NewNopLogger(), config, "ternal-anchor", nil)
 	case "filesystem":
 		dir := c.Dir
 		if dir == "" {

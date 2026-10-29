@@ -9,6 +9,7 @@ need() {
 }
 
 need helm
+need yq
 
 chart=deploy/helm/ternal
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/ternal-helm-render.XXXXXX")
@@ -305,6 +306,92 @@ for missing in data.trustAnchorConfigMap serviceAccountName; do
 		echo "durable render accepted missing $missing" >&2; exit 1
 	fi
 	grep -q "$missing is required" "$tmp/missing-anchor.err"
+done
+
+# Local is opt-in and never reuses a standalone/HA data identity.
+local_render() {
+	helm template ternal-local "$chart" -f "$chart/values-local.yaml" \
+		--set-string "image.digest=$digest" \
+		--set-string secrets.existingSecret=ternal-local-runtime \
+		--set-string data.clusterID=ternal-local-a1 \
+		--set data.local.writerGCQuiescenceAcknowledged=true \
+		--set data.objectStore.provider=s3 \
+		--set-string data.objectStore.endpoint=object-store.example.invalid:9000 \
+		--set data.objectStore.insecure=true \
+		--set-string data.objectStore.bucket=ternal-local \
+		--set-string data.trustAnchorConfigMap=ternal-local-trust \
+		--set-string serviceAccountName=ternal-local-data "$@"
+}
+local_render >"$tmp/local.yaml"
+grep -q '^  replicas: 1$' "$tmp/local.yaml"
+grep -q '^    type: OnDelete$' "$tmp/local.yaml"
+grep -q 'manually seeded' "$chart/templates/NOTES.txt"
+if grep -Eq 'kind: Deployment|kind: PersistentVolumeClaim|volumeClaimTemplates:|claimName:|rhiza.mrchypark.dev|RHIZA_|name: data-peer|name: recovery|hostPath:' "$tmp/local.yaml"; then
+	echo "Local render includes an Operator, HA port, PVC, host path, or upstream environment" >&2; exit 1
+fi
+for role in initContainers containers; do
+	yq "select(.kind==\"StatefulSet\") | .spec.template.spec.$role[0]" "$tmp/local.yaml" >"$tmp/local-$role.yaml"
+done
+[ "$(yq '.command | join(" ")' "$tmp/local-initContainers.yaml")" = /usr/local/bin/ternal-api ]
+[ "$(yq '.name' "$tmp/local-initContainers.yaml")" = ternal-local-restore ]
+[ "$(yq '.args | join(" ")' "$tmp/local-initContainers.yaml")" = local-restore ]
+[ "$(yq '.image' "$tmp/local-initContainers.yaml")" = "ghcr.io/mrchypark/ternal@$digest" ]
+[ "$(yq '.image' "$tmp/local-containers.yaml")" = "ghcr.io/mrchypark/ternal@$digest" ]
+[ "$(yq '.envFrom | length' "$tmp/local-initContainers.yaml")" = 0 ]
+[ "$(yq '.volumeMounts | length' "$tmp/local-initContainers.yaml")" = 2 ]
+[ "$(yq '.volumeMounts[0].mountPath' "$tmp/local-initContainers.yaml")" = /staging ]
+[ "$(yq '.volumeMounts[] | select(.name=="data") | .mountPath' "$tmp/local-initContainers.yaml")" = /data ]
+[ "$(yq '.volumeMounts[] | select(.name=="data") | .readOnly // false' "$tmp/local-initContainers.yaml")" = false ]
+[ "$(yq '.volumeMounts[] | select(.mountPath=="/staging") | .readOnly' "$tmp/local-containers.yaml")" = true ]
+for role in initContainers containers; do
+	[ "$(yq '.securityContext.runAsUser' "$tmp/local-$role.yaml")" = 65532 ]
+	[ "$(yq '.securityContext.runAsGroup' "$tmp/local-$role.yaml")" = 65532 ]
+	[ "$(yq '.securityContext.readOnlyRootFilesystem' "$tmp/local-$role.yaml")" = true ]
+	[ "$(yq '.securityContext.allowPrivilegeEscalation' "$tmp/local-$role.yaml")" = false ]
+	done
+for name in TERNAL_DATA_LOCAL TERNAL_DATA_MULTI_NODE TERNAL_DATA_DIR TERNAL_DATA_CLUSTER_ID TERNAL_DATA_NODE_ID \
+	TERNAL_LOCAL_PREFLIGHT_STAGING_DIR TERNAL_LOCAL_PREFLIGHT_RECEIPT_FILE TERNAL_LOCAL_WRITER_GC_QUIESCENCE_ACK \
+	TERNAL_TRUST_ANCHOR_CONFIGMAP TERNAL_TRUST_ANCHOR_NAMESPACE TERNAL_OBJECT_STORE_PROVIDER TERNAL_OBJECT_STORE_ENDPOINT \
+	TERNAL_OBJECT_STORE_BUCKET TERNAL_OBJECT_STORE_PREFIX TERNAL_OBJECT_STORE_REGION TERNAL_OBJECT_STORE_INSECURE TERNAL_OBJECT_STORE_DURABILITY; do
+	init_value=$(yq ".env[] | select(.name==\"$name\") | .value" "$tmp/local-initContainers.yaml")
+	api_value=$(yq ".env[] | select(.name==\"$name\") | .value" "$tmp/local-containers.yaml")
+	[ "$init_value" = "$api_value" ] || { echo "Local initializer/API configuration differs: $name" >&2; exit 1; }
+done
+[ "$(yq '.env[] | select(.name=="TERNAL_DATA_LOCAL") | .value' "$tmp/local-initContainers.yaml")" = 1 ]
+[ "$(yq '.env[] | select(.name=="TERNAL_DATA_MULTI_NODE") | .value' "$tmp/local-initContainers.yaml")" = 0 ]
+[ "$(yq '.env[] | select(.name=="TERNAL_LOCAL_PREFLIGHT_RECEIPT_FILE") | .value' "$tmp/local-initContainers.yaml")" = /staging/preflight.json ]
+for role in initContainers containers; do
+	[ "$(yq '.env[] | select(.name=="TERNAL_LOCAL_PREFLIGHT_SCOPE") | .valueFrom.fieldRef.fieldPath' "$tmp/local-$role.yaml")" = metadata.uid ]
+	[ "$(yq '.env[] | select(.name=="TERNAL_LOCAL_PREFLIGHT_SCOPE") | .valueFrom.fieldRef.apiVersion' "$tmp/local-$role.yaml")" = v1 ]
+done
+if yq '.env[].name' "$tmp/local-initContainers.yaml" | grep -Eq 'OIDC|SESSION_KEY|ADMIN_TOKEN|CLUSTER_MEMBERS'; then
+	echo "Local initializer receives application/admin credentials or HA membership" >&2; exit 1
+fi
+local_identity=$(yq 'select(.kind=="StatefulSet") | .spec.selector.matchLabels."ternal.dev/data-identity"' "$tmp/local.yaml")
+standalone_identity=$(local_render --set data.mode=standalone | yq 'select(.kind=="StatefulSet") | .spec.selector.matchLabels."ternal.dev/data-identity"')
+[ "$local_identity" != "$standalone_identity" ] || { echo "Local mode reused standalone identity" >&2; exit 1; }
+local_render --set data.objectStore.provider=gcs --set-string data.objectStore.endpoint= --set data.objectStore.insecure=false >"$tmp/local-gcs.yaml"
+for invalid in \
+	'--set data.mode=invalid' \
+	'--set operator.enabled=true' \
+	'--set operator.automaticRecovery=true' \
+	'--set anchor.enabled=true' \
+	'--set data.local.replicas=2' \
+	'--set data.local.replicas=0' \
+	'--set persistence.enabled=true' \
+	'--set data.local.writerGCQuiescenceAcknowledged=false' \
+	'--set-string data.local.writerGCQuiescenceAcknowledged=false' \
+	'--set-string data.local.preflightReceiptFile=' \
+	'--set-string data.local.preflightReceiptFile=/data/receipt.json' \
+	'--set-string data.trustAnchorConfigMap=' \
+	'--set-string serviceAccountName=' \
+	'--set data.objectStore.durability=async' \
+	'--set data.objectStore.provider=filesystem' \
+	'--set-string image.digest='; do
+	# shellcheck disable=SC2086
+	if local_render $invalid >"$tmp/local-invalid.yaml" 2>"$tmp/local-invalid.err"; then
+		echo "unsafe Local configuration accepted: $invalid" >&2; exit 1
+	fi
 done
 
 # Operator cases live in their own file: the upstream controller's variable

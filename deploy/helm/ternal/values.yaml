@@ -20,7 +20,15 @@ persistence:
 
 data:
   # standalone runs one embedded Rhiza voter. ha runs exactly three voters.
+  # local is an opt-in, operator-free Local archive path; never an in-place conversion.
   mode: standalone
+  local:
+    replicas: 1
+    # Manual acknowledgement only, not a fencing proof. Stop external writers
+    # and GC first. Empty, legacy, held, and unknown archives remain fail-closed.
+    writerGCQuiescenceAcknowledged: false
+    preflightReceiptFile: /staging/preflight.json
+    stagingSizeLimit: 1Gi
   # Production sets this true. HA implies it. When false, standalone is an
   # explicitly ephemeral development mode.
   requireObjectStore: false
@@ -58,7 +66,7 @@ operator:
   serviceAccountAnnotations: {}
   image:
     repository: ghcr.io/mrchypark/rhiza-operator
-    tag: v0.19.0
+    tag: v0.20.0
     digest: ""
     pullPolicy: IfNotPresent
   # Not yet qualified. The operator template rejects true. See docs/rhiza-ha.md.

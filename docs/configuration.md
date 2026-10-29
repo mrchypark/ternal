@@ -73,8 +73,9 @@ configuration root, such as an isolated test directory; the session remains at
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `TERNAL_DATA_DIR` | `ternal-data` | Persistent data directory |
-| `TERNAL_DATA_ADMIN_TOKEN` | none | Internal data-node authentication token |
-| `TERNAL_REQUIRE_DATA_ADMIN_TOKEN` | `0` | Set to `1` in production to require a token of at least 32 bytes |
+| `TERNAL_DATA_ADMIN_TOKEN` | none | Internal voter authentication token; must be absent in Local mode |
+| `TERNAL_REQUIRE_DATA_ADMIN_TOKEN` | `0` | Set to `1` for production voters to require a token of at least 32 bytes; must be `0` in Local mode |
+| `TERNAL_DATA_LOCAL` | `0` | Explicit `1` selects the separate single-node SDK Local path; incompatible with HA, peer, membership, and data-admin settings |
 | `TERNAL_DATA_CLUSTER_ID` | `ternal` | Cluster identity |
 | `TERNAL_DATA_SCHEMA_VERSION` | binary schema version | Must match the running binary |
 | `TERNAL_DATA_NODE_ID` | `node-1` | Node identity |
@@ -90,9 +91,17 @@ Optional object-store settings use the same suffixes under
 `REGION`, `INSECURE`, `ACCESS_KEY`, `SECRET_KEY`, `SESSION_TOKEN`, `DURABILITY`,
 `SYNC_INTERVAL`, and `BATCH_DELAY`.
 
-### Standalone and HA
+### Local, standalone, and HA
 
-The Helm chart exposes two explicit storage modes:
+The Helm chart exposes three explicit storage modes:
+
+- `data.mode=local` uses Rhiza `Local:true`, one application writer, and a
+  `ternal-api local-restore` init container that verifies authority, opens and
+  closes the SDK on the same DataDir before main reopens it. It requires a seeded
+  compatible S3/GCS archive, a dedicated data directory, a mode-separated
+  Kubernetes trust anchor, and explicit external writer/GC quiescence
+  acknowledgement. It is not an HA mode or an automatic archive bootstrap.
+  See [Local single-node operations](local-single-node.md) before enabling it.
 
 - `data.mode=standalone` runs one embedded voter. It rejects cluster membership
   unless `TERNAL_DATA_MULTI_NODE=1` is explicitly selected outside Helm. With
@@ -102,7 +111,7 @@ The Helm chart exposes two explicit storage modes:
   DNS, `emptyDir`-backed local WAL and voter identity, required hostname
   anti-affinity, a two-voter disruption budget, and `OnDelete` updates.
 
-Durable standalone sets `data.requireObjectStore=true`. HA implies that setting.
+Durable standalone sets `data.requireObjectStore=true`. Local and HA imply that setting.
 Every configured object store requires `before-ack` durability; durable
 standalone and HA also require a unique, stable `data.clusterID`, shared
 S3-compatible or GCS storage, `secrets.existingSecret`, an existing
@@ -145,7 +154,7 @@ ServiceAccount bound through Workload Identity. Rhiza then uses Application
 Default Credentials. Ternal deliberately does not expose service-account JSON
 through Helm values or environment variables.
 
-Storage values are shared by standalone and HA and contain only non-secret
+Storage values are shared by the durable modes and contain only non-secret
 routing metadata:
 
 ```yaml
@@ -189,11 +198,11 @@ The regular Service sends API traffic only to ready voters. `/ready` performs a
 linearizable read, so an isolated voter remains alive but leaves Service
 endpoints when it cannot reach quorum.
 
-Do not implement an HA upgrade by deleting voter pods. With Rhiza 0.19, losing
+Do not implement an HA upgrade by deleting voter pods. With Rhiza 0.21, losing
 an `emptyDir` loses the local WAL and voter identity; the registered voter then
 fails closed with `ErrVoterStateLost`. A surviving quorum requires fencing the
 lost voter and replacing it with a fresh learner; lost quorum requires fenced
-whole-generation recovery. Follow [Rhiza recovery](https://github.com/mrchypark/rhiza/blob/v0.19.0/docs/recovery.md)
+whole-generation recovery. Follow [Rhiza recovery](https://github.com/mrchypark/rhiza/blob/v0.21.0/docs/recovery.md)
 before replacing pods. `OnDelete` prevents automatic replacement; it does not
 provide that recovery. A container restart within the same pod retains its
 `emptyDir` and is a different operation.

@@ -5,8 +5,8 @@
 {{- $managedRelay := default dict .Values.transport.managedRelay -}}
 {{- $data := default dict .Values.data -}}
 {{- $dataMode := default "standalone" $data.mode -}}
-{{- if not (has $dataMode (list "standalone" "ha")) -}}
-{{- fail "data.mode must be standalone or ha" -}}
+{{- if not (has $dataMode (list "standalone" "ha" "local")) -}}
+{{- fail "data.mode must be standalone, ha, or local" -}}
 {{- end -}}
 {{- if ne (int $data.schemaVersion) 1 -}}
 {{- fail "data.schemaVersion must be 1 for this chart" -}}
@@ -14,7 +14,7 @@
 {{- $objectStore := default dict $data.objectStore -}}
 {{- $objectStoreBucket := default "" $objectStore.bucket -}}
 {{- $objectStoreProvider := default "" $objectStore.provider -}}
-{{- $objectStoreRequired := or (eq $dataMode "ha") ($data.requireObjectStore | default false) -}}
+{{- $objectStoreRequired := or (eq $dataMode "ha") (eq $dataMode "local") ($data.requireObjectStore | default false) -}}
 {{- $clusterID := default "ternal" $data.clusterID -}}
 {{- if or $objectStoreRequired $objectStoreProvider -}}
 {{- $clusterID = required "data.clusterID is required when Rhiza object storage is enabled" $data.clusterID -}}
@@ -61,7 +61,13 @@ data:
   TERNAL_RELAY_BIND: 0.0.0.0:3001
 {{ end }}
   TERNAL_DATA_DIR: /data/ternal
-  TERNAL_REQUIRE_DATA_ADMIN_TOKEN: "1"
+{{ if eq $dataMode "local" }}
+  TERNAL_DATA_LOCAL: "1"
+  TERNAL_LOCAL_PREFLIGHT_STAGING_DIR: /staging
+  TERNAL_LOCAL_PREFLIGHT_RECEIPT_FILE: /staging/preflight.json
+  TERNAL_LOCAL_WRITER_GC_QUIESCENCE_ACK: "1"
+{{ end }}
+  TERNAL_REQUIRE_DATA_ADMIN_TOKEN: {{ ternary "0" "1" (eq $dataMode "local") | quote }}
   TERNAL_DATA_SCHEMA_VERSION: "1"
   TERNAL_DATA_CLUSTER_ID: {{ $clusterID | quote }}
 {{ if $objectStoreProvider }}

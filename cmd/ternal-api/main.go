@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -17,10 +18,25 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := runArgs(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "ternal-api:", err)
 		os.Exit(1)
 	}
+}
+
+func runArgs(args []string) error {
+	if len(args) == 0 {
+		return run()
+	}
+	if len(args) != 1 || (args[0] != "local-preflight" && args[0] != "local-restore") {
+		return fmt.Errorf("usage: ternal-api [local-preflight|local-restore]")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if args[0] == "local-restore" {
+		return store.LocalRestoreFromEnv(ctx)
+	}
+	return store.LocalPreflightFromEnv(ctx)
 }
 
 // newHTTPServer applies the single timeout policy for all listeners:
@@ -37,17 +53,23 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	}
 }
 
-func run() error {
+func closeStorageOnReturn(result *error, storage io.Closer) {
+	*result = errors.Join(*result, storage.Close())
+}
+
+func run() (err error) {
 	// Operator-managed generation identity first: it must be in place before the
 	// store reads its configuration, and an unadaptable token map must not start.
-	if err := operatoridentity.Apply(); err != nil {
-		return err
+	if os.Getenv("TERNAL_DATA_LOCAL") != "1" {
+		if err := operatoridentity.Apply(); err != nil {
+			return err
+		}
 	}
 	s, err := store.OpenFromEnv(context.Background())
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStorageOnReturn(&err, s)
 
 	bind := os.Getenv("TERNAL_BIND")
 	if bind == "" {
