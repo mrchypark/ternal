@@ -11,6 +11,10 @@ PATH = Path(__file__).with_name("render_trustguard.py")
 SPEC = importlib.util.spec_from_file_location("trustguard", PATH)
 trustguard = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(trustguard)
+CHECK_PATH = PATH.with_name("trustguard-admission-check.py")
+CHECK_SPEC = importlib.util.spec_from_file_location("trustguard_admission", CHECK_PATH)
+admission = importlib.util.module_from_spec(CHECK_SPEC)
+CHECK_SPEC.loader.exec_module(admission)
 
 IMAGE = "ghcr.io/mrchypark/ternal@sha256:" + "a" * 64
 TOKEN = "12345678-1234-1234-1234-123456789abc"
@@ -18,6 +22,19 @@ ANCHOR_SA = "ternal-anchor"
 
 
 class TrustGuardRendererTest(unittest.TestCase):
+    def test_typecheck_diagnostics_allow_only_status_fields_and_keep_schema_names(self):
+        result = admission.safe_typecheck_records("owned-policy", [{
+            "fieldRef": "spec.variables[7].expression",
+            "warning": "undefined field secretKeyRef or serviceAccountToken",
+            "params": {"credential": "not-exported"},
+            "object": {"data": {"password": "not-exported"}},
+        }])
+        self.assertEqual(result, [{"policy": "owned-policy", "fieldRef": "spec.variables[7].expression",
+                                   "warning": "undefined field secretKeyRef or serviceAccountToken"}])
+        with self.assertRaisesRegex(ValueError, "invalid type-check diagnostic record"):
+            admission.safe_typecheck_records("owned-policy", [{"fieldRef": "spec.variables[0]", "warning": {"secret": "not-exported"}}])
+        self.assertLessEqual(len(admission.safe_typecheck_records("p", [{"fieldRef": "x", "warning": "w" * 40000}])[0]["warning"]), 32768)
+
     def render(self):
         return trustguard.render("ternal-test", "ternal-data", "ternal-trust-anchor",
                                  "ternal-cluster-a1", "b" * 64, [IMAGE], token=TOKEN, anchor_service_account=ANCHOR_SA)

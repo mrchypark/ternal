@@ -35,7 +35,46 @@ if workflow.count(f"uses: {allowed_local}") != 1:
     raise SystemExit("tag release must call the local native build exactly once")
 
 ci = pathlib.Path(".github/workflows/ci.yaml").read_text()
-for name, source in (("CI", ci), ("tag release", workflow)):
+local_job = re.search(r"(?ms)^  local-admission:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)", ci)
+if local_job is None:
+    raise SystemExit("CI must run Local admission as a separate mandatory job")
+local_source = local_job.group(1)
+if re.search(r"(?m)^    (?:needs|if|continue-on-error):", local_source) or "secrets." in local_source:
+    raise SystemExit("CI Local admission must run independently without optional gates or secrets")
+for required in (
+    "runs-on: ubuntu-24.04",
+    "timeout-minutes: 20",
+    "uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+    "persist-credentials: false",
+    "command -v docker",
+    "command -v python3",
+    "command -v timeout",
+    "https://get.helm.sh/helm-v4.2.3-linux-amd64.tar.gz",
+    "e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c",
+    "https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64",
+    "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4",
+):
+    if required not in local_source:
+        raise SystemExit(f"independent CI Local admission prerequisite is missing: {required}")
+test_job = re.search(r"(?ms)^  test:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)", ci)
+if test_job is None or "sh deploy/security/local-admission-check.sh" in test_job.group(1):
+    raise SystemExit("CI must preserve the separate test job without serial Local admission")
+test_source = test_job.group(1)
+if re.search(r"(?m)^    (?:needs|if|continue-on-error):", test_source):
+    raise SystemExit("CI test and Local admission jobs must both remain independent and mandatory")
+for required in (
+    "./scripts/check-public-config.sh",
+    "sh scripts/check-public-config.test.sh",
+    "go vet ./...",
+    "./frontend/build.sh",
+    "go test -race -count=1 -timeout=10m ./...",
+    "sh deploy/release/qualify-native-archives.test.sh",
+    "sh deploy/vind/helm-render-check.sh",
+    'docker build --tag "$image" --label "ternal.probe.owner=$owner" .',
+):
+    if required not in test_source:
+        raise SystemExit(f"separate CI test job lost a mandatory gate: {required}")
+for name, source in (("CI", local_source), ("tag release", workflow)):
     for required in (
         "https://github.com/kubernetes-sigs/kind/releases/download/v0.31.0/kind-linux-amd64",
         "eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa",

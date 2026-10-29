@@ -14,7 +14,8 @@ restored DataDir with matching identity and external trust. It does not migrate
 pre-cutover, old-format, unknown nonempty, or HA roots into Local state. Preserve
 those original roots and authorities; never clear evidence to bypass refusal.
 
-1. Merge an exact reviewed Go commit after GitHub Actions is green.
+1. Merge an exact reviewed Go commit only after every mandatory GitHub Actions
+   job for that head is green, including both CI `test` and `local-admission`.
 2. Build and qualify the Go CLI/agent candidate archives from that commit with
    the manual candidate workflow. It builds the pinned pigeons transport from
    its content-addressed fork source.
@@ -37,6 +38,11 @@ native binaries and requires byte equality before binding archive, source,
 pigeons repository, source, and lockfile digests in the capsule provenance. It does
 not authenticate to a cloud provider, publish a GitHub release, create a tag,
 or deploy anything.
+
+CI runs the full test/scratch checks and actual Local admission in independent,
+mandatory jobs so admission diagnostics do not wait for the full build loop.
+A passing `test` job alone does not permit merging. Tag release admission remains
+a mandatory sequential gate before image publication.
 
 The shared native workflow qualifies the actual extracted Linux/macOS archives
 before upload, for both manual candidates and tag releases. It checks isolated

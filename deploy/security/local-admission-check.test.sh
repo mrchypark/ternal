@@ -21,6 +21,8 @@ grep -F 'diagnostics_path=%s' "$script" >/dev/null
 grep -F 'public=$work/public-diagnostics' "$script" >/dev/null
 grep -F 'sanitize_log "$work/$file"' "$script" >/dev/null
 grep -F 'redacted sensitive diagnostic line' "$script" >/dev/null
+grep -F 'typecheck=$work/admission/cel-typecheck-warnings.json' "$script" >/dev/null
+grep -F 'keys == ["fieldRef", "policy", "warning"]' "$script" >/dev/null
 grep -F -- '--kubeconfig "$KUBECONFIG" --context "$context"' "$script" >/dev/null
 if grep -Eq 'kind delete clusters|docker (system|volume|container) prune|kubectl config use-context' "$script"; then
 	echo 'Local admission runner changes shared state' >&2; exit 1

@@ -3,7 +3,7 @@
 set -eu
 
 [ "$(uname -s)" = Linux ] || { echo 'Local admission runner requires Linux' >&2; exit 2; }
-for tool in docker kind kubectl python3 timeout; do
+for tool in docker kind kubectl python3 timeout jq; do
 	command -v "$tool" >/dev/null 2>&1 || { echo "missing required command: $tool" >&2; exit 127; }
 done
 [ "$(kind --version)" = 'kind version 0.31.0' ] || { echo 'kind v0.31.0 is required' >&2; exit 2; }
@@ -48,6 +48,20 @@ emit_diagnostics() {
 	if [ -d "$work/admission" ]; then
 		find "$work/admission" -type f -name '*.stderr' -print >"$work/stderr-paths"
 		while IFS= read -r file; do sanitize_log "$file" >"$public/$(basename "$file")"; done <"$work/stderr-paths"
+	fi
+	# This exact file is emitted only from generated-policy compiler status.
+	# Keep schema field names such as secretKeyRef/serviceAccountToken readable.
+	typecheck=$work/admission/cel-typecheck-warnings.json
+	if [ -f "$typecheck" ] && jq -e '
+		type == "array" and length <= 64 and all(.[];
+			type == "object" and (keys == ["fieldRef", "policy", "warning"])
+			and (.policy | type == "string" and length <= 253)
+			and (.fieldRef | type == "string" and length <= 512)
+			and (.warning | type == "string" and length <= 32768))
+	' "$typecheck" >/dev/null 2>&1; then
+		jq -c '.' "$typecheck" >"$public/cel-typecheck-warnings.json"
+		echo '--- compiler status only (first 8 warnings; 4096 characters each) ---' >&2
+		jq -c '.[:8][] | {policy,fieldRef,warning:(.warning[:4096])}' "$typecheck" >&2
 	fi
 	if [ -n "${GITHUB_OUTPUT:-}" ]; then printf 'diagnostics_path=%s\n' "$public" >>"$GITHUB_OUTPUT"; fi
 	echo "Sanitized Local admission diagnostics: $public" >&2

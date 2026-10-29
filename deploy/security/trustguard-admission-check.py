@@ -23,6 +23,21 @@ def require(result):
     return result
 
 
+def safe_typecheck_records(policy, warnings):
+    """Select compiler status only, never the policy object, spec or parameters."""
+    if not isinstance(policy, str) or not isinstance(warnings, list):
+        raise ValueError("invalid type-check diagnostic status")
+    records = []
+    for item in warnings[:64]:
+        if not isinstance(item, dict) or not isinstance(item.get("fieldRef"), str) or not isinstance(item.get("warning"), str):
+            raise ValueError("invalid type-check diagnostic record")
+        warning = item["warning"]
+        if len(warning) > 32768:
+            warning = warning[:32740] + " [diagnostic truncated]"
+        records.append({"policy": policy[:253], "fieldRef": item["fieldRef"][:512], "warning": warning})
+    return records
+
+
 def main(image):
     namespace = "ternal-admission-" + uuid.uuid4().hex[:10]
     doc = tg.render(namespace, "api", "anchor", namespace, "a" * 64, [image],
@@ -202,6 +217,8 @@ def local_matrix(image, kubeconfig, context, diagnostics):
         require(run("apply-policy", "apply", "-f", "-", data=doc))
         require(run("create-api-sa", "-n", namespace, "create", "serviceaccount", "api"))
         require(run("create-relay-sa", "-n", namespace, "create", "serviceaccount", "relay"))
+        typecheck_records = []
+        has_typecheck_warnings = False
         for policy in policies:
             name = policy["metadata"]["name"]
             checked = None
@@ -214,7 +231,12 @@ def local_matrix(image, kubeconfig, context, diagnostics):
                 raise AssertionError("policy type-check status did not become current: " + name)
             warnings = checked.get("status", {}).get("typeChecking", {}).get("expressionWarnings", [])
             if warnings:
-                raise AssertionError("CEL type-check warnings: " + json.dumps(warnings))
+                has_typecheck_warnings = True
+                typecheck_records.extend(safe_typecheck_records(name, warnings))
+                typecheck_records = typecheck_records[:64]
+                (directory / "cel-typecheck-warnings.json").write_text(json.dumps(typecheck_records))
+        if has_typecheck_warnings:
+            raise AssertionError("CEL type-check warnings; see cel-typecheck-warnings.json status-only diagnostic")
         time.sleep(2)  # Let newly observed bindings reach the admission dispatcher.
         probe("separate-relay", {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "separate-relay", "namespace": namespace},
                                  "spec": {"serviceAccountName": "relay", "containers": [{"name": "ternal-relay", "image": "busybox:1.37"}]}})
