@@ -462,7 +462,9 @@ def render(namespace, service_account_name, anchor_name, cluster_id, storage_ide
                               "operations": ["CREATE", "UPDATE"], "resources": ["statefulsets", "statefulsets/scale"],
                               "resourceNames": [local_workload_name], "scope": "Namespaced"}]},
                           "matchConditions": [{"name": "owned-namespace", "expression": "request.namespace == '" + namespace + "'"}],
-                          "validations": [{"expression": "object.spec.replicas in [0, 1]",
+                          # ScaleSpec.replicas is a zero-valued int32 with json omitempty.
+                          # https://github.com/kubernetes/api/blob/v0.34.3/autoscaling/v1/types.go
+                          "validations": [{"expression": "!has(object.spec.replicas) || object.spec.replicas in [0, 1]",
                                            "message": "the owned Local workload permits only zero or one replica; scale is not fencing"}]}})
         items.append({"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingAdmissionPolicyBinding",
                       "metadata": metadata(scale_name + "-binding"), "spec": {"policyName": scale_name,

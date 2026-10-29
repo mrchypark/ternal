@@ -243,10 +243,12 @@ def local_matrix(image, kubeconfig, context, diagnostics):
         require(run("fixture-zero", "create", "-f", "-", data=fixture))
         live = json.loads(require(run("fixture-get", "-n", namespace, "get", "statefulset", workload, "-o", "json")).stdout)
         scale_path = "/apis/apps/v1/namespaces/" + namespace + "/statefulsets/" + workload + "/scale"
-        for replicas in (0, 1, 2):
-            obj = {"apiVersion": "autoscaling/v1", "kind": "Scale", "metadata": {"name": workload, "namespace": namespace}, "spec": {"replicas": replicas}}
-            result = run("scale-" + str(replicas), "replace", "--raw", scale_path + "?dryRun=All", "-f", "-", data=obj)
-            if replicas < 2:
+        for replicas in (None, 0, 1, 2):
+            scale_spec = {} if replicas is None else {"replicas": replicas}
+            obj = {"apiVersion": "autoscaling/v1", "kind": "Scale", "metadata": {"name": workload, "namespace": namespace}, "spec": scale_spec}
+            label = "omitted" if replicas is None else str(replicas)
+            result = run("scale-" + label, "replace", "--raw", scale_path + "?dryRun=All", "-f", "-", data=obj)
+            if replicas in (None, 0, 1):
                 require(result)
             elif not (result.returncode and scale_message in result.stderr and "ValidatingAdmissionPolicy" in result.stderr):
                 raise AssertionError("scale2 did not reach exact owned scale policy: " + result.stderr)

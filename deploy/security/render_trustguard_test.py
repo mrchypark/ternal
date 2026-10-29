@@ -86,7 +86,7 @@ class TrustGuardRendererTest(unittest.TestCase):
         self.assertEqual(rule["resources"], ["statefulsets", "statefulsets/scale"])
         self.assertEqual(rule["resourceNames"], ["ternal-local"])
         self.assertEqual(policy["spec"]["matchConditions"][0]["expression"], "request.namespace == 'ternal-test'")
-        self.assertEqual(policy["spec"]["validations"][0]["expression"], "object.spec.replicas in [0, 1]")
+        self.assertEqual(policy["spec"]["validations"][0]["expression"], "!has(object.spec.replicas) || object.spec.replicas in [0, 1]")
         self.assertNotIn("label", json.dumps(policy))
 
     def test_local_init_envelope_and_main_readonly_mount_guards_are_rendered(self):
