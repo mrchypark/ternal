@@ -116,6 +116,15 @@ jobs:
           TERNAL_TRANSPORT_BIN="dist/pigeons-${{ matrix.platform }}" sh deploy/agent/package-linux-amd64.sh "${{ matrix.platform }}" >/dev/null
           cmp "$RUNNER_TEMP/first-$agent_archive" "dist/$agent_archive"
 
+      - name: Install macOS qualification timer
+        if: startsWith(matrix.platform, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install coreutils
+          command -v gtimeout
+          gtimeout --version
+
       - name: Qualify native archive functions
         if: matrix.family == 'unix'
         shell: bash

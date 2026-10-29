@@ -65,6 +65,15 @@ if "Windows functional tests are deferred" not in pathlib.Path("deploy/cli/packa
 
 qualification = "          sh deploy/release/qualify-native-archives.sh \"$@\""
 steps = re.split(r"(?m)^      - name: ", native)
+timers = [step for step in steps if "brew install coreutils" in step]
+if len(timers) != 1 or "if: startsWith(matrix.platform, 'macos-')" not in timers[0]:
+    raise SystemExit("both macOS native runners must install the qualification timer")
+if "continue-on-error:" in timers[0] or "|| true" in timers[0] or "command -v gtimeout" not in timers[0] or "gtimeout --version" not in timers[0]:
+    raise SystemExit("macOS GNU timeout installation and assertion must not be bypassed")
+if native.index("brew install coreutils") > native.index(qualification):
+    raise SystemExit("macOS GNU timeout must be available before native archive qualification")
+if native.index("brew install coreutils") < native.index('cmp "$RUNNER_TEMP/first-${{ matrix.archive }}" "dist/${{ matrix.archive }}"'):
+    raise SystemExit("the qualification timer must be installed after native archive packaging")
 qualified = [step for step in steps if qualification in step]
 if len(qualified) != 1 or "if: matrix.family == 'unix'" not in qualified[0]:
     raise SystemExit("Linux/macOS actual native archives must pass the shared functional qualifier")
