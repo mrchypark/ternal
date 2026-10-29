@@ -38,6 +38,17 @@ pigeons repository, source, and lockfile digests in the capsule provenance. It d
 not authenticate to a cloud provider, publish a GitHub release, create a tag,
 or deploy anything.
 
+The shared native workflow qualifies the actual extracted Linux/macOS archives
+before upload, for both manual candidates and tag releases. It checks isolated
+unauthenticated `whoami` refusal, host-key fingerprint acceptance and rejection,
+and persistent pigeons endpoint identity. Linux agent archives additionally
+check device-key creation with mode 0600 and refusal to overwrite an existing
+key without changing it. Linux archives also execute endpoint identity and
+device-key creation in the network-disabled Ubuntu 24.04/glibc 2.39 baseline.
+These are local native baseline checks, not real OIDC login, relay/SSH connection,
+production-cloud recovery, or Windows functional qualification. Those separate
+environment-bound gates remain required where applicable.
+
 The API image and GitHub Release are published by `release.yml` only when a
 `v*` tag is pushed.
 The workflow publishes both the version tag and the exact-commit

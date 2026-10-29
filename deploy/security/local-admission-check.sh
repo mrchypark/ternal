@@ -13,7 +13,8 @@ umask 077
 work=$(mktemp -d "${TMPDIR:-/tmp}/ternal-local-admission.XXXXXX")
 name=ternal-local-admission-$(date +%s)-$$
 context=kind-$name
-node_image=kindest/node:v1.34.0@sha256:3229b411042d457a44ea8807e90520e4b7da8700a8617ed20f0c4cb799bebe2b
+# Official v0.31.0 node matrix: https://github.com/kubernetes-sigs/kind/releases/tag/v0.31.0
+node_image=kindest/node:v1.34.3@sha256:08497ee19eace7b4b5348db5c6a1591d7752b164530a36f855cb0f2bdcbadd48
 image=ghcr.io/mrchypark/ternal@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 export DOCKER_CONTEXT="${TERNAL_DOCKER_CONTEXT:-default}"
 export KIND_EXPERIMENTAL_PROVIDER=docker
@@ -21,7 +22,42 @@ export KUBECONFIG="$work/kubeconfig"
 export PYTHONDONTWRITEBYTECODE=1
 unset DOCKER_HOST KIND_EXPERIMENTAL_DOCKER_NETWORK
 created=0
+phase=setup
 dc() { timeout --kill-after=2s 30s docker --context "$DOCKER_CONTEXT" "$@"; }
+
+sanitize_log() {
+	# Keep diagnostic text, never kubeconfig/credentials or PEM/key payloads.
+	awk '
+		NR > 120 { exit }
+		/-----BEGIN / { pem=1; print "[redacted PEM block]"; next }
+		pem { if ($0 ~ /-----END /) pem=0; next }
+		{ lower=tolower($0) }
+		lower ~ /token|password|secret|credential|kubeconfig|client-key|certificate-authority|authorization|bearer|private.key/ { print "[redacted sensitive diagnostic line]"; next }
+		/[A-Za-z0-9+\/_=-]{80,}/ { print "[redacted encoded diagnostic line]"; next }
+		{ print }
+	' "$1"
+}
+
+emit_diagnostics() {
+	public=$work/public-diagnostics
+	mkdir -p "$public"
+	printf 'phase=%s test=%s cleanup=%s\n' "$phase" "$original" "$cleanup_rc" >"$public/result.txt"
+	for file in create.stdout create.stderr admission.stdout admission.stderr capture.stderr delete.stderr remaining-nodes.stderr; do
+		[ ! -f "$work/$file" ] || sanitize_log "$work/$file" >"$public/$file"
+	done
+	if [ -d "$work/admission" ]; then
+		find "$work/admission" -type f -name '*.stderr' -print >"$work/stderr-paths"
+		while IFS= read -r file; do sanitize_log "$file" >"$public/$(basename "$file")"; done <"$work/stderr-paths"
+	fi
+	if [ -n "${GITHUB_OUTPUT:-}" ]; then printf 'diagnostics_path=%s\n' "$public" >>"$GITHUB_OUTPUT"; fi
+	echo "Sanitized Local admission diagnostics: $public" >&2
+	for file in result.txt create.stderr admission.stderr; do
+		if [ -f "$public/$file" ]; then
+			printf '%s\n' "--- $file (first 40 sanitized lines) ---" >&2
+			sed -n '1,40p' "$public/$file" >&2
+		fi
+	done
+}
 
 capture_nodes() {
 	dc ps -aq --filter "label=io.x-k8s.kind.cluster=$name" >"$work/nodes" || return 1
@@ -71,6 +107,7 @@ cleanup() {
 		echo 'Local CEL admission and owned-resource cleanup passed'
 	else
 		echo "Local admission diagnostics retained: $work (test=$original cleanup=$cleanup_rc)" >&2
+		emit_diagnostics
 	fi
 	[ "$original" = 0 ] || exit "$original"
 	exit "$cleanup_rc"
@@ -85,9 +122,12 @@ dc ps -aq --filter "label=io.x-k8s.kind.cluster=$name" >"$work/preexisting-nodes
 [ ! -s "$work/preexisting-nodes" ] || { echo 'refusing existing cluster identity' >&2; exit 2; }
 dc volume ls -q >"$work/preexisting-volumes"
 created=1
+phase='cluster-create'
 timeout --kill-after=10s 240s kind create cluster --name "$name" --image "$node_image" \
 	--kubeconfig "$KUBECONFIG" --wait 180s --retain >"$work/create.stdout" 2>"$work/create.stderr"
 capture_nodes
 [ -s "$work/nodes" ] || { echo 'kind created no owned node' >&2; exit 1; }
+phase='admission-matrix'
 timeout --kill-after=10s 600s python3 "$repo/deploy/security/trustguard-admission-check.py" "$image" --local \
-	--kubeconfig "$KUBECONFIG" --context "$context" --diagnostics "$work/admission"
+	--kubeconfig "$KUBECONFIG" --context "$context" --diagnostics "$work/admission" >"$work/admission.stdout" 2>"$work/admission.stderr"
+cat "$work/admission.stdout"

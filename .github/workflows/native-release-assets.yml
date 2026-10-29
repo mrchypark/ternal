@@ -116,12 +116,48 @@ jobs:
           TERNAL_TRANSPORT_BIN="dist/pigeons-${{ matrix.platform }}" sh deploy/agent/package-linux-amd64.sh "${{ matrix.platform }}" >/dev/null
           cmp "$RUNNER_TEMP/first-$agent_archive" "dist/$agent_archive"
 
+      - name: Qualify native archive functions
+        if: matrix.family == 'unix'
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -- "${{ matrix.platform }}" "dist/${{ matrix.archive }}"
+          case "${{ matrix.platform }}" in
+            linux-*) set -- "$@" "dist/ternal-agent-${{ matrix.platform }}.tar.gz" ;;
+          esac
+          sh deploy/release/qualify-native-archives.sh "$@"
+
       - name: Verify Linux archive runtime baseline
         if: startsWith(matrix.platform, 'linux-')
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --network none -v "$PWD/dist:/archives:ro" ubuntu:24.04 sh -ec '
+          probe="ternal-native-baseline-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ matrix.platform }}"
+          owner="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          dc() { timeout --kill-after=2s 30s docker "$@"; }
+          cleanup() {
+            original=$?
+            trap - EXIT INT TERM HUP
+            set +e
+            failed=0
+            ids=$(dc ps -aq --filter "name=^/$probe$") || failed=1
+            if [ -n "$ids" ]; then
+              label=$(dc inspect --format '{{index .Config.Labels "ternal.probe.owner"}}' "$probe")
+              if [ "$label" = "$owner" ]; then dc rm --force "$probe" || failed=1; else failed=1; fi
+            fi
+            ids=$(dc ps -aq --filter "name=^/$probe$") || failed=1
+            [ -z "$ids" ] || failed=1
+            [ "$original" -eq 0 ] || exit "$original"
+            exit "$failed"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM HUP
+          existing=$(dc ps -aq --filter "name=^/$probe$")
+          test -z "$existing"
+          timeout --kill-after=5s 120s docker run --name "$probe" \
+            --label "ternal.probe.owner=$owner" --rm --network none \
+            -v "$PWD/dist:/archives:ro" ubuntu:24.04 sh -ec '
             test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.39"
             mkdir /probe
             cd /probe
@@ -130,7 +166,21 @@ jobs:
             for bundle in ternalctl-${{ matrix.platform }} ternal-agent-${{ matrix.platform }}; do
               grep -F "glibc 2.39 or newer" "$bundle/README.txt"
               "$bundle/pigeons" --help >/dev/null
+              first=$("$bundle/pigeons" endpoint-id --key-dir "/probe/$bundle-keys")
+              second=$("$bundle/pigeons" endpoint-id --key-dir "/probe/$bundle-keys")
+              printf "%s\n" "$first" | grep -Eq "^[0-9a-f]{64}$"
+              test "$first" = "$second"
             done
+            agent="./ternal-agent-${{ matrix.platform }}/ternal-agent"
+            "$agent" device-keygen /probe/device.key >/probe/device-public-key
+            test "$(stat -c %a /probe/device.key)" = 600
+            cp /probe/device.key /probe/device-before.key
+            set +e
+            "$agent" device-keygen /probe/device.key >/probe/repeated-keygen 2>&1
+            key_status=$?
+            set -e
+            test "$key_status" = 1
+            cmp /probe/device-before.key /probe/device.key
             set +e
             ./ternalctl-${{ matrix.platform }}/ternalctl >/tmp/cli-output 2>&1
             cli_status=$?

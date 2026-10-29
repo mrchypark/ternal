@@ -79,8 +79,22 @@ jobs:
           python3 deploy/security/render_trustguard_test.py
           sh deploy/vind/helm-render-check.sh
           sh deploy/k8s-secret-helpers.test.sh
+
+      - name: Verify Local admission on isolated kind
+        id: local_admission
+        timeout-minutes: 20
+        run: |
           sh deploy/security/local-admission-check.test.sh
           sh deploy/security/local-admission-check.sh
+
+      - name: Preserve sanitized Local admission failure diagnostics
+        if: ${{ always() && steps.local_admission.outcome != 'success' && steps.local_admission.outputs.diagnostics_path != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: local-admission-tag-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.local_admission.outputs.diagnostics_path }}
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Package Helm chart
         run: |

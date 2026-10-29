@@ -52,6 +52,20 @@ for name, source in (("CI", ci), ("tag release", workflow)):
         raise SystemExit(f"{name} Local admission must not be optional")
     if "          sh deploy/security/local-admission-check.test.sh" not in step:
         raise SystemExit(f"{name} Local admission wrapper regression must run before the gate")
+    if "        id: local_admission" not in step:
+        raise SystemExit(f"{name} Local admission must expose its safe diagnostic output")
+    uploads = [part for part in re.split(r"(?m)^      - name: ", source) if "          name: local-admission-" in part]
+    if len(uploads) != 1:
+        raise SystemExit(f"{name} must preserve one sanitized Local admission failure artifact")
+    for required in (
+        "if: ${{ always() && steps.local_admission.outcome != 'success' && steps.local_admission.outputs.diagnostics_path != '' }}",
+        "uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+        "path: ${{ steps.local_admission.outputs.diagnostics_path }}",
+        "if-no-files-found: error",
+        "retention-days: 7",
+    ):
+        if required not in uploads[0]:
+            raise SystemExit(f"{name} sanitized Local diagnostic upload contract is missing: {required}")
 
 for required in (
     'docker build --tag "$image" --label "ternal.probe.owner=$owner" .',
