@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 
@@ -39,13 +40,17 @@ type trustAnchorBackend interface {
 }
 
 type trustAnchor struct {
-	backend trustAnchorBackend
-	binding trustAnchorRecord
+	backend         trustAnchorBackend
+	binding         trustAnchorRecord
+	name, namespace string
 }
 
 func storageBindingFromEnv() trustAnchorRecord {
 	// Credentials intentionally are not part of the binding.
 	storageID := TrustAnchorStorageID(os.Getenv("TERNAL_OBJECT_STORE_PROVIDER"), os.Getenv("TERNAL_OBJECT_STORE_ENDPOINT"), os.Getenv("TERNAL_OBJECT_STORE_BUCKET"), os.Getenv("TERNAL_OBJECT_STORE_PREFIX"), envOr("TERNAL_DATA_CLUSTER_ID", "ternal"))
+	if os.Getenv("TERNAL_DATA_LOCAL") == "1" {
+		storageID = LocalTrustAnchorStorageID(os.Getenv("TERNAL_OBJECT_STORE_PROVIDER"), os.Getenv("TERNAL_OBJECT_STORE_ENDPOINT"), os.Getenv("TERNAL_OBJECT_STORE_BUCKET"), os.Getenv("TERNAL_OBJECT_STORE_PREFIX"), envOr("TERNAL_DATA_CLUSTER_ID", "ternal"))
+	}
 	return trustAnchorRecord{Format: "1", ClusterID: envOr("TERNAL_DATA_CLUSTER_ID", "ternal"), StorageID: storageID}
 }
 
@@ -55,6 +60,13 @@ func storageBindingFromEnv() trustAnchorRecord {
 func TrustAnchorStorageID(provider, endpoint, bucket, prefix, clusterID string) string {
 	payload, _ := json.Marshal([]string{provider, endpoint, bucket, prefix, clusterID})
 	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+// LocalTrustAnchorStorageID separates Local authority from every legacy tuple.
+func LocalTrustAnchorStorageID(provider, endpoint, bucket, prefix, clusterID string) string {
+	legacy := TrustAnchorStorageID(provider, endpoint, bucket, path.Join(prefix, clusterID, "local/v1"), clusterID)
+	sum := sha256.Sum256([]byte("ternal-local-v1\x00" + legacy))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -166,7 +178,7 @@ func trustAnchorFromEnv() (*trustAnchor, error) {
 	if namespace == "" {
 		return nil, fmt.Errorf("trust-anchor namespace is required")
 	}
-	return &trustAnchor{backend: kubernetesAnchorBackend(name, namespace), binding: storageBindingFromEnv()}, nil
+	return &trustAnchor{backend: kubernetesAnchorBackend(name, namespace), binding: storageBindingFromEnv(), name: name, namespace: namespace}, nil
 }
 
 const (

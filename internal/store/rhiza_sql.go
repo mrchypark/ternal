@@ -486,6 +486,11 @@ func assignReflect(dest reflect.Value, value any) error {
 }
 
 func rhizaConfigFromEnv(dataDir string) (rhiza.Config, error) {
+	if mode := os.Getenv("TERNAL_DATA_LOCAL"); mode == "1" {
+		return localConfigFromEnv(dataDir)
+	} else if mode != "" && mode != "0" {
+		return rhiza.Config{}, fmt.Errorf("TERNAL_DATA_LOCAL must be 0 or 1")
+	}
 	adminToken := os.Getenv("TERNAL_DATA_ADMIN_TOKEN")
 	if os.Getenv("TERNAL_REQUIRE_DATA_ADMIN_TOKEN") == "1" && len(adminToken) < 32 {
 		return rhiza.Config{}, fmt.Errorf("TERNAL_DATA_ADMIN_TOKEN must be at least 32 bytes")

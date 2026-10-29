@@ -138,9 +138,15 @@ func TestSyncAuthorizedKeysRejectsRollbackAndEquivocation(t *testing.T) {
 			t.Cleanup(server.Close)
 
 			pigeons := filepath.Join(dir, "pigeons")
-			if err := os.WriteFile(pigeons, []byte("#!/bin/sh\nprintf '%s\\n' '"+strings.Repeat("a", 64)+"'\n"), 0700); err != nil {
-				t.Fatal(err)
-			}
+			// Snapshot validation does not depend on launching the transport helper.
+			endpointIDCacheMu.Lock()
+			endpointIDCache[pigeons] = strings.Repeat("a", 64)
+			endpointIDCacheMu.Unlock()
+			t.Cleanup(func() {
+				endpointIDCacheMu.Lock()
+				delete(endpointIDCache, pigeons)
+				endpointIDCacheMu.Unlock()
+			})
 			keyPath := filepath.Join(dir, "device.key")
 			if _, err := deviceauth.GenerateKey(keyPath); err != nil {
 				t.Fatal(err)
@@ -434,7 +440,7 @@ func TestRoostEndpointIDHasDeadlineAndCache(t *testing.T) {
 	endpointIDTimeout = 3 * time.Second
 	t.Cleanup(func() { endpointIDTimeout = oldTimeout })
 	slow := filepath.Join(dir, "pigeons")
-	script := "#!/bin/sh\necho x >> \"" + calls + "\"\nsleep 10\nprintf '%s\\n' '" + strings.Repeat("b", 64) + "'\n"
+	script := "#!/bin/sh\necho x >> \"" + calls + "\"\nexec sleep 10\n"
 	if err := os.WriteFile(slow, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

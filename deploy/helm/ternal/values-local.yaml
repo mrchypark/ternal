@@ -1,0 +1,26 @@
+# Operator-free Local archive recovery init. Supply a new release/identity, a
+# manually seeded supported Local archive, and an approved Ternal image digest that
+# contains the local-restore subcommand. Init and main share /data/ternal.
+# This does not bootstrap an archive or convert legacy/HA data.
+data:
+  mode: local
+  clusterID: ""
+  local:
+    replicas: 1
+    # Set true only after external writer AND GC quiescence is established.
+    # This acknowledgement is not proof; held/unknown state still fails closed.
+    writerGCQuiescenceAcknowledged: false
+    preflightReceiptFile: /staging/preflight.json
+    stagingSizeLimit: 1Gi
+  objectStore:
+    provider: ""
+    bucket: ""
+    prefix: ""
+    durability: before-ack
+operator:
+  enabled: false
+anchor:
+  enabled: false
+serviceAccountName: ""
+secrets:
+  existingSecret: ""

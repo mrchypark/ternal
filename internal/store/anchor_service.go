@@ -27,6 +27,9 @@ const AnchorActivationBudget = 2 * time.Minute
 // anchor service serves.  It is the whole assembly: the service owns no state
 // of its own, so a restart cannot lose a transition.
 func NewAnchorCoordinator(anchorID string, backend recoveryanchor.Backend, bucket objstore.Bucket, storage recoveryStorage) (*recoveryanchor.Coordinator, error) {
+	if mode := os.Getenv("TERNAL_DATA_LOCAL"); mode != "" && mode != "0" {
+		return nil, fmt.Errorf("recovery-anchor service does not support Local mode; TERNAL_DATA_LOCAL must be 0")
+	}
 	if anchorID == "" || backend == nil || bucket == nil {
 		return nil, fmt.Errorf("anchor service requires an id, a record backend, and a bucket")
 	}
@@ -55,6 +58,9 @@ func NewAnchorHandler(coord *recoveryanchor.Coordinator, token string, base cont
 // service that verified a different root would not be an authority for the
 // generation it recovers.
 func OpenAnchorService(base context.Context) (http.Handler, error) {
+	if mode := os.Getenv("TERNAL_DATA_LOCAL"); mode != "" && mode != "0" {
+		return nil, fmt.Errorf("recovery-anchor service does not support Local mode; TERNAL_DATA_LOCAL must be 0")
+	}
 	anchorID := os.Getenv("TERNAL_RECOVERY_ANCHOR_ID")
 	if anchorID == "" {
 		return nil, fmt.Errorf("TERNAL_RECOVERY_ANCHOR_ID is required")

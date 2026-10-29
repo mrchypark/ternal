@@ -63,6 +63,42 @@ if "cargo test --locked" not in pathlib.Path("deploy/agent/build-pigeons-native.
 if "Windows functional tests are deferred" not in pathlib.Path("deploy/cli/package-windows.ps1").read_text():
     raise SystemExit("Windows bundles must disclose deferred functional qualification")
 
+qualification = "          sh deploy/release/qualify-native-archives.sh \"$@\""
+steps = re.split(r"(?m)^      - name: ", native)
+timers = [step for step in steps if "brew install coreutils" in step]
+if len(timers) != 1 or "if: startsWith(matrix.platform, 'macos-')" not in timers[0]:
+    raise SystemExit("both macOS native runners must install the qualification timer")
+if "continue-on-error:" in timers[0] or "|| true" in timers[0] or "command -v gtimeout" not in timers[0] or "gtimeout --version" not in timers[0]:
+    raise SystemExit("macOS GNU timeout installation and assertion must not be bypassed")
+if native.index("brew install coreutils") > native.index(qualification):
+    raise SystemExit("macOS GNU timeout must be available before native archive qualification")
+if native.index("brew install coreutils") < native.index('cmp "$RUNNER_TEMP/first-${{ matrix.archive }}" "dist/${{ matrix.archive }}"'):
+    raise SystemExit("the qualification timer must be installed after native archive packaging")
+qualified = [step for step in steps if qualification in step]
+if len(qualified) != 1 or "if: matrix.family == 'unix'" not in qualified[0]:
+    raise SystemExit("Linux/macOS actual native archives must pass the shared functional qualifier")
+if "continue-on-error:" in qualified[0] or "|| true" in qualified[0]:
+    raise SystemExit("native archive functional qualification must not be bypassed")
+if native.index(qualification) > native.index("      - name: Upload CLI archive"):
+    raise SystemExit("native archives must be qualified before upload")
+for required in (
+    'set -- "${{ matrix.platform }}" "dist/${{ matrix.archive }}"',
+    'linux-*) set -- "$@" "dist/ternal-agent-${{ matrix.platform }}.tar.gz"',
+    'endpoint-id --key-dir "/probe/$bundle-keys"',
+    'test "$first" = "$second"',
+    'device-keygen /probe/device.key',
+    'test "$(stat -c %a /probe/device.key)" = 600',
+    'test "$key_status" = 1',
+    'cmp /probe/device-before.key /probe/device.key',
+    '--rm --network none',
+    'timeout --kill-after=5s 120s docker run --name "$probe"',
+):
+    if required not in native:
+        raise SystemExit(f"native archive runtime contract is missing: {required}")
+ci = pathlib.Path(".github/workflows/ci.yaml").read_text()
+if "          sh deploy/release/qualify-native-archives.test.sh" not in ci.splitlines():
+    raise SystemExit("CI must run the native archive qualifier fixture tests")
+
 archives = (
     "ternal-agent-linux-amd64.tar.gz",
     "ternal-agent-linux-arm64.tar.gz",

@@ -16,7 +16,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -43,12 +43,21 @@ jobs:
             --output "$RUNNER_TEMP/ternal-tools/yq" \
             https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
           echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  $RUNNER_TEMP/ternal-tools/yq" | sha256sum --check --strict
-          chmod 0755 "$RUNNER_TEMP/ternal-tools/helm" "$RUNNER_TEMP/ternal-tools/yq"
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/ternal-tools/kind" \
+            https://github.com/kubernetes-sigs/kind/releases/download/v0.31.0/kind-linux-amd64
+          echo "eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa  $RUNNER_TEMP/ternal-tools/kind" | sha256sum --check --strict
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/ternal-tools/kubectl" \
+            https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl
+          echo "cfda68cba5848bc3b6c6135ae2f20ba2c78de20059f68789c090166d6abc3e2c  $RUNNER_TEMP/ternal-tools/kubectl" | sha256sum --check --strict
+          chmod 0755 "$RUNNER_TEMP/ternal-tools/helm" "$RUNNER_TEMP/ternal-tools/yq" "$RUNNER_TEMP/ternal-tools/kind" "$RUNNER_TEMP/ternal-tools/kubectl"
           echo "$RUNNER_TEMP/ternal-tools" >> "$GITHUB_PATH"
 
       - name: Check source and workflows
         run: |
           ./scripts/check-public-config.sh
+          sh scripts/check-public-config.test.sh
           test -z "$(gofmt -l cmd internal)"
           go vet ./...
           "$(go env GOPATH)/bin/actionlint" -shellcheck '' -pyflakes ''
@@ -77,5 +86,111 @@ jobs:
           sh deploy/e2e/local-go-smoke.sh
           sh deploy/pigeons-smoke/transport-matrix.test.sh
           python3 deploy/release/release-candidate-workflow.test.py
+          sh deploy/release/qualify-native-archives.test.sh
           python3 deploy/release/tag-release-workflow.test.py
           sh deploy/vind/helm-render-check.sh
+
+      - name: Verify scratch init command dispatch
+        timeout-minutes: 15
+        run: |
+          owner="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          image="ternal-local-probe:$owner"
+          containers=''
+          dc() { timeout --kill-after=2s 30s docker "$@"; }
+          cleanup() {
+            original=$?
+            trap - EXIT INT TERM HUP
+            set +e
+            failed=0
+            for name in $containers; do
+              ids=$(dc ps -aq --filter "name=^/$name$") || { failed=1; continue; }
+              if [ -n "$ids" ]; then
+                label=$(dc inspect --format '{{index .Config.Labels "ternal.probe.owner"}}' "$name")
+                if [ "$label" != "$owner" ]; then failed=1; continue; fi
+                dc rm --force "$name" || failed=1
+              fi
+              ids=$(dc ps -aq --filter "name=^/$name$") || failed=1
+              [ -z "$ids" ] || failed=1
+            done
+            ids=$(dc image ls -q "$image") || failed=1
+            if [ -n "$ids" ]; then
+              label=$(dc image inspect --format '{{index .Config.Labels "ternal.probe.owner"}}' "$image")
+              if [ "$label" = "$owner" ]; then dc image rm "$image" || failed=1; else failed=1; fi
+            fi
+            ids=$(dc image ls -q "$image") || failed=1
+            [ -z "$ids" ] || failed=1
+            [ "$original" -eq 0 ] || exit "$original"
+            exit "$failed"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM HUP
+          existing=$(dc image ls -q "$image")
+          test -z "$existing"
+          docker build --tag "$image" --label "ternal.probe.owner=$owner" .
+          for command in local-preflight local-restore; do
+            name="ternal-local-probe-$owner-$command"
+            existing=$(dc ps -aq --filter "name=^/$name$")
+            test -z "$existing"
+            containers="$containers $name"
+            set +e
+            output=$(timeout --kill-after=5s 60s docker run --name "$name" \
+              --label "ternal.probe.owner=$owner" --rm --network none --read-only --cap-drop=ALL \
+              --security-opt=no-new-privileges "$image" "$command" 2>&1)
+            status=$?
+            set -e
+            test "$status" -eq 1
+            printf '%s\n' "$output" | grep -Fx 'ternal-api: local-preflight requires TERNAL_DATA_LOCAL=1'
+          done
+
+  local-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Local admission tools
+        run: |
+          command -v docker
+          command -v python3
+          command -v timeout
+          install -d "$RUNNER_TEMP/ternal-tools"
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/ternal-tools/helm.tar.gz" \
+            https://get.helm.sh/helm-v4.2.3-linux-amd64.tar.gz
+          echo "e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c  $RUNNER_TEMP/ternal-tools/helm.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/ternal-tools/helm.tar.gz" \
+            -C "$RUNNER_TEMP/ternal-tools" --strip-components=1 linux-amd64/helm
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/ternal-tools/yq" \
+            https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  $RUNNER_TEMP/ternal-tools/yq" | sha256sum --check --strict
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/ternal-tools/kind" \
+            https://github.com/kubernetes-sigs/kind/releases/download/v0.31.0/kind-linux-amd64
+          echo "eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa  $RUNNER_TEMP/ternal-tools/kind" | sha256sum --check --strict
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/ternal-tools/kubectl" \
+            https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl
+          echo "cfda68cba5848bc3b6c6135ae2f20ba2c78de20059f68789c090166d6abc3e2c  $RUNNER_TEMP/ternal-tools/kubectl" | sha256sum --check --strict
+          chmod 0755 "$RUNNER_TEMP/ternal-tools/helm" "$RUNNER_TEMP/ternal-tools/yq" "$RUNNER_TEMP/ternal-tools/kind" "$RUNNER_TEMP/ternal-tools/kubectl"
+          echo "$RUNNER_TEMP/ternal-tools" >> "$GITHUB_PATH"
+
+      - name: Verify Local admission on isolated kind
+        id: local_admission
+        timeout-minutes: 20
+        run: |
+          sh deploy/security/local-admission-check.test.sh
+          sh deploy/security/local-admission-check.sh
+
+      - name: Preserve sanitized Local admission failure diagnostics
+        if: ${{ always() && steps.local_admission.outcome != 'success' && steps.local_admission.outputs.diagnostics_path != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: local-admission-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.local_admission.outputs.diagnostics_path }}
+          if-no-files-found: error
+          retention-days: 7

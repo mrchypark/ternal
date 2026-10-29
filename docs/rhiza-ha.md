@@ -5,19 +5,31 @@
 Ternal HA는 data.mode=ha로 3-voter StatefulSet + emptyDir(no-PVC) + 공유 오브젝트 저장소를 사용한다.
 Operator는 opt-in이며 operator.enabled=true로 별도 Deployment로 실행한다. 현재 지원 플랫폼은 linux/amd64이다.
 
-Rhiza 0.19에서 HA Pod를 삭제하면 emptyDir의 WAL과 voter identity를 잃으므로 같은 voter의 일반 재시작은 `ErrVoterStateLost`로 거부된다. 살아 있는 quorum이 있으면 잃은 voter를 펜싱하고 새 learner로 교체하며, quorum을 잃으면 전체 세대를 펜싱한 복구가 필요하다. `OnDelete`는 자동 교체를 막을 뿐 복구를 수행하지 않는다. 같은 Pod 안에서 컨테이너만 재시작하면 emptyDir는 유지된다. 단일 voter의 아카이브 복원도 이전 인스턴스의 영구 펜싱을 전제로 한다. [Rhiza 복구 절차](https://github.com/mrchypark/rhiza/blob/v0.19.0/docs/recovery.md)를 따른다.
+Rhiza 0.21에서 HA Pod를 삭제하면 emptyDir의 WAL과 voter identity를 잃으므로 같은 voter의 일반 재시작은 `ErrVoterStateLost`로 거부된다. 살아 있는 quorum이 있으면 잃은 voter를 펜싱하고 새 learner로 교체하며, quorum을 잃으면 전체 세대를 펜싱한 복구가 필요하다. `OnDelete`는 자동 교체를 막을 뿐 복구를 수행하지 않는다. 같은 Pod 안에서 컨테이너만 재시작하면 emptyDir는 유지된다. 단일 voter의 아카이브 복원도 이전 인스턴스의 영구 펜싱을 전제로 한다. [Rhiza 복구 절차](https://github.com/mrchypark/rhiza/blob/v0.21.0/docs/recovery.md)를 따른다.
 
 기존 standalone 배포는 HA로 전환할 수 없다. HA는 불변 identity를 사용하므로 새 클러스터를 처음부터 배포해야 한다.
 
-## CRD 설치 (v0.19.0 고정)
+## CRD 설치 (v0.20.0 고정)
 
 Operator 사용 전 CRD를 먼저 설치한다:
 
-    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.19.0/deploy/operator/crd.yaml
-    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.19.0/deploy/operator/cluster-crd.yaml
-    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.19.0/deploy/operator/fence-crd.yaml
+Go 의존성은 v0.21.1이지만 Operator 이미지와 CRD 핀은 별도 게시·호환성 검증 전까지 v0.20.0으로 유지한다. 이 조합의 운영 복구는 아직 자격 검증되지 않았으며, Operator는 기본값대로 비활성화한다.
 
-CRD 정의는 v0.15.0과 v0.19.0 사이에 바뀌지 않았다. 이미 설치된 CRD가 있으면 다시 적용해도 무방하다.
+    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.20.0/deploy/operator/crd.yaml
+    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.20.0/deploy/operator/cluster-crd.yaml
+    kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.20.0/deploy/operator/fence-crd.yaml
+
+v0.20.0에서는 RhizaCluster의 `voterPods`가 `voterCount`로 바뀌고 RhizaFence의 증거 스키마가 확장됐다. 기존 CR과의 호환성을 확인하고 새 CRD를 먼저 적용해야 한다. Ternal은 자동 복구를 계속 비활성화한다.
+
+## v0.21.1 의존성과 기존 데이터 경계
+
+Ternal은 Rhiza v0.21.1과 Go 1.27.3을 사용한다. v0.21.1은 문서 패치이며 Go 런타임·API·아카이브 형식은 v0.21.0과 같다. SQL 실행 정책은 v0.19.0과 같은 7이며, 아래의 구 정책 업그레이드 경계와 voter identity 보호는 그대로 유지된다. 이번 변경은 Go 의존성을 갱신하며 배포나 데이터 마이그레이션을 수행하지 않는다.
+
+v0.21.0은 filesystem/S3/GCS/Azure의 모든 **Local** 아카이브 고정 형식을 변경한다. 구형·부분 형식은 수정 없이 거부하며 자동 이관하지 않는다. 기존 DataDir와 아카이브는 백업·보존하고, 새 DataDir와 새 아카이브 네임스페이스를 사용하는 그린필드 경로만 검증한다. 거부된 기존 아카이브를 삭제하거나 같은 위치를 재초기화해서는 안 된다.
+
+`data.mode=standalone`은 embedded 단일 voter를 유지한다. 별도의 opt-in인 `data.mode=local`은 Operator 없이 단일 Local writer와 SDK open/close init을 사용하며 [Local 운영 계약](local-single-node.md)을 따른다. HA를 Local로 자동 변환하지 않는다. SQL 정책 버전이 같다는 사실만으로 기존 물리 상태의 인플레이스 업그레이드나 혼합 버전 운영을 보장하지 않는다.
+
+성공 ACK의 아카이브 내구성은 `before-ack`을 전제로 한다. `async`의 손실창은 그대로다. 업스트림 Local filesystem의 프로세스 종료 후 maintenance 복구 보장은 지원 Linux/macOS의 같은 호스트에 있는 신뢰된 전용·안정 루트에 한정된다. 원격 저장소의 held/unknown 제어 상태는 계속 fail-closed이며, 이번 Ternal 테스트는 전원 손실·실제 클라우드·운영 복구를 검증하지 않는다. [v0.21.0 릴리스 경계](https://github.com/mrchypark/rhiza/blob/v0.21.0/docs/releases/v0.21.0.md)를 참고한다.
 
 ## v0.19.0 업그레이드 경계
 
@@ -30,7 +42,7 @@ Rhiza v0.19.0은 호환성 파괴 릴리스이며 SQL 실행 정책 7을 요구�
 3. 새 디렉터리, 새 스토리지 네임스페이스, 새 identity를 가진 새 클러스터에 import 한다.
 4. 구 물리 상태에 새 정책 메타데이터를 직접 쓰거나 stamp 하지 않는다. 혼합 버전 클러스터와 다운그레이드는 지원되지 않는다.
 
-선택 사항이 아닌 절차 요약은 upstream 문서를 따른다: https://github.com/mrchypark/rhiza/blob/v0.19.0/docs/sql-execution-policy.md
+선택 사항이 아닌 절차 요약은 upstream 문서를 따른다: https://github.com/mrchypark/rhiza/blob/v0.21.0/docs/sql-execution-policy.md
 
 이 저장소의 변경은 의존성 핀, operator 이미지 태그, 공개 멤버십 모델과 SQL 실행 정책에 맞춘 호출부 및 검증을 다룬다. 배포나 데이터 마이그레이션은 수행하지 않는다.
 
@@ -84,9 +96,9 @@ kubectl get rhizarecoveries -n YOUR_NAMESPACE 으로 peer Ready/Quorum과 상태
 전체 세대 복구는 대상 Ternal 시작 전 별도의 신뢰된 외부 fencing과 복구 작업에 맞춘 trust-anchor 전환이 모두 필요하다. 전환은 epoch, token, pending 증거와 단조 증명(monotonic proof)을 보존해야 하며, 조건을 충족하지 못하면 대상은 fail-closed된다. 이 설명은 소스 archive 확보 전에 trust anchor를 변경하라는 절차가 아니다.
 
 
-## v0.19.0 복구 앵커 현황
+## v0.21.0 복구 앵커 현황
 
-Rhiza v0.19.0은 Coordinator의 Activate/Verify, CheckBinding(Ternal 시작 시 바인딩 검증), UpdateApplication(Ternal 쓰기 경로에서 애플리케이션 상태 갱신)을 제공한다. upstream 복구 앵커 문서는 docs/recovery-anchor.md (v0.19.0)를 참고한다: https://github.com/mrchypark/rhiza/blob/v0.19.0/docs/recovery-anchor.md
+Rhiza v0.21.0은 Coordinator의 Activate/Verify, CheckBinding(Ternal 시작 시 바인딩 검증), UpdateApplication(Ternal 쓰기 경로에서 애플리케이션 상태 갱신)을 제공한다. upstream 복구 앵커 문서는 docs/recovery-anchor.md (v0.21.0)를 참고한다: https://github.com/mrchypark/rhiza/blob/v0.21.0/docs/recovery-anchor.md
 
 Ternal은 위 구성 요소를 갖췄다. 어댑터는 기존 trust-anchor ConfigMap을 그대로 두고 flat 필드와 공통 Record를 한 번의 compare-and-swap으로 함께 쓴다(internal/store/trust_anchor_composite.go). 검증기는 복원된 아카이브의 trust_state에서 애플리케이션 쌍을 다시 읽어 동결된 증거와 비교하므로, 요청을 되풀이하는 대상은 커밋되지 않는다(internal/store/recovery_verifier.go). 앵커 서비스는 같은 이미지의 별도 실행 파일(ternal-anchor)과 별도 Deployment로 뜬다(internal/store/anchor_service.go, cmd/ternal-anchor). admission 정책은 전환을 앵커 서비스 계정으로만 허용한다.
 
@@ -132,8 +144,8 @@ GCS Workload Identity를 사용하면 시크릿 키를 생략할 수 있다.
 
 ## 참고
 
-- Embedded Operator Guide: https://github.com/mrchypark/rhiza/blob/v0.19.0/docs/embedded-operator.md
-- Operator README: https://github.com/mrchypark/rhiza/blob/v0.19.0/deploy/operator/README.md
+- Embedded Operator Guide: https://github.com/mrchypark/rhiza/blob/v0.20.0/docs/embedded-operator.md
+- Operator README: https://github.com/mrchypark/rhiza/blob/v0.20.0/deploy/operator/README.md
 - 복구 후 helm upgrade 하면 복구된 세대가 손상될 수 있다. CR과 상태를 먼저 확인한다.
 
 ## Ternal 설정과의 경계

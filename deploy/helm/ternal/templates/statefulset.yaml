@@ -12,6 +12,8 @@
 {{- $data := default dict .Values.data -}}
 {{- $dataMode := default "standalone" $data.mode -}}
 {{- $haMode := eq $dataMode "ha" -}}
+{{- $localMode := eq $dataMode "local" -}}
+{{- $local := default dict $data.local -}}
 {{- $ha := default dict $data.ha -}}
 {{- $trustAnchor := default "" $data.trustAnchorConfigMap -}}
 {{- $operator := default dict .Values.operator -}}
@@ -38,6 +40,23 @@
 {{- if $operator.automaticRecovery -}}
 {{- fail "operator.automaticRecovery is not supported in this release" -}}
 {{- end -}}
+{{- if $localMode -}}
+{{- if not $imageDigest -}}
+{{- fail "data.mode=local requires an approved immutable image.digest" -}}
+{{- end -}}
+{{- if or $operatorEnabled ((default dict .Values.anchor).enabled | default false) -}}
+{{- fail "data.mode=local requires operator.enabled=false and anchor.enabled=false" -}}
+{{- end -}}
+{{- if ne (int $local.replicas) 1 -}}
+{{- fail "data.mode=local requires data.local.replicas=1" -}}
+{{- end -}}
+{{- if not (and (kindIs "bool" $local.writerGCQuiescenceAcknowledged) $local.writerGCQuiescenceAcknowledged) -}}
+{{- fail "data.mode=local requires explicit data.local.writerGCQuiescenceAcknowledged=true; acknowledgement is not fencing proof" -}}
+{{- end -}}
+{{- if ne (required "data.local.preflightReceiptFile is required" $local.preflightReceiptFile) "/staging/preflight.json" -}}
+{{- fail "data.local.preflightReceiptFile must be /staging/preflight.json" -}}
+{{- end -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -50,6 +69,8 @@ spec:
   replicas: {{ ternary 3 1 $haMode }}
   {{- if $haMode }}
   podManagementPolicy: Parallel
+  {{- end }}
+  {{- if or $haMode $localMode }}
   updateStrategy:
     type: OnDelete
   {{- end }}
@@ -95,6 +116,38 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if $localMode }}
+      initContainers:
+        - name: ternal-local-restore
+          image: "{{ .Values.image.repository }}{{ if $imageDigest }}@{{ $imageDigest }}{{ else }}:{{ $imageTag }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/ternal-api"]
+          args: ["local-restore"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          env:
+            {{- include "ternal.localDataEnv" . | nindent 12 }}
+            {{- range $key := list "TERNAL_OBJECT_STORE_ACCESS_KEY" "TERNAL_OBJECT_STORE_SECRET_KEY" "TERNAL_OBJECT_STORE_SESSION_TOKEN" }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ $key }}
+                  optional: true
+            {{- end }}
+          volumeMounts:
+            - name: local-staging
+              mountPath: /staging
+            - name: data
+              mountPath: /data
+      {{- end }}
       containers:
         - name: ternal-api
           image: "{{ .Values.image.repository }}{{ if $imageDigest }}@{{ $imageDigest }}{{ else }}:{{ $imageTag }}{{ end }}"
@@ -107,6 +160,9 @@ spec:
             readOnlyRootFilesystem: true
             runAsNonRoot: true
             runAsUser: 65532
+            {{- if $localMode }}
+            runAsGroup: 65532
+            {{- end }}
           ports:
             - name: http
               containerPort: 3000
@@ -142,9 +198,15 @@ spec:
                 name: {{ include "ternal.dataConfigMapName" . }}
             - secretRef:
                 name: {{ $secretName }}
-          {{- if or $haMode $trustAnchor $operatorEnabled }}
+          {{- if or $haMode $trustAnchor $operatorEnabled $localMode }}
           env:
-            {{- if $trustAnchor }}
+            {{- if $localMode }}
+            {{- include "ternal.localDataEnv" . | nindent 12 }}
+            - name: TERNAL_REQUIRE_DATA_ADMIN_TOKEN
+              value: "0"
+            - name: TERNAL_OPERATOR_BIND
+              value: ""
+            {{- else if $trustAnchor }}
             - name: TERNAL_TRUST_ANCHOR_CONFIGMAP
               value: {{ $trustAnchor | quote }}
             - name: TERNAL_TRUST_ANCHOR_NAMESPACE
@@ -178,6 +240,16 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            {{- if $localMode }}
+            - name: local-staging
+              mountPath: /staging
+              readOnly: true
+            {{- end }}
       volumes:
         - name: data
           emptyDir: {}
+        {{- if $localMode }}
+        - name: local-staging
+          emptyDir:
+            sizeLimit: {{ required "data.local.stagingSizeLimit is required" $local.stagingSizeLimit }}
+        {{- end }}

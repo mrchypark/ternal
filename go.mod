@@ -1,6 +1,6 @@
 module github.com/mrchypark/ternal
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/coreos/go-oidc/v3 v3.20.0
@@ -8,7 +8,7 @@ require (
 	github.com/go-chi/cors v1.2.2
 	github.com/go-kit/log v0.2.1
 	github.com/google/uuid v1.6.0
-	github.com/mrchypark/rhiza v0.19.0
+	github.com/mrchypark/rhiza v0.21.1
 	github.com/thanos-io/objstore v0.0.0-20260817070452-e42d91c337ee
 	golang.org/x/crypto v0.57.0
 	golang.org/x/oauth2 v0.36.0
@@ -55,7 +55,7 @@ require (
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
 	github.com/go-logfmt/logfmt v0.5.1 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

@@ -11,6 +11,10 @@ PATH = Path(__file__).with_name("render_trustguard.py")
 SPEC = importlib.util.spec_from_file_location("trustguard", PATH)
 trustguard = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(trustguard)
+CHECK_PATH = PATH.with_name("trustguard-admission-check.py")
+CHECK_SPEC = importlib.util.spec_from_file_location("trustguard_admission", CHECK_PATH)
+admission = importlib.util.module_from_spec(CHECK_SPEC)
+CHECK_SPEC.loader.exec_module(admission)
 
 IMAGE = "ghcr.io/mrchypark/ternal@sha256:" + "a" * 64
 TOKEN = "12345678-1234-1234-1234-123456789abc"
@@ -18,6 +22,19 @@ ANCHOR_SA = "ternal-anchor"
 
 
 class TrustGuardRendererTest(unittest.TestCase):
+    def test_typecheck_diagnostics_allow_only_status_fields_and_keep_schema_names(self):
+        result = admission.safe_typecheck_records("owned-policy", [{
+            "fieldRef": "spec.variables[7].expression",
+            "warning": "undefined field secretKeyRef or serviceAccountToken",
+            "params": {"credential": "not-exported"},
+            "object": {"data": {"password": "not-exported"}},
+        }])
+        self.assertEqual(result, [{"policy": "owned-policy", "fieldRef": "spec.variables[7].expression",
+                                   "warning": "undefined field secretKeyRef or serviceAccountToken"}])
+        with self.assertRaisesRegex(ValueError, "invalid type-check diagnostic record"):
+            admission.safe_typecheck_records("owned-policy", [{"fieldRef": "spec.variables[0]", "warning": {"secret": "not-exported"}}])
+        self.assertLessEqual(len(admission.safe_typecheck_records("p", [{"fieldRef": "x", "warning": "w" * 40000}])[0]["warning"]), 32768)
+
     def render(self):
         return trustguard.render("ternal-test", "ternal-data", "ternal-trust-anchor",
                                  "ternal-cluster-a1", "b" * 64, [IMAGE], token=TOKEN, anchor_service_account=ANCHOR_SA)
@@ -34,6 +51,91 @@ class TrustGuardRendererTest(unittest.TestCase):
         # Go encoding/json escapes <, >, &, U+2028 and U+2029 before SHA-256.
         encoded = '["gcs","","bucket\\u003c\\u0026\\u003e","p\\u2028refix","cluster"]'.encode()
         self.assertEqual(value, hashlib.sha256(encoded).hexdigest())
+
+    def test_local_storage_id_has_a_clean_namespace_and_separate_domain(self):
+        legacy = trustguard.storage_id("gcs", "", "bucket<&>", "p\u2028refix", "cluster")
+        self.assertEqual(legacy, trustguard.storage_id("gcs", "", "bucket<&>", "p\u2028refix", "cluster", "ha"))
+        encoded = '["gcs","","bucket\\u003c\\u0026\\u003e","p\\u2028refix/cluster/local/v1","cluster"]'.encode()
+        namespaced = hashlib.sha256(encoded).hexdigest()
+        expected = hashlib.sha256(b"ternal-local-v1\x00" + namespaced.encode("ascii")).hexdigest()
+        local = trustguard.storage_id("gcs", "", "bucket<&>", "p\u2028refix", "cluster", "local")
+        self.assertEqual(local, expected)
+        self.assertNotEqual(local, legacy)
+        self.assertEqual(trustguard.storage_id("s3", "", "b", "a/../p", "c", "local"),
+                         trustguard.storage_id("s3", "", "b", "p", "c", "local"))
+        self.assertEqual(trustguard.storage_id("s3", "", "b", "//p", "c", "local"),
+                         trustguard.storage_id("s3", "", "b", "/p", "c", "local"))
+
+    def local_render(self):
+        return trustguard.render("ternal-test", "ternal-data", "ternal-trust-anchor", "ternal-cluster-a1", "b" * 64,
+                                 [IMAGE], token=TOKEN, anchor_service_account=ANCHOR_SA,
+                                 data_mode="local", local_workload_name="ternal-local")
+
+    def test_local_renderer_requires_an_explicit_owned_workload_name(self):
+        with self.assertRaisesRegex(ValueError, "explicit local workload name"):
+            trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, [IMAGE],
+                              anchor_service_account=ANCHOR_SA, data_mode="local")
+        with self.assertRaisesRegex(ValueError, "requires Local mode"):
+            trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, [IMAGE],
+                              anchor_service_account=ANCHOR_SA, local_workload_name="unexpected")
+
+    def test_local_scale_guard_is_exact_name_bound_and_includes_scale_subresource(self):
+        policy = next(item for item in self.by_kind(self.local_render(), "ValidatingAdmissionPolicy")
+                      if "local-scale" in item["metadata"]["name"])
+        rule = policy["spec"]["matchConstraints"]["resourceRules"][0]
+        self.assertEqual(rule["resources"], ["statefulsets", "statefulsets/scale"])
+        self.assertEqual(rule["resourceNames"], ["ternal-local"])
+        self.assertEqual(policy["spec"]["matchConditions"][0]["expression"], "request.namespace == 'ternal-test'")
+        self.assertEqual(policy["spec"]["validations"][0]["expression"], "!has(object.spec.replicas) || object.spec.replicas in [0, 1]")
+        self.assertNotIn("label", json.dumps(policy))
+
+    def test_local_init_envelope_and_main_readonly_mount_guards_are_rendered(self):
+        for policy in self.api_policies(self.local_render()):
+            variables = {item["name"]: item["expression"] for item in policy["spec"]["variables"]}
+            names = json.loads(variables["localDataNames"]) + json.loads(variables["localCredentialNames"])
+            self.assertEqual(len(names), 20)
+            self.assertFalse(any("OIDC" in name or "ADMIN_TOKEN" in name or "SESSION_KEY" in name for name in names))
+            initializer = variables["approvedLocalInitContainers"]
+            for required in ("c.name == 'ternal-local-restore'", "c.command == ['/usr/local/bin/ternal-api']",
+                             "c.args == ['local-restore']", "c.env.size() == 21", "c.securityContext.runAsUser == 65532",
+                             "c.securityContext.readOnlyRootFilesystem", "!has(c.lifecycle)", "!has(m.subPath)",
+                             "!has(m.subPathExpr)", "variables.serviceAccountVolumes.exists(v, v.name == m.name)",
+                             "c.volumeMounts.filter(m, m.name == 'data' && m.mountPath == '/data' && (!has(m.readOnly) || !m.readOnly)).size() == 1"):
+                self.assertIn(required, initializer)
+            self.assertIn("e.valueFrom.fieldRef.fieldPath == 'metadata.uid'", initializer)
+            self.assertIn("TERNAL_LOCAL_PREFLIGHT_SCOPE", initializer)
+            for required in ("has(v.projected)", "has(s.serviceAccountToken)", "s.serviceAccountToken.path == 'token'",
+                             "s.configMap.name == 'kube-root-ca.crt'", "fieldPath == 'metadata.namespace'"):
+                self.assertIn(required, variables["serviceAccountVolumes"])
+            envelope = policy["spec"]["validations"][-1]["expression"]
+            self.assertIn("has(v.emptyDir) && has(dyn(v.emptyDir).sizeLimit)", envelope)
+            self.assertNotIn("has(v.emptyDir.sizeLimit)", envelope)
+            self.assertEqual(envelope.count("dyn("), 1)
+            container_path = "object.spec.containers" if policy["spec"]["matchConstraints"]["resourceRules"][0]["resources"][0] == "pods" else "object.spec.template.spec.containers"
+            self.assertIn(container_path + ".size() == 1", envelope)
+            self.assertIn("variables.apiContainers[0].name == 'ternal-api'", envelope)
+            for required in ("a.volumeMounts.filter(m, m.name == 'local-staging').size() == 1",
+                             "a.volumeMounts.filter(m, m.name == 'data').size() == 1", "!has(m.subPath)",
+                             "m.mountPath == '/staging' && has(m.readOnly) && m.readOnly", "request.name == 'ternal-local"):
+                self.assertIn(required, envelope)
+            if policy["spec"]["matchConstraints"]["resourceRules"][0]["resources"][0] == "pods":
+                self.assertIn("r.kind == 'StatefulSet' && r.name == 'ternal-local'", envelope)
+                self.assertIn("request.name == 'ternal-local-0'", envelope)
+            else:
+                self.assertIn("request.resource.resource == 'statefulsets'", envelope)
+
+    def test_local_ephemeral_subresource_and_extra_container_guards_are_rendered(self):
+        for policy in self.api_policies(self.local_render()):
+            resources = policy["spec"]["matchConstraints"]["resourceRules"][0]["resources"]
+            envelope = policy["spec"]["validations"][-1]["expression"]
+            path = "object.spec" if resources[0] == "pods" else "object.spec.template.spec"
+            self.assertIn(path + ".containers.size() == 1", envelope)
+            self.assertIn("variables.apiContainers[0].name == 'ternal-api'", envelope)
+            self.assertIn("(!has(" + path + ".ephemeralContainers) || " + path + ".ephemeralContainers.size() == 0)", envelope)
+            if resources[0] == "pods":
+                self.assertIn("pods/ephemeralcontainers", resources)
+                self.assertIn("UPDATE", policy["spec"]["matchConstraints"]["resourceRules"][0]["operations"])
+                self.assertNotIn("pods/status", resources)
 
     def test_resource_scope_and_anchor_contract(self):
         result = self.render()
@@ -137,7 +239,8 @@ class TrustGuardRendererTest(unittest.TestCase):
 
     def api_policies(self, result):
         return [p for p in self.by_kind(result, "ValidatingAdmissionPolicy")
-                if p["spec"]["matchConstraints"]["resourceRules"][0]["resources"][0] != "configmaps"]
+                if p["spec"]["matchConstraints"]["resourceRules"][0]["resources"][0]
+                in ("pods", "deployments")]
 
     def test_omitted_service_account_is_default_not_an_evaluation_error(self):
         result = self.render()
