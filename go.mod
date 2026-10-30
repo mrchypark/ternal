@@ -8,7 +8,7 @@ require (
 	github.com/go-chi/cors v1.2.2
 	github.com/go-kit/log v0.2.1
 	github.com/google/uuid v1.6.0
-	github.com/mrchypark/rhiza v0.21.1
+	github.com/mrchypark/rhiza v0.21.2
 	github.com/thanos-io/objstore v0.0.0-20260817070452-e42d91c337ee
 	golang.org/x/crypto v0.57.0
 	golang.org/x/oauth2 v0.36.0

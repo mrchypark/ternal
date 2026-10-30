@@ -5,6 +5,10 @@
 Ternal HA는 data.mode=ha로 3-voter StatefulSet + emptyDir(no-PVC) + 공유 오브젝트 저장소를 사용한다.
 Operator는 opt-in이며 operator.enabled=true로 별도 Deployment로 실행한다. 현재 지원 플랫폼은 linux/amd64이다.
 
+Azure Blob은 Ternal의 Local·durable standalone·HA 애플리케이션 저장소로 구성할 수 있다. 공개 account와 유효 Blob URL은 [설정 문서](configuration.md)의 계약을 따르며, account key·connection string·client secret은 외부 Secret에만 둔다. S3/GCS identity는 바뀌지 않고 Azure는 account·유효 URL을 포함한 별도 6요소 identity를 사용한다. 실제 Azure IAM·클라우드 운영과 3-voter 복구는 로컬 에뮬레이터 통과만으로 검증되지 않는다.
+
+현재 고정된 Operator 이미지/CRD와 Azure credential·identity 연결은 자격 검증되지 않았다. 따라서 Azure에서는 `operator.enabled=true`를 렌더 단계에서 거부한다. Ternal의 Azure SDK 지원을 Operator의 Azure 복구 지원으로 해석해서는 안 되며, 이 제한을 우회하기 위해 fencing·세대 보호·automaticRecovery 금지를 해제해서도 안 된다. S3/GCS의 기존 Operator 경로와 Local의 Operator/legacy anchor 금지는 유지된다.
+
 Rhiza 0.21에서 HA Pod를 삭제하면 emptyDir의 WAL과 voter identity를 잃으므로 같은 voter의 일반 재시작은 `ErrVoterStateLost`로 거부된다. 살아 있는 quorum이 있으면 잃은 voter를 펜싱하고 새 learner로 교체하며, quorum을 잃으면 전체 세대를 펜싱한 복구가 필요하다. `OnDelete`는 자동 교체를 막을 뿐 복구를 수행하지 않는다. 같은 Pod 안에서 컨테이너만 재시작하면 emptyDir는 유지된다. 단일 voter의 아카이브 복원도 이전 인스턴스의 영구 펜싱을 전제로 한다. [Rhiza 복구 절차](https://github.com/mrchypark/rhiza/blob/v0.21.0/docs/recovery.md)를 따른다.
 
 기존 standalone 배포는 HA로 전환할 수 없다. HA는 불변 identity를 사용하므로 새 클러스터를 처음부터 배포해야 한다.
@@ -13,7 +17,7 @@ Rhiza 0.21에서 HA Pod를 삭제하면 emptyDir의 WAL과 voter identity를 잃
 
 Operator 사용 전 CRD를 먼저 설치한다:
 
-Go 의존성은 v0.21.1이지만 Operator 이미지와 CRD 핀은 별도 게시·호환성 검증 전까지 v0.20.0으로 유지한다. 이 조합의 운영 복구는 아직 자격 검증되지 않았으며, Operator는 기본값대로 비활성화한다.
+Go 의존성은 v0.21.2이지만 Operator 이미지와 CRD 핀은 별도 게시·호환성 검증 전까지 v0.20.0으로 유지한다. 이 조합의 운영 복구는 아직 자격 검증되지 않았으며, Operator는 기본값대로 비활성화한다.
 
     kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.20.0/deploy/operator/crd.yaml
     kubectl apply -f https://raw.githubusercontent.com/mrchypark/rhiza/v0.20.0/deploy/operator/cluster-crd.yaml
@@ -21,9 +25,9 @@ Go 의존성은 v0.21.1이지만 Operator 이미지와 CRD 핀은 별도 게시�
 
 v0.20.0에서는 RhizaCluster의 `voterPods`가 `voterCount`로 바뀌고 RhizaFence의 증거 스키마가 확장됐다. 기존 CR과의 호환성을 확인하고 새 CRD를 먼저 적용해야 한다. Ternal은 자동 복구를 계속 비활성화한다.
 
-## v0.21.1 의존성과 기존 데이터 경계
+## v0.21.2 의존성과 기존 데이터 경계
 
-Ternal은 Rhiza v0.21.1과 Go 1.27.3을 사용한다. v0.21.1은 문서 패치이며 Go 런타임·API·아카이브 형식은 v0.21.0과 같다. SQL 실행 정책은 v0.19.0과 같은 7이며, 아래의 구 정책 업그레이드 경계와 voter identity 보호는 그대로 유지된다. 이번 변경은 Go 의존성을 갱신하며 배포나 데이터 마이그레이션을 수행하지 않는다.
+Ternal은 Rhiza v0.21.2와 Go 1.27.3을 사용한다. v0.21.2는 Local maintenance release 응답이 유실되거나 지연된 경우 정확한 free 상태와 변경된 오브젝트 버전을 안정적으로 다시 읽어 완료를 판정한다. 작업 오류·취소·불확실한 작업은 계속 거부하며, 고아 held 토큰의 자동 해제를 허용하지 않는다. API·아카이브 형식·identity·receipt 변경은 없다. SQL 실행 정책은 v0.19.0과 같은 7이며, 아래의 구 정책 업그레이드 경계와 voter identity 보호는 그대로 유지된다. 이번 변경은 Go 의존성을 갱신하며 배포나 데이터 마이그레이션을 수행하지 않는다.
 
 v0.21.0은 filesystem/S3/GCS/Azure의 모든 **Local** 아카이브 고정 형식을 변경한다. 구형·부분 형식은 수정 없이 거부하며 자동 이관하지 않는다. 기존 DataDir와 아카이브는 백업·보존하고, 새 DataDir와 새 아카이브 네임스페이스를 사용하는 그린필드 경로만 검증한다. 거부된 기존 아카이브를 삭제하거나 같은 위치를 재초기화해서는 안 된다.
 

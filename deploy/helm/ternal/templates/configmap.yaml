@@ -26,11 +26,41 @@
 {{- $objectStoreProvider = required "data.objectStore.provider is required" $objectStore.provider -}}
 {{- end -}}
 {{- if $objectStoreProvider -}}
-{{- if not (has $objectStoreProvider (list "s3" "gcs")) -}}
-{{- fail "data.objectStore.provider must be s3 or gcs" -}}
+{{- if not (has $objectStoreProvider (list "s3" "gcs" "azure")) -}}
+{{- fail "data.objectStore.provider must be s3, gcs, or azure" -}}
 {{- end -}}
 {{- if and (eq $objectStoreProvider "gcs") (or $objectStore.endpoint ($objectStore.insecure | default false)) -}}
 {{- fail "data.objectStore.endpoint and insecure are unsupported for gcs" -}}
+{{- end -}}
+{{- if eq $objectStoreProvider "azure" -}}
+{{- $azure := default dict $objectStore.azure -}}
+{{- range $key, $_ := $azure -}}
+{{- if not (has $key (list "storageAccount" "blobEndpoint" "tenantID" "clientID" "userAssignedID")) -}}
+{{- fail "data.objectStore.azure accepts public identifiers only; keep credentials in the existing Secret" -}}
+{{- end -}}
+{{- end -}}
+{{- if or $objectStore.endpoint ($objectStore.insecure | default false) -}}
+{{- fail "Azure rejects generic data.objectStore.endpoint and insecure overrides" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]{3,24}$" (default "" $azure.storageAccount)) -}}
+{{- fail "Azure requires a canonical data.objectStore.azure.storageAccount" -}}
+{{- end -}}
+{{- $endpoint := include "ternal.azureBlobEndpoint" . -}}
+{{- if not (regexMatch "^https://[a-z0-9]+([.-][a-z0-9]+)*(:[0-9]+)?$" $endpoint) -}}
+{{- fail "Azure blobEndpoint must be canonical HTTPS without path, credentials, query, fragment, or trailing slash; emulator mode is not supported by Helm" -}}
+{{- end -}}
+{{- if contains ":" (trimPrefix "https://" $endpoint) -}}
+{{- $port := int (last (splitList ":" $endpoint)) -}}
+{{- if or (lt $port 1) (gt $port 65535) -}}
+{{- fail "Azure blobEndpoint port must be between 1 and 65535" -}}
+{{- end -}}
+{{- end -}}
+{{- if not .Values.secrets.existingSecret -}}
+{{- fail "Azure requires secrets.existingSecret; credentials must not be Helm values" -}}
+{{- end -}}
+{{- if (default dict .Values.operator).enabled -}}
+{{- fail "Azure Operator integration is not yet qualified; keep operator.enabled=false" -}}
+{{- end -}}
 {{- end -}}
 {{- $objectStoreBucket = required "data.objectStore.bucket is required" $objectStore.bucket -}}
 {{- if not (has (default "before-ack" $objectStore.durability) (list "async" "before-ack")) -}}
@@ -79,6 +109,14 @@ data:
   TERNAL_OBJECT_STORE_REGION: {{ default "" $objectStore.region | quote }}
   TERNAL_OBJECT_STORE_INSECURE: {{ ternary "true" "false" ($objectStore.insecure | default false) | quote }}
   TERNAL_OBJECT_STORE_DURABILITY: {{ default "before-ack" $objectStore.durability | quote }}
+{{ if eq $objectStoreProvider "azure" }}
+  TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT: {{ $objectStore.azure.storageAccount | quote }}
+  TERNAL_OBJECT_STORE_AZURE_BLOB_ENDPOINT: {{ include "ternal.azureBlobEndpoint" . | quote }}
+  TERNAL_OBJECT_STORE_AZURE_TENANT_ID: {{ default "" $objectStore.azure.tenantID | quote }}
+  TERNAL_OBJECT_STORE_AZURE_CLIENT_ID: {{ default "" $objectStore.azure.clientID | quote }}
+  TERNAL_OBJECT_STORE_AZURE_USER_ASSIGNED_ID: {{ default "" $objectStore.azure.userAssignedID | quote }}
+  TERNAL_OBJECT_STORE_AZURE_EMULATOR: "0"
+{{ end }}
 {{ end }}
   TERNAL_OIDC_ISSUER: {{ required "oidc.issuer is required" .Values.oidc.issuer | quote }}
   TERNAL_OIDC_CLIENT_ID: {{ required "oidc.clientId is required" .Values.oidc.clientId | quote }}

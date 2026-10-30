@@ -129,24 +129,15 @@ spec:
               value: {{ default "" $objectStore.region | quote }}
             - name: TERNAL_OBJECT_STORE_INSECURE
               value: {{ ternary "true" "false" ($objectStore.insecure | default false) | quote }}
-            - name: TERNAL_OBJECT_STORE_ACCESS_KEY
+            {{- include "ternal.azurePublicEnv" . | nindent 12 }}
+            {{- range $key := include "ternal.objectStoreCredentialKeys" . | fromJsonArray }}
+            - name: {{ $key }}
               valueFrom:
                 secretKeyRef:
                   name: {{ $secretName }}
-                  key: TERNAL_OBJECT_STORE_ACCESS_KEY
+                  key: {{ $key }}
                   optional: true
-            - name: TERNAL_OBJECT_STORE_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $secretName }}
-                  key: TERNAL_OBJECT_STORE_SECRET_KEY
-                  optional: true
-            - name: TERNAL_OBJECT_STORE_SESSION_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $secretName }}
-                  key: TERNAL_OBJECT_STORE_SESSION_TOKEN
-                  optional: true
+            {{- end }}
           resources:
             {{- toYaml (default dict $anchor.resources) | nindent 12 }}
           volumeMounts:

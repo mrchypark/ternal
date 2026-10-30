@@ -29,8 +29,8 @@ func TestRhizaProviderContract(t *testing.T) {
 	if provider == "" {
 		t.Skip("set TERNAL_TEST_PROVIDER, TERNAL_TEST_ENDPOINT and TERNAL_TEST_BUCKET for local emulator coverage")
 	}
-	if provider != "s3" && provider != "gcs" {
-		t.Fatalf("unsupported Ternal recovery provider %q; Azure is not covered by this contract", provider)
+	if provider != "s3" && provider != "gcs" && provider != "azure" {
+		t.Fatalf("unsupported Ternal recovery provider %q", provider)
 	}
 	endpoint, err := url.Parse(os.Getenv("TERNAL_TEST_ENDPOINT"))
 	if err != nil || endpoint.Scheme != "http" || endpoint.Hostname() != "127.0.0.1" || endpoint.Port() == "" || endpoint.Path != "" || endpoint.User != nil {
@@ -60,6 +60,9 @@ func TestRhizaProviderContract(t *testing.T) {
 	t.Setenv("TERNAL_OBJECT_STORE_ACCESS_KEY", "")
 	t.Setenv("TERNAL_OBJECT_STORE_SECRET_KEY", "")
 	t.Setenv("TERNAL_OBJECT_STORE_SESSION_TOKEN", "")
+	for _, suffix := range []string{"STORAGE_ACCOUNT", "BLOB_ENDPOINT", "STORAGE_ACCOUNT_KEY", "CONNECTION_STRING", "TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "USER_ASSIGNED_ID", "EMULATOR"} {
+		t.Setenv("TERNAL_OBJECT_STORE_AZURE_"+suffix, "")
+	}
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 	if provider == "s3" {
 		t.Setenv("TERNAL_OBJECT_STORE_ENDPOINT", endpoint.Host)
@@ -67,6 +70,17 @@ func TestRhizaProviderContract(t *testing.T) {
 		t.Setenv("TERNAL_OBJECT_STORE_REGION", "us-east-1")
 		t.Setenv("TERNAL_OBJECT_STORE_ACCESS_KEY", "test")
 		t.Setenv("TERNAL_OBJECT_STORE_SECRET_KEY", "test")
+	} else if provider == "azure" {
+		account := envOr("TERNAL_TEST_AZURE_STORAGE_ACCOUNT", "devstoreaccount1")
+		key := os.Getenv("TERNAL_TEST_AZURE_STORAGE_ACCOUNT_KEY")
+		if key == "" {
+			t.Fatal("Azure emulator requires TERNAL_TEST_AZURE_STORAGE_ACCOUNT_KEY")
+		}
+		t.Setenv("TERNAL_OBJECT_STORE_ENDPOINT", "")
+		t.Setenv("TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT", account)
+		t.Setenv("TERNAL_OBJECT_STORE_AZURE_BLOB_ENDPOINT", endpoint.String()+"/"+account)
+		t.Setenv("TERNAL_OBJECT_STORE_AZURE_EMULATOR", "1")
+		t.Setenv("TERNAL_OBJECT_STORE_AZURE_CONNECTION_STRING", "AccountName="+account+";AccountKey="+key+";BlobEndpoint="+endpoint.String()+"/"+account)
 	} else {
 		t.Setenv("TERNAL_OBJECT_STORE_ENDPOINT", "")
 		t.Setenv("STORAGE_EMULATOR_HOST", endpoint.String())
@@ -165,6 +179,19 @@ func TestRhizaProviderContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		assertReady := func() {
+			t.Helper()
+			if err := current.Ready(ctx); err != nil {
+				t.Fatalf("standalone application readiness: %v", err)
+			}
+			if err := current.requireMigrated(ctx); err != nil {
+				t.Fatalf("standalone application migrations: %v", err)
+			}
+			settled, _, err := anchor.Get(ctx)
+			if err != nil || settled.Bootstrap || settled.PendingEpoch != nil || settled.StorageID != storageBindingFromEnv().StorageID {
+				t.Fatal("standalone trust bootstrap was not settled against the configured archive")
+			}
+		}
 		t.Cleanup(func() {
 			if current != nil {
 				if err := current.Close(); err != nil {
@@ -172,6 +199,7 @@ func TestRhizaProviderContract(t *testing.T) {
 				}
 			}
 		})
+		assertReady()
 		host, err := current.CreateHost(ctx, NewHost{Name: "provider-host", EndpointID: strings.Repeat("a", 64), SSHUser: "ops", SSHPort: 2222}, "provider-contract")
 		if err != nil {
 			t.Fatal(err)
@@ -179,18 +207,27 @@ func TestRhizaProviderContract(t *testing.T) {
 		if err := current.UpdateHost(ctx, host.ID, NewHost{Name: "provider-updated", EndpointID: host.EndpointID, SSHUser: "ops", SSHPort: 2222}, "provider-contract"); err != nil {
 			t.Fatal(err)
 		}
+		expectedName := "provider-updated"
 		for _, dataDir := range []string{dir, t.TempDir()} {
 			if err := current.Close(); err != nil {
 				t.Fatal(err)
+			}
+			if err := current.Ready(ctx); err == nil {
+				t.Fatal("closed previous standalone writer still serves readiness")
 			}
 			current = nil
 			current, err = Open(ctx, dataDir)
 			if err != nil {
 				t.Fatal(err)
 			}
+			assertReady()
 			loaded, err := current.GetHost(ctx, host.ID)
-			if err != nil || loaded == nil || loaded.Name != "provider-updated" {
+			if err != nil || loaded == nil || loaded.Name != expectedName {
 				t.Fatalf("restored host = %#v, error=%v", loaded, err)
+			}
+			expectedName += "-reopened"
+			if err := current.UpdateHost(ctx, host.ID, NewHost{Name: expectedName, EndpointID: host.EndpointID, SSHUser: "ops", SSHPort: 2222}, "provider-contract"); err != nil {
+				t.Fatal(err)
 			}
 		}
 		if err := current.DeleteHost(ctx, host.ID, "provider-contract"); err != nil {
@@ -388,8 +425,8 @@ func TestRhizaProviderContract(t *testing.T) {
 	})
 }
 
-func TestRecoveryStorageRejectsUnsupportedAzure(t *testing.T) {
-	if _, err := (recoveryStorage{Provider: "azure", Bucket: "ternal-contract-unsupported"}).bucket(); err == nil || !strings.Contains(err.Error(), "unsupported recovery object store provider") {
-		t.Fatalf("Azure must remain explicitly unsupported, got %v", err)
+func TestRecoveryStorageRejectsUnknownProvider(t *testing.T) {
+	if _, err := (recoveryStorage{Provider: "unknown", Bucket: "ternal-contract-unsupported"}).bucket(); err == nil || !strings.Contains(err.Error(), "unsupported recovery object store provider") {
+		t.Fatalf("unknown provider must remain explicitly unsupported, got %v", err)
 	}
 }

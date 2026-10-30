@@ -28,6 +28,10 @@
   "objectStoreInsecure" ($objectStore.insecure | default false)
   "objectStoreDurability" (default "before-ack" $objectStore.durability)
   "secretName" (default .Release.Name .Values.secrets.existingSecret) -}}
+{{- if eq (default "" $objectStore.provider) "azure" -}}
+{{- $_ := set $identity "azureStorageAccount" (default "" (default dict $objectStore.azure).storageAccount) -}}
+{{- $_ := set $identity "azureBlobEndpoint" (include "ternal.azureBlobEndpoint" .) -}}
+{{- end -}}
 {{- if eq $mode "local" -}}
 {{- $_ := set $identity "localArchiveNamespace" (clean (printf "%s/%s/local/v1" $prefix $clusterID)) -}}
 {{- $_ := set $identity "localStorageDomain" "ternal-local-v1" -}}
@@ -82,4 +86,67 @@
   value: {{ ternary "true" "false" ($objectStore.insecure | default false) | quote }}
 - name: TERNAL_OBJECT_STORE_DURABILITY
   value: before-ack
+{{ include "ternal.azurePublicEnv" . }}
+{{- end -}}
+
+{{/* Public configuration is direct env: an old runtime Secret cannot redirect it. */}}
+{{- define "ternal.singleNodeEnv" -}}
+{{- $config := include (print .Template.BasePath "/configmap.yaml") . | fromYaml -}}
+{{- range $name, $value := $config.data }}
+- name: {{ $name }}
+  value: {{ $value | toString | quote }}
+{{- end }}
+- name: TERNAL_DATA_LOCAL
+  value: "0"
+- name: TERNAL_DATA_MULTI_NODE
+  value: "0"
+- name: TERNAL_DATA_NODE_ID
+  value: node-1
+- name: TERNAL_DATA_CLUSTER_MEMBERS
+  value: ""
+- name: TERNAL_DATA_EXPECTED_MEMBER_IDS
+  value: ""
+- name: TERNAL_DATA_BIND_ADDR
+  value: "127.0.0.1:0"
+- name: TERNAL_DATA_PEER_ADDR
+  value: "127.0.0.1:0"
+- name: TERNAL_OBJECT_STORE_DIR
+  value: ""
+- name: TERNAL_OPERATOR_BIND
+  value: ""
+- name: TERNAL_TRUST_ANCHOR_CONFIGMAP
+  value: {{ .Values.data.trustAnchorConfigMap | quote }}
+- name: TERNAL_TRUST_ANCHOR_NAMESPACE
+  value: {{ .Release.Namespace | quote }}
+{{- end -}}
+
+{{- define "ternal.azureBlobEndpoint" -}}
+{{- $azure := default dict .Values.data.objectStore.azure -}}
+{{- default (printf "https://%s.blob.core.windows.net" (default "" $azure.storageAccount)) $azure.blobEndpoint -}}
+{{- end -}}
+
+{{- define "ternal.objectStoreCredentialKeys" -}}
+{{- if eq .Values.data.objectStore.provider "azure" -}}
+{{- list "TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT_KEY" "TERNAL_OBJECT_STORE_AZURE_CONNECTION_STRING" "TERNAL_OBJECT_STORE_AZURE_CLIENT_SECRET" | toJson -}}
+{{- else -}}
+{{- list "TERNAL_OBJECT_STORE_ACCESS_KEY" "TERNAL_OBJECT_STORE_SECRET_KEY" "TERNAL_OBJECT_STORE_SESSION_TOKEN" | toJson -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "ternal.azurePublicEnv" -}}
+{{- if eq .Values.data.objectStore.provider "azure" -}}
+{{- $azure := default dict .Values.data.objectStore.azure -}}
+- name: TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT
+  value: {{ $azure.storageAccount | quote }}
+- name: TERNAL_OBJECT_STORE_AZURE_BLOB_ENDPOINT
+  value: {{ include "ternal.azureBlobEndpoint" . | quote }}
+- name: TERNAL_OBJECT_STORE_AZURE_TENANT_ID
+  value: {{ default "" $azure.tenantID | quote }}
+- name: TERNAL_OBJECT_STORE_AZURE_CLIENT_ID
+  value: {{ default "" $azure.clientID | quote }}
+- name: TERNAL_OBJECT_STORE_AZURE_USER_ASSIGNED_ID
+  value: {{ default "" $azure.userAssignedID | quote }}
+- name: TERNAL_OBJECT_STORE_AZURE_EMULATOR
+  value: "0"
+{{- end -}}
 {{- end -}}

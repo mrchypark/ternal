@@ -10,6 +10,9 @@ import (
 )
 
 func TestApplyAdoptsOperatorManifestIdentity(t *testing.T) {
+	t.Setenv("TERNAL_DATA_LOCAL", "0")
+	t.Setenv("TERNAL_DATA_MULTI_NODE", "1")
+	t.Setenv("RHIZA_PEER_TOKENS", "")
 	// The controller rewrites exactly these when it starts a recovered
 	// generation; Ternal must run that generation.
 	for _, pair := range pairs {
@@ -27,6 +30,9 @@ func TestApplyAdoptsOperatorManifestIdentity(t *testing.T) {
 }
 
 func TestApplyIsNoopWithoutOperator(t *testing.T) {
+	t.Setenv("TERNAL_DATA_LOCAL", "0")
+	t.Setenv("TERNAL_DATA_MULTI_NODE", "1")
+	t.Setenv("RHIZA_PEER_TOKENS", "")
 	for _, pair := range pairs {
 		// Unset is what an unmanaged pod has; Apply treats empty the same way.
 		t.Setenv(pair[0], "")
@@ -43,6 +49,9 @@ func TestApplyIsNoopWithoutOperator(t *testing.T) {
 }
 
 func TestApplyNeverClearsWithEmptyOperatorValues(t *testing.T) {
+	t.Setenv("TERNAL_DATA_LOCAL", "0")
+	t.Setenv("TERNAL_DATA_MULTI_NODE", "1")
+	t.Setenv("RHIZA_PEER_TOKENS", "")
 	// An empty operator variable must not erase the configured identity: the
 	// object-store durability and cluster ID decide which generation is served.
 	for _, pair := range pairs {
@@ -99,6 +108,8 @@ func mustJSON(t *testing.T, value any) string {
 }
 
 func TestApplyAdaptsRecoveredTokenMapIntoMemberCredentials(t *testing.T) {
+	t.Setenv("TERNAL_DATA_LOCAL", "0")
+	t.Setenv("TERNAL_DATA_MULTI_NODE", "1")
 	for _, pair := range pairs {
 		t.Setenv(pair[0], "")
 		t.Setenv(pair[1], os.Getenv(pair[1]))
@@ -141,6 +152,8 @@ func TestApplyAdaptsRecoveredTokenMapIntoMemberCredentials(t *testing.T) {
 }
 
 func TestApplyKeepsSourceCredentialsWithoutRecoveredTokenMap(t *testing.T) {
+	t.Setenv("TERNAL_DATA_LOCAL", "0")
+	t.Setenv("TERNAL_DATA_MULTI_NODE", "1")
 	for _, pair := range pairs {
 		t.Setenv(pair[0], "")
 		t.Setenv(pair[1], os.Getenv(pair[1]))
@@ -158,6 +171,8 @@ func TestApplyKeepsSourceCredentialsWithoutRecoveredTokenMap(t *testing.T) {
 }
 
 func TestApplyRejectsUnadaptableRecoveredTokenMaps(t *testing.T) {
+	t.Setenv("TERNAL_DATA_LOCAL", "0")
+	t.Setenv("TERNAL_DATA_MULTI_NODE", "1")
 	for _, pair := range pairs {
 		t.Setenv(pair[0], "")
 		t.Setenv(pair[1], os.Getenv(pair[1]))
@@ -209,5 +224,45 @@ func TestApplyRejectsUnadaptableRecoveredTokenMaps(t *testing.T) {
 				t.Fatalf("error exposes a credential: %v", err)
 			}
 		})
+	}
+}
+
+func TestApplyIgnoresResidualOperatorIdentityOutsideHA(t *testing.T) {
+	for _, mode := range []struct{ name, local, multi string }{
+		{"implicit-standalone", "", ""},
+		{"standalone", "0", "0"},
+		{"invalid-mode-not-HA", "0", "yes"},
+		{"local", "1", "0"},
+		{"local-wins", "1", "1"},
+	} {
+		for _, malformed := range []bool{false, true} {
+			name := mode.name + "/valid"
+			if malformed {
+				name = mode.name + "/malformed"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Setenv("TERNAL_DATA_LOCAL", mode.local)
+				t.Setenv("TERNAL_DATA_MULTI_NODE", mode.multi)
+				own := []string{"standalone-cluster", "", "standalone-admin-token", "before-ack"}
+				upstream := []string{"old-recovery-cluster", `[{"node_id":"old-voter"}]`, "old-admin-token", "async"}
+				for i, pair := range pairs {
+					t.Setenv(pair[0], upstream[i])
+					t.Setenv(pair[1], own[i])
+				}
+				t.Setenv("RHIZA_PEER_TOKENS", `{"old-voter":"old-voter-token"}`)
+				if malformed {
+					t.Setenv("RHIZA_CLUSTER_MEMBERS", `[{`)
+					t.Setenv("RHIZA_PEER_TOKENS", `{"broken":`)
+				}
+				if err := Apply(); err != nil {
+					t.Fatal("non-HA startup was blocked by residual operator inputs")
+				}
+				for i, pair := range pairs {
+					if os.Getenv(pair[1]) != own[i] {
+						t.Fatalf("non-HA %s was overwritten", pair[1])
+					}
+				}
+			})
+		}
 	}
 }

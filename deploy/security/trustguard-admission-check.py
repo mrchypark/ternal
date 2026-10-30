@@ -174,6 +174,12 @@ def local_matrix(image, kubeconfig, context, diagnostics):
     workload = "ternal-local"
     doc = tg.render(namespace, "api", "anchor", namespace, "a" * 64, [image],
                     anchor_service_account="recovery", data_mode="local", local_workload_name=workload)
+    single_workload = "ternal-single"
+    standalone_doc = tg.render(namespace, "api", "anchor", namespace, "a" * 64, [image],
+                               anchor_service_account="recovery", standalone_workload_name=single_workload)
+    # Compile and execute the new exact-name scale guard on the same owned API;
+    # retain the existing Local envelope and never schedule application code.
+    doc["items"].extend(item for item in standalone_doc["items"] if "standalone-scale" in item["metadata"]["name"])
     policies = [item for item in doc["items"] if item["kind"] == "ValidatingAdmissionPolicy"]
     bindings = [item for item in doc["items"] if item["kind"] == "ValidatingAdmissionPolicyBinding"]
     envelope = "Local recovery requires the exact approved non-root initializer, matching shared data configuration, and isolated staging"
@@ -240,6 +246,30 @@ def local_matrix(image, kubeconfig, context, diagnostics):
         time.sleep(2)  # Let newly observed bindings reach the admission dispatcher.
         probe("separate-relay", {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "separate-relay", "namespace": namespace},
                                  "spec": {"serviceAccountName": "relay", "containers": [{"name": "ternal-relay", "image": "busybox:1.37"}]}})
+        single = copy.deepcopy(fixture)
+        single["metadata"]["name"] = single_workload
+        single["spec"]["serviceName"] = single_workload
+        single["spec"]["selector"]["matchLabels"] = {"app": single_workload}
+        single["spec"]["template"] = {"metadata": {"labels": {"app": single_workload}}, "spec": {
+            "serviceAccountName": "relay", "schedulingGates": [{"name": "ternal.dev/admission-test"}],
+            "containers": [{"name": "never-executed", "image": "busybox:1.37"}]}}
+        single_message = "the owned standalone workload permits only zero or one replica; scale is not fencing"
+        for replicas in (0, 1, 2):
+            single["spec"]["replicas"] = replicas
+            probe("standalone-controller-" + str(replicas), single, single_message if replicas == 2 else None)
+        single["spec"]["replicas"] = 0
+        require(run("standalone-zero", "create", "-f", "-", data=single))
+        single_path = "/apis/apps/v1/namespaces/" + namespace + "/statefulsets/" + single_workload + "/scale"
+        for replicas in (None, 0, 1, 2):
+            obj = {"apiVersion": "autoscaling/v1", "kind": "Scale", "metadata": {"name": single_workload, "namespace": namespace},
+                   "spec": {} if replicas is None else {"replicas": replicas}}
+            result = run("standalone-scale-" + str(replicas), "replace", "--raw", single_path + "?dryRun=All", "-f", "-", data=obj)
+            if replicas in (None, 0, 1):
+                require(result)
+            elif not (result.returncode and single_message in result.stderr and "ValidatingAdmissionPolicy" in result.stderr):
+                raise AssertionError("standalone scale2 did not reach exact owned policy: " + result.stderr)
+        require(run("delete-standalone-zero", "-n", namespace, "delete", "statefulset", single_workload,
+                    "--cascade=foreground", "--wait=true", "--timeout=40s"))
         require(run("fixture-zero", "create", "-f", "-", data=fixture))
         live = json.loads(require(run("fixture-get", "-n", namespace, "get", "statefulset", workload, "-o", "json")).stdout)
         scale_path = "/apis/apps/v1/namespaces/" + namespace + "/statefulsets/" + workload + "/scale"
@@ -261,6 +291,75 @@ def local_matrix(image, kubeconfig, context, diagnostics):
                "ownerReferences": [{"apiVersion": "apps/v1", "kind": "StatefulSet", "name": workload, "uid": live["metadata"]["uid"], "controller": True}]},
                "spec": copy.deepcopy(pod_spec)}
         probe("approved-pod", pod)
+        # Azure changes only its public routing fields and exact storage Secret
+        # refs; no connection string/key/client secret is an inline value.
+        azure = copy.deepcopy(pod)
+        azure_public = {
+            "TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT": "account123",
+            "TERNAL_OBJECT_STORE_AZURE_BLOB_ENDPOINT": "https://account123.blob.core.windows.net",
+            "TERNAL_OBJECT_STORE_AZURE_TENANT_ID": "",
+            "TERNAL_OBJECT_STORE_AZURE_CLIENT_ID": "",
+            "TERNAL_OBJECT_STORE_AZURE_USER_ASSIGNED_ID": "",
+            "TERNAL_OBJECT_STORE_AZURE_EMULATOR": "0",
+        }
+        azure_secrets = ["TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT_KEY", "TERNAL_OBJECT_STORE_AZURE_CONNECTION_STRING",
+                         "TERNAL_OBJECT_STORE_AZURE_CLIENT_SECRET"]
+        s3_secrets = {entry["name"] for entry in credentials}
+        for container in azure["spec"]["containers"] + azure["spec"]["initContainers"]:
+            for entry in container["env"]:
+                if entry["name"] == "TERNAL_OBJECT_STORE_PROVIDER":
+                    entry["value"] = "azure"
+                elif entry["name"] == "TERNAL_OBJECT_STORE_ENDPOINT":
+                    entry["value"] = ""
+                elif entry["name"] == "TERNAL_OBJECT_STORE_INSECURE":
+                    entry["value"] = "false"
+            container["env"].extend({"name": name, "value": value} for name, value in azure_public.items())
+            if container["name"] == "ternal-local-restore":
+                container["env"] = [entry for entry in container["env"] if entry["name"] not in s3_secrets]
+                container["env"].extend({"name": name, "valueFrom": {"secretKeyRef": {"name": "runtime", "key": name, "optional": True}}} for name in azure_secrets)
+        probe("approved-azure-pod", azure)
+        azure_controller = copy.deepcopy(fixture)
+        azure_controller["metadata"]["resourceVersion"] = live["metadata"]["resourceVersion"]
+        azure_controller["spec"]["template"]["spec"] = azure["spec"]
+        require(run("approved-azure-controller", "replace", "--dry-run=server", "-f", "-", data=azure_controller))
+        for secret in azure_secrets:
+            inline = copy.deepcopy(azure)
+            entries = inline["spec"]["initContainers"][0]["env"]
+            entries[:] = [{"name": secret, "value": "not-a-real-secret"} if entry["name"] == secret else entry for entry in entries]
+            probe("azure-inline-" + secret.lower(), inline, envelope)
+        for field, value in (("name", "other-runtime"), ("key", "OTHER_KEY")):
+            wrong = copy.deepcopy(azure)
+            next(entry for entry in wrong["spec"]["initContainers"][0]["env"] if entry["name"] == azure_secrets[0])["valueFrom"]["secretKeyRef"][field] = value
+            probe("azure-secret-" + field, wrong, envelope)
+        for name, value in (("TERNAL_OBJECT_STORE_AZURE_EMULATOR", "1"), ("TERNAL_OBJECT_STORE_ENDPOINT", "generic.invalid"),
+                            ("TERNAL_OBJECT_STORE_INSECURE", "true")):
+            wrong = copy.deepcopy(azure)
+            for container in wrong["spec"]["containers"] + wrong["spec"]["initContainers"]:
+                next(entry for entry in container["env"] if entry["name"] == name)["value"] = value
+            probe("azure-override-" + name.lower(), wrong, envelope)
+        mismatch = copy.deepcopy(azure)
+        next(entry for entry in mismatch["spec"]["initContainers"][0]["env"] if entry["name"] == "TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT")["value"] = "otheraccount"
+        probe("azure-account-mismatch", mismatch, envelope)
+        for label, rejected in (("azure-account-mismatch-controller", mismatch), ("azure-inline-secret-controller", inline)):
+            controller = copy.deepcopy(fixture)
+            controller["metadata"]["resourceVersion"] = live["metadata"]["resourceVersion"]
+            controller["spec"]["template"]["spec"] = rejected["spec"]
+            result = run(label, "replace", "--dry-run=server", "-f", "-", data=controller)
+            if not (result.returncode and envelope in result.stderr and "ValidatingAdmissionPolicy" in result.stderr):
+                raise AssertionError(label + ": expected exact Azure Local policy denial")
+        missing = copy.deepcopy(azure)
+        missing["spec"]["initContainers"][0]["env"] = [entry for entry in missing["spec"]["initContainers"][0]["env"] if entry["name"] != azure_secrets[0]]
+        probe("azure-secret-missing", missing, envelope)
+        extra = copy.deepcopy(azure)
+        extra["spec"]["initContainers"][0]["env"].append({"name": "TERNAL_OIDC_CLIENT_SECRET", "value": "not-a-real-secret"})
+        probe("azure-app-secret-bloat", extra, envelope)
+        gcs = copy.deepcopy(pod)
+        for container in gcs["spec"]["containers"] + gcs["spec"]["initContainers"]:
+            for entry in container["env"]:
+                if entry["name"] == "TERNAL_OBJECT_STORE_PROVIDER": entry["value"] = "gcs"
+                elif entry["name"] == "TERNAL_OBJECT_STORE_ENDPOINT": entry["value"] = ""
+                elif entry["name"] == "TERNAL_OBJECT_STORE_INSECURE": entry["value"] = "false"
+        probe("approved-gcs-pod", gcs)
         standalone = copy.deepcopy(pod)
         del standalone["metadata"]["ownerReferences"]
         probe("standalone-pod", standalone, envelope)

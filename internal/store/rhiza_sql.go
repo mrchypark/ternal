@@ -559,6 +559,9 @@ func rhizaConfigFromEnv(dataDir string) (rhiza.Config, error) {
 	} else if len(members) != 0 || expectedMemberIDs != "" {
 		return rhiza.Config{}, fmt.Errorf("HA member configuration requires TERNAL_DATA_MULTI_NODE=1")
 	}
+	if multiNode != "1" && requireTrustAnchor() && os.Getenv("TERNAL_OBJECT_STORE_DURABILITY") != "before-ack" {
+		return rhiza.Config{}, fmt.Errorf("standalone object-store mode requires explicit before-ack durability")
+	}
 	clusterID := envOr("TERNAL_DATA_CLUSTER_ID", "ternal")
 	nodeID := envOr("TERNAL_DATA_NODE_ID", "node-1")
 	publicMembers, peerToken, err := rhizaIdentity(clusterID, nodeID, members)
@@ -577,7 +580,7 @@ func rhizaConfigFromEnv(dataDir string) (rhiza.Config, error) {
 	if err != nil {
 		return rhiza.Config{}, err
 	}
-	return rhiza.Config{
+	config := rhiza.Config{
 		ClusterID:            clusterID,
 		NodeID:               nodeID,
 		DataDir:              dataDir,
@@ -600,7 +603,11 @@ func rhizaConfigFromEnv(dataDir string) (rhiza.Config, error) {
 		ObjStoreSyncInterval: syncInterval,
 		ObjStoreBatchDelay:   batchDelay,
 		CheckpointInterval:   checkpointInterval,
-	}, nil
+	}
+	if err := applyAzureStorageFromEnv(&config); err != nil {
+		return rhiza.Config{}, err
+	}
+	return config, nil
 }
 
 // rhizaIdentity projects Ternal's member credentials onto the identity shape

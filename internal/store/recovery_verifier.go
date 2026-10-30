@@ -11,6 +11,7 @@ import (
 	"github.com/mrchypark/rhiza/pkg/recovery"
 	"github.com/mrchypark/rhiza/pkg/recoveryanchor"
 	"github.com/thanos-io/objstore"
+	"github.com/thanos-io/objstore/providers/azure"
 	"github.com/thanos-io/objstore/providers/filesystem"
 	"github.com/thanos-io/objstore/providers/gcs"
 	"github.com/thanos-io/objstore/providers/s3"
@@ -23,10 +24,12 @@ type recoveryStorage struct {
 	Provider, Endpoint, Bucket, Prefix, Region, Dir string
 	Insecure                                        bool
 	AccessKey, SecretKey, SessionToken              string
+	Azure                                           azureStorageConfig
+	azureErr                                        error
 }
 
 func recoveryStorageFromEnv() recoveryStorage {
-	return recoveryStorage{
+	c := recoveryStorage{
 		Provider: os.Getenv("TERNAL_OBJECT_STORE_PROVIDER"), Endpoint: os.Getenv("TERNAL_OBJECT_STORE_ENDPOINT"),
 		Bucket: os.Getenv("TERNAL_OBJECT_STORE_BUCKET"), Prefix: os.Getenv("TERNAL_OBJECT_STORE_PREFIX"),
 		Region: os.Getenv("TERNAL_OBJECT_STORE_REGION"), Dir: os.Getenv("TERNAL_OBJECT_STORE_DIR"),
@@ -34,12 +37,28 @@ func recoveryStorageFromEnv() recoveryStorage {
 		AccessKey: os.Getenv("TERNAL_OBJECT_STORE_ACCESS_KEY"), SecretKey: os.Getenv("TERNAL_OBJECT_STORE_SECRET_KEY"),
 		SessionToken: os.Getenv("TERNAL_OBJECT_STORE_SESSION_TOKEN"),
 	}
+	if c.Provider == "azure" {
+		c.Azure, c.azureErr = azureStorageFromEnv()
+	}
+	return c
 }
 
 // identity and prefix mirror the storage binding Ternal writes, so a recovery
 // request is checked against configuration rather than against itself.
 func (c recoveryStorage) identity(clusterID string) string {
+	if c.Provider == "azure" {
+		a, err := c.Azure.normalized()
+		if err != nil || c.azureErr != nil {
+			return ""
+		}
+		return AzureTrustAnchorStorageID(a.Account, a.BlobEndpoint, c.Bucket, c.Prefix, clusterID)
+	}
 	return TrustAnchorStorageID(c.Provider, c.Endpoint, c.Bucket, c.Prefix, clusterID)
+}
+
+func (c recoveryStorage) localIdentity(clusterID string) string {
+	c.Prefix = path.Join(c.Prefix, clusterID, "local/v1")
+	return localStorageDomain(c.identity(clusterID))
 }
 
 func (c recoveryStorage) prefix(clusterID string) string { return path.Join(c.Prefix, clusterID) }
@@ -69,6 +88,22 @@ func (c recoveryStorage) bucketWithContext(ctx context.Context) (objstore.Bucket
 		config := gcs.DefaultConfig
 		config.Bucket = c.Bucket
 		return gcs.NewBucketWithConfig(ctx, kitlog.NewNopLogger(), config, "ternal-anchor", nil)
+	case "azure":
+		if c.azureErr != nil {
+			return nil, c.azureErr
+		}
+		if c.Bucket == "" || c.Endpoint != "" || c.Insecure {
+			return nil, fmt.Errorf("Azure requires a container and rejects generic endpoint/insecure overrides")
+		}
+		a, err := c.Azure.normalized()
+		if err != nil {
+			return nil, err
+		}
+		bucket, err := azure.NewBucketWithConfig(kitlog.NewNopLogger(), a.bucketConfig(c.Bucket), "ternal-anchor", nil)
+		if err != nil {
+			return nil, fmt.Errorf("initialize Azure recovery store")
+		}
+		return bucket, nil
 	case "filesystem":
 		dir := c.Dir
 		if dir == "" {

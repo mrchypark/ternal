@@ -47,11 +47,19 @@ type trustAnchor struct {
 
 func storageBindingFromEnv() trustAnchorRecord {
 	// Credentials intentionally are not part of the binding.
-	storageID := TrustAnchorStorageID(os.Getenv("TERNAL_OBJECT_STORE_PROVIDER"), os.Getenv("TERNAL_OBJECT_STORE_ENDPOINT"), os.Getenv("TERNAL_OBJECT_STORE_BUCKET"), os.Getenv("TERNAL_OBJECT_STORE_PREFIX"), envOr("TERNAL_DATA_CLUSTER_ID", "ternal"))
+	storage := recoveryStorageFromEnv()
+	storageID := storage.identity(envOr("TERNAL_DATA_CLUSTER_ID", "ternal"))
 	if os.Getenv("TERNAL_DATA_LOCAL") == "1" {
-		storageID = LocalTrustAnchorStorageID(os.Getenv("TERNAL_OBJECT_STORE_PROVIDER"), os.Getenv("TERNAL_OBJECT_STORE_ENDPOINT"), os.Getenv("TERNAL_OBJECT_STORE_BUCKET"), os.Getenv("TERNAL_OBJECT_STORE_PREFIX"), envOr("TERNAL_DATA_CLUSTER_ID", "ternal"))
+		storageID = storage.localIdentity(envOr("TERNAL_DATA_CLUSTER_ID", "ternal"))
 	}
 	return trustAnchorRecord{Format: "1", ClusterID: envOr("TERNAL_DATA_CLUSTER_ID", "ternal"), StorageID: storageID}
+}
+
+// AzureTrustAnchorStorageID also binds the actual account and effective Blob URL.
+func AzureTrustAnchorStorageID(account, endpoint, container, prefix, clusterID string) string {
+	payload, _ := json.Marshal([]string{"azure", account, endpoint, container, prefix, clusterID})
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
 
 // TrustAnchorStorageID is the stable, credential-free binding written by the
@@ -66,6 +74,13 @@ func TrustAnchorStorageID(provider, endpoint, bucket, prefix, clusterID string) 
 // LocalTrustAnchorStorageID separates Local authority from every legacy tuple.
 func LocalTrustAnchorStorageID(provider, endpoint, bucket, prefix, clusterID string) string {
 	legacy := TrustAnchorStorageID(provider, endpoint, bucket, path.Join(prefix, clusterID, "local/v1"), clusterID)
+	return localStorageDomain(legacy)
+}
+
+func localStorageDomain(legacy string) string {
+	if legacy == "" {
+		return ""
+	}
 	sum := sha256.Sum256([]byte("ternal-local-v1\x00" + legacy))
 	return hex.EncodeToString(sum[:])
 }
@@ -162,6 +177,14 @@ func requireTrustAnchor() bool {
 func trustAnchorFromEnv() (*trustAnchor, error) {
 	if !requireTrustAnchor() {
 		return nil, nil
+	}
+	if os.Getenv("TERNAL_OBJECT_STORE_PROVIDER") == "azure" {
+		if _, err := azureStorageFromEnv(); err != nil {
+			return nil, err
+		}
+		if os.Getenv("TERNAL_OBJECT_STORE_BUCKET") == "" {
+			return nil, fmt.Errorf("Azure requires TERNAL_OBJECT_STORE_BUCKET as its container")
+		}
 	}
 	name := os.Getenv("TERNAL_TRUST_ANCHOR_CONFIGMAP")
 	if name == "" {

@@ -2,6 +2,15 @@ Port-forward:
   kubectl port-forward svc/{{ .Release.Name }} {{ .Values.service.port }}:{{ .Values.service.port }}
 
 DATA MODE: {{ default "standalone" .Values.data.mode }}
+{{- if (default dict .Values.data.singleNode).enabled }}
+  Durable single embedded voter, not HA or Local. No restore init is needed:
+  the API opens the SDK, restores the archive if needed, then gates readiness.
+  OnDelete disables automatic rolling updates, not automatic node-loss recovery.
+  Apply the external trust guard with --data-mode=standalone and
+  --standalone-workload-name={{ .Release.Name }} before creating this workload.
+  The replica cap is not fencing. Verify the old writer has stopped, or fence
+  it externally, before replacement, cache-loss recovery or force-delete.
+{{- end }}
 {{- if eq (default "standalone" .Values.data.mode) "local" }}
   One Local process, no Operator or recovery-anchor service. The application-owned
   local-restore init verifies a manually seeded supported archive, then opens

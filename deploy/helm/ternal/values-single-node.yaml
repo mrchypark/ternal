@@ -1,0 +1,15 @@
+# Durable, non-HA single embedded voter. Supply public storage/cluster metadata,
+# an immutable API image digest, and externally provisioned SA/Secret/trust guard.
+data:
+  mode: standalone
+  singleNode:
+    enabled: true
+  requireObjectStore: true
+  objectStore:
+    durability: before-ack
+persistence:
+  enabled: false
+operator:
+  enabled: false
+anchor:
+  enabled: false
