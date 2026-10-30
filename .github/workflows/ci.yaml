@@ -58,6 +58,7 @@ jobs:
         run: |
           ./scripts/check-public-config.sh
           sh scripts/check-public-config.test.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 deploy/security/render_trustguard_test.py
           test -z "$(gofmt -l cmd internal)"
           go vet ./...
           "$(go env GOPATH)/bin/actionlint" -shellcheck '' -pyflakes ''

@@ -35,10 +35,13 @@ type credentialMember struct {
 	Token string `json:"token"`
 }
 
-// Apply copies every present operator-managed variable onto its Ternal
-// counterpart, then folds in the recovered peer token map. Empty operator
-// values never clear Ternal's own; an unadaptable map fails closed.
+// Apply is a no-op outside explicit, non-Local HA. In HA it copies present
+// operator-managed variables, then folds in the recovered peer token map.
+// Empty operator values never clear Ternal's own; an unadaptable map fails closed.
 func Apply() error {
+	if os.Getenv("TERNAL_DATA_LOCAL") == "1" || os.Getenv("TERNAL_DATA_MULTI_NODE") != "1" {
+		return nil
+	}
 	for _, pair := range pairs {
 		if value := os.Getenv(pair[0]); value != "" {
 			_ = os.Setenv(pair[1], value)

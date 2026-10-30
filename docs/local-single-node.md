@@ -1,7 +1,100 @@
-# Local single-node storage
+# Single-node storage
+
+## Durable standalone profile
+
+For a fresh one-node deployment use `values-single-node.yaml`, not
+`values-local.yaml`. It runs one embedded Rhiza voter (`Local:false`), with
+BeforeAck object storage authoritative and `/data/ternal` on disposable
+`emptyDir`. It is not HA, has no Operator, recovery-anchor Deployment, PVC or
+init container. The normal `/usr/local/bin/ternal-api` command opens the SDK,
+initializes a fresh archive or restores a compatible existing archive, then
+initializes Ternal and gates `/ready`. Do not run `local-restore` for this mode.
+True Local below is a separate opt-in seeded-archive contract.
+
+Supply non-secret deployment values, for example:
+
+```yaml
+image:
+  digest: sha256:<approved-64-hex-image-digest>
+serviceAccountName: single-api
+secrets:
+  existingSecret: single-runtime
+data:
+  clusterID: single-greenfield-a1
+  trustAnchorConfigMap: single-trust
+  objectStore:
+    provider: s3
+    endpoint: object-store.example.invalid:9000
+    bucket: dedicated-ternal-bucket
+    prefix: clusters/single-greenfield-a1
+    region: us-east-1
+    insecure: false
+```
+
+Use the native GCS or Azure public metadata from [configuration](configuration.md)
+instead when appropriate. Do not copy account keys, connection strings, session
+keys or OIDC secrets into this file. The external runtime Secret supplies normal
+Ternal application secrets, a data-admin token of at least 32 bytes, and the
+selected provider's credentials. It does not need HA membership. The chart pins
+mode, durability, all public ConfigMap fields, storage location, node identity,
+trust binding and disabled Operator listener directly; stale Secret entries
+cannot override them. In standalone, the process skips upstream Operator
+identity projection, so this profile needs no alias env. Local retains its
+separate rejection of nonempty upstream identity variables.
+Do not reuse the Secret as an undeclared configuration
+source. No default profile or HA/Local data is converted automatically.
+
+Before first start, provision an external trust anchor and admission policies
+outside the Helm release and object store. Use the existing renderer with the
+same namespace, API ServiceAccount, cluster ID and canonical storage metadata,
+the approved image digest, `--data-mode=standalone` and
+`--standalone-workload-name=<release>`. Omit `--anchor-service-account`: normal
+standalone starts no recovery service and needs no recovery identity or RBAC.
+The renderer still protects anchor deletion, monotonic transitions, approved
+API images and the direct trust binding, while denying recovery transitions.
+Only an explicitly configured recovery service uses the optional independent
+`--anchor-service-account`; it must never reuse the API ServiceAccount.
+The guard permits only zero or one replica for this exact StatefulSet and its
+scale subresource. The API account needs `get`/`update` only on the named anchor.
+Never reapply bootstrap trust output over an active anchor or restore that
+anchor from the bucket. Provision actual credentials/IAM separately.
+
+Render locally and review before using a target cluster:
+
+```sh
+helm template single deploy/helm/ternal --namespace <dedicated-namespace> \
+  -f deploy/helm/ternal/values-single-node.yaml -f <public-deployment-values.yaml>
+```
+
+Operational acceptance and recovery:
+
+1. First start uses a new dedicated cluster ID, prefix, external trust anchor and
+   empty cache. Confirm `/ready`, write application state and read it back.
+   Existing or unknown archive state is not greenfield: do not erase it to
+   bypass a refusal. A mismatch or unresolved trust state must stay unready.
+2. For a process/container restart retaining `/data`, stop gracefully, ensure
+   that process has exited, then reopen with identical identity and credentials.
+   Confirm readiness and the prior write. The archive, not a PVC, is authority.
+3. For a replacement Pod or total cache loss, first verify the old writer has
+   stopped, or externally fence it so it cannot write. Stop conflicting archive
+   maintenance/GC. Preserve the authoritative bucket and external trust anchor.
+   Start exactly one instance with the same canonical settings and fresh cache;
+   require readiness and the prior write before resuming traffic. Never
+   force-delete an unreachable writer until fencing is verified.
+
+`OnDelete` prevents automatic rolling updates; it does not stop StatefulSet
+replacement after Pod/node loss or prove the old writer is gone. A replica cap
+is not a lease or fencing and cannot block another controller/namespace using
+the archive. There is no automatic failover. Uncertain writer identity, trust
+or archive continuity is a stop condition, not permission to reset state.
+Local adapter tests establish graceful restart/cache-loss behavior only; they
+do not establish abrupt exact-ACK crash durability, production-cloud/IAM parity
+or actual Kubernetes admission execution. Those require their own evidence.
+
+## True Local mode (seeded archive)
 
 Ternal's explicit `data.mode=local` / `TERNAL_DATA_LOCAL=1` path uses the
-published Rhiza v0.21.1 `Local:true` SDK. It has one writer, no voter listeners,
+published Rhiza v0.21.2 `Local:true` SDK. It has one writer, no voter listeners,
 no peer membership, and no Operator. The existing `standalone` mode still runs
 one embedded voter with `Local:false`; HA still runs three voters. None of
 their defaults change.
@@ -19,10 +112,23 @@ trust anchor. Rhiza v0.21 changes the Local archive format for all providers;
 there is no automatic migration, adoption, cleanup, or downgrade. Never point
 this configuration at a legacy archive or unknown nonempty directory.
 
-This Ternal integration supports its existing S3 and GCS adapters only. It
-does not add Azure or filesystem configuration. Upstream's same-host filesystem
+This Ternal integration supports S3, GCS and Azure Blob adapters. It does not
+add filesystem configuration. Upstream's same-host filesystem
 maintenance support on stable Linux/macOS filesystems is a different capability,
 not multi-host fencing and not an additional Ternal deployment backend.
+
+Azure requires a public storage account and canonical effective Blob service
+URL (default `https://<account>.blob.core.windows.net`), with no trailing slash.
+Its three possible secret fields are account key, account-key connection string
+and client secret; keep them only in the external runtime Secret. Public
+tenant/client/user-assigned identity identifiers and selected authentication
+must match main. Init receives only the provider's storage Secret references,
+never OIDC, session or admin secrets. See [configuration](configuration.md) for
+the exact environment names and mutually exclusive authentication forms.
+Generic endpoint/insecure overrides are rejected for Azure. Emulator HTTP
+loopback mode is an explicit local-test-only path, not enabled by Helm.
+Actual Azure cloud authentication/IAM and production-cloud parity remain
+separate qualification requirements even when local Floci-AZ tests pass.
 
 The archive must already contain a compatible SDK Local binding and a certified
 checkpoint. Initial seeding is an explicit manual operation using the published
@@ -106,18 +212,22 @@ binding/configuration, not the old tip, snapshot, or prefix hash: the same write
 may legitimately have advanced history. The independently opened SDK and trust
 anchor remain responsible for validating current history and readiness.
 
-This follows the published [init-container guide](https://github.com/mrchypark/rhiza/blob/v0.21.1/docs/local-init-container-recovery.md).
+This follows the published [init-container guide](https://github.com/mrchypark/rhiza/blob/v0.21.2/docs/local-init-container-recovery.md).
 Ternal deliberately retains its stricter seeded-checkpoint and external-trust
 requirements; this command does not implement the SDK's empty-archive adoption.
 Read-only preflight downloads verification evidence before the SDK restore, so
 it is not a download-avoidance optimization or a typed staging handoff.
 
-Rhiza v0.21.1 is a documentation-only release: the Go runtime and archive format
-are unchanged from v0.21.0. Its [release notes](https://github.com/mrchypark/rhiza/releases/tag/v0.21.1)
-retain an unresolved S3 qualification failure, `Local maintenance control changed
-during read`; this version must not be described as fully green CI or a new
-production-cloud qualification. Ternal does not bypass that refusal or clear
-maintenance state to make recovery succeed.
+Rhiza v0.21.2 corrects Local maintenance release acknowledgement handling without
+changing public APIs, archive format, identity, or receipts. If the active
+holder's conditional release upload returns an error, bounded stable readback
+must prove the exact expected free control at a changed object version before
+release completion is accepted. The upload timeout is unchanged; work errors,
+cancellation, and uncertain operations remain fail-closed. This does not let a
+new process clear an orphaned held token or bypass Ternal's guards.
+The [release notes](https://github.com/mrchypark/rhiza/releases/tag/v0.21.2) retain
+earlier S3 failure evidence and describe upstream emulator qualification. Those
+results are not Ternal production-cloud or operational recovery qualification.
 
 ## Identity, rollback, and retention
 
@@ -125,7 +235,10 @@ The effective SDK archive namespace is
 `path.Join(prefix, clusterID, "local/v1")`. Local trust identity is lowercase
 hex SHA256 of `"ternal-local-v1\x00" + legacyHex`, where `legacyHex` is the
 existing `TrustAnchorStorageID(provider, endpoint, bucket, effectiveNamespace,
-clusterID)`. The legacy hash remains byte-identical. This domain separation
+clusterID)` for S3/GCS. Azure instead uses the six-field tuple
+`["azure", account, effectiveBlobURL, container, effectiveNamespace, clusterID]`
+before the same Local domain separation. The S3/GCS legacy hash remains
+byte-identical; Azure secrets are excluded. This domain separation
 prevents a legacy prefix spelling from impersonating Local authority.
 
 Before SDK mutation, main rejects a legacy/mismatched anchor, mixed-mode

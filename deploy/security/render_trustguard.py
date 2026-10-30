@@ -8,11 +8,13 @@ rollback boundary.
 """
 import argparse
 import hashlib
+import ipaddress
 import json
 import posixpath
 import re
 import sys
 import uuid
+from urllib.parse import urlsplit
 
 OFFICIAL_IMAGE = "ghcr.io/mrchypark/ternal"
 FORMAT = "1"
@@ -38,16 +40,49 @@ def service_account(value):
     return dns_label(value, "service account")
 
 
-def storage_id(provider, endpoint, bucket, prefix, cluster_id, data_mode="standalone"):
+def azure_location(account, endpoint, emulator=False):
+    if not re.fullmatch(r"[a-z0-9]{3,24}", account):
+        fail("Azure requires a canonical storage account")
+    endpoint = endpoint or ("" if emulator else "https://" + account + ".blob.core.windows.net")
+    try:
+        url = urlsplit(endpoint)
+        port = url.port
+    except ValueError:
+        fail("Azure Blob endpoint must be a canonical credential-free service URL")
+    if port is not None and not 1 <= port <= 65535:
+        fail("Azure Blob endpoint port must be between 1 and 65535")
+    if (url.username is not None or url.password is not None or url.query or url.fragment or "?" in endpoint or
+            url.netloc != url.netloc.lower() or url.geturl() != endpoint or any(char in endpoint for char in "\\#%\x00\r\n\t ")):
+        fail("Azure Blob endpoint must be a canonical credential-free service URL")
+    if emulator:
+        try:
+            ip = ipaddress.ip_address(url.hostname)
+            ip = getattr(ip, "ipv4_mapped", None) or ip
+        except ValueError:
+            fail("Azure emulator identity requires a numeric loopback address")
+        if url.scheme != "http" or not ip.is_loopback or port is None or url.path != "/" + account:
+            fail("Azure emulator identity requires explicit HTTP loopback port/account")
+    elif not re.fullmatch(r"https://[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]+)?", endpoint):
+        fail("Azure Blob endpoint requires HTTPS without path or trailing slash")
+    return endpoint
+
+
+def storage_id(provider, endpoint, bucket, prefix, cluster_id, data_mode="standalone", azure_storage_account="", azure_blob_endpoint="", azure_emulator=False):
     """Match Go encoding/json for the ASCII/UTF-8 CLI contract exactly."""
     values = [provider, endpoint, bucket, prefix, cluster_id]
+    if provider == "azure":
+        if endpoint:
+            fail("Azure rejects the generic endpoint; use --azure-blob-endpoint")
+        values = [provider, azure_storage_account, azure_location(azure_storage_account, azure_blob_endpoint, azure_emulator), bucket, prefix, cluster_id]
+    elif azure_storage_account or azure_blob_endpoint or azure_emulator:
+        fail("Azure identity inputs require provider azure")
     if any(not isinstance(value, str) or any(0xD800 <= ord(char) <= 0xDFFF for char in value) for value in values):
         fail("storage identity values must be valid Unicode strings")
     if data_mode not in ("standalone", "ha", "local"):
         fail("unsupported data mode")
     if data_mode == "local":
         namespace = posixpath.normpath("/".join(value for value in (prefix, cluster_id, "local/v1") if value))
-        values[3] = "/" + namespace.lstrip("/") if namespace.startswith("//") else namespace
+        values[4 if provider == "azure" else 3] = "/" + namespace.lstrip("/") if namespace.startswith("//") else namespace
     encoded = json.dumps(values, ensure_ascii=False, separators=(",", ":"))
     encoded = encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     encoded = encoded.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
@@ -153,6 +188,8 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
     # the ConfigMap name this renderer already protects.
     spec = "object.spec" if target == "pod" else "object.spec.template.spec"
     role = anchor_container_expr("c", anchor_name, namespace, anchor_name)
+    recovery_account = service + " == '" + anchor_service_account + "'" if anchor_service_account is not None else "false"
+    not_recovery_account = service + " != '" + anchor_service_account + "'" if anchor_service_account is not None else "true"
     local_names = ["TERNAL_DATA_LOCAL", "TERNAL_DATA_MULTI_NODE", "TERNAL_DATA_DIR", "TERNAL_DATA_CLUSTER_ID",
                    "TERNAL_DATA_NODE_ID", "TERNAL_LOCAL_PREFLIGHT_STAGING_DIR", "TERNAL_LOCAL_PREFLIGHT_RECEIPT_FILE",
                    "TERNAL_LOCAL_WRITER_GC_QUIESCENCE_ACK", "TERNAL_TRUST_ANCHOR_CONFIGMAP", "TERNAL_TRUST_ANCHOR_NAMESPACE",
@@ -160,6 +197,11 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
                    "TERNAL_OBJECT_STORE_PREFIX", "TERNAL_OBJECT_STORE_REGION", "TERNAL_OBJECT_STORE_INSECURE",
                    "TERNAL_OBJECT_STORE_DURABILITY"]
     credential_names = ["TERNAL_OBJECT_STORE_ACCESS_KEY", "TERNAL_OBJECT_STORE_SECRET_KEY", "TERNAL_OBJECT_STORE_SESSION_TOKEN"]
+    azure_names = ["TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT", "TERNAL_OBJECT_STORE_AZURE_BLOB_ENDPOINT",
+                   "TERNAL_OBJECT_STORE_AZURE_TENANT_ID", "TERNAL_OBJECT_STORE_AZURE_CLIENT_ID",
+                   "TERNAL_OBJECT_STORE_AZURE_USER_ASSIGNED_ID", "TERNAL_OBJECT_STORE_AZURE_EMULATOR"]
+    azure_credential_names = ["TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT_KEY", "TERNAL_OBJECT_STORE_AZURE_CONNECTION_STRING",
+                            "TERNAL_OBJECT_STORE_AZURE_CLIENT_SECRET"]
     scope_env = ("has({c}.env) && {c}.env.filter(e, e.name == 'TERNAL_LOCAL_PREFLIGHT_SCOPE').size() == 1 && "
                  "{c}.env.exists(e, e.name == 'TERNAL_LOCAL_PREFLIGHT_SCOPE' && !has(e.value) && has(e.valueFrom) && "
                  "has(e.valueFrom.fieldRef) && e.valueFrom.fieldRef.fieldPath == 'metadata.uid' && "
@@ -167,9 +209,10 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
     local_init = (
         "c.name == 'ternal-local-restore' && has(c.command) && c.command == ['/usr/local/bin/ternal-api'] && "
         "has(c.args) && c.args == ['local-restore'] && '" + image_list + "'.contains(',' + c.image + ',') && "
-        "(!has(c.envFrom) || c.envFrom.size() == 0) && has(c.env) && c.env.size() == 21 && "
-        "(variables.localDataNames + variables.localCredentialNames).all(n, c.env.filter(e, e.name == n).size() == 1) && "
-        "c.env.all(e, e.name in variables.localDataNames ? (!has(e.valueFrom) && "
+        "(!has(c.envFrom) || c.envFrom.size() == 0) && has(c.env) && "
+        "c.env.size() == variables.localRequiredDataNames.size() + variables.localRequiredCredentialNames.size() + 1 && "
+        "(variables.localRequiredDataNames + variables.localRequiredCredentialNames).all(n, c.env.filter(e, e.name == n).size() == 1) && "
+        "c.env.all(e, e.name in variables.localRequiredDataNames ? (!has(e.valueFrom) && "
         "variables.apiContainers.all(a, has(a.env) && a.env.filter(x, x.name == e.name).size() == 1 && "
         "a.env.exists(x, x.name == e.name && !has(x.valueFrom) && (has(x.value) ? x.value : '') == (has(e.value) ? e.value : '')))) : "
         "(e.name == 'TERNAL_LOCAL_PREFLIGHT_SCOPE' ? true : (!has(e.value) && has(e.valueFrom) && has(e.valueFrom.secretKeyRef) && "
@@ -177,6 +220,7 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
         "variables.apiContainers.all(a, has(a.envFrom) && a.envFrom.exists(f, has(f.secretRef) && f.secretRef.name == e.valueFrom.secretKeyRef.name)))))"
     )
     local_init += " && " + scope_env.format(c="c") + " && variables.apiContainers.all(a, " + scope_env.format(c="a") + ")"
+    local_init += " && (!variables.localAzure || (" + env_pinned("c", "TERNAL_OBJECT_STORE_AZURE_EMULATOR", "0") + " && " + env_pinned("c", "TERNAL_OBJECT_STORE_INSECURE", "false") + " && c.env.exists(e, e.name == 'TERNAL_OBJECT_STORE_ENDPOINT' && !has(e.valueFrom) && (!has(e.value) || e.value == ''))))"
     local_init += " && " + " && ".join(
         env_pinned("c", key, value) for key, value in (
             ("TERNAL_DATA_LOCAL", "1"), ("TERNAL_DATA_MULTI_NODE", "0"), ("TERNAL_DATA_DIR", "/data/ternal"),
@@ -226,13 +270,18 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
                 {"name": "apiContainers", "expression": containers + ".filter(c, " + api_container_expr() + " && !(" + role + "))"},
                 {"name": "localDataNames", "expression": json.dumps(local_names)},
                 {"name": "localCredentialNames", "expression": json.dumps(credential_names)},
+                {"name": "localAzureDataNames", "expression": json.dumps(azure_names)},
+                {"name": "localAzureCredentialNames", "expression": json.dumps(azure_credential_names)},
+                {"name": "localAzure", "expression": "variables.apiContainers.exists(a, has(a.env) && a.env.exists(e, e.name == 'TERNAL_OBJECT_STORE_PROVIDER' && has(e.value) && e.value == 'azure'))"},
+                {"name": "localRequiredDataNames", "expression": "variables.localDataNames + (variables.localAzure ? variables.localAzureDataNames : [])"},
+                {"name": "localRequiredCredentialNames", "expression": "variables.localAzure ? variables.localAzureCredentialNames : variables.localCredentialNames"},
                 {"name": "localInitContainers", "expression": "has(" + spec + ".initContainers) ? " + spec + ".initContainers : []"},
                 {"name": "serviceAccountVolumes", "expression": service_account_volumes},
                 {"name": "guardedLocalInitContainers", "expression": "variables.localInitContainers.filter(c, c.name in ['ternal-local-preflight', 'ternal-local-restore'] || " + api_container_expr() + ")"},
                 {"name": "approvedLocalInitContainers", "expression": "variables.localInitContainers.filter(c, " + local_init + ")"},
             ],
             "validations": [
-                {"expression": service + " != '" + anchor_service_account + "' || (variables.anchorContainers.size() == 1 && "
+                {"expression": not_recovery_account + " || (variables.anchorContainers.size() == 1 && "
                  + containers + ".size() == 1 && (!has(" + spec + ".initContainers) || " + spec + ".initContainers.size() == 0) && "
                  + "(!has(" + spec + ".ephemeralContainers) || " + spec + ".ephemeralContainers.size() == 0))",
                  "message": "the recovery identity is reserved for a single approved anchor container"},
@@ -248,7 +297,7 @@ def api_policy(name, binding_name, namespace_selector, namespace, service_accoun
                  "message": "the recovery executable must not be replaced or accompanied by lifecycle commands"},
                 {"expression": "variables.apiContainers.size() == 0 || " + service + " == '" + service_account_name + "'",
                  "message": "Ternal API workloads must use the protected service account"},
-                {"expression": "variables.anchorContainers.size() == 0 || " + service + " == '" + anchor_service_account + "'",
+                {"expression": "variables.anchorContainers.size() == 0 || " + recovery_account,
                  "message": "the recovery anchor workload must use its own protected service account"},
                 {"expression": "variables.apiContainers.all(c, '" + image_list + "'.contains(',' + c.image + ','))",
                  "message": "Ternal API image is not approved by the external trustguard"},
@@ -343,7 +392,8 @@ def anchor_policy(name, binding_name, namespace_selector, anchor_name, cluster_i
     composite_application = ("(" + old + "['recoveryTransition'] == 'null' && "
                              + kept(("recoveryGeneration", "recoveryTransition", "recoveryReceipt"))
                              + " && " + application_transition + ")")
-    identity = "request.userInfo.username == 'system:serviceaccount:" + namespace + ":" + anchor_service_account + "'"
+    identity = ("request.userInfo.username == 'system:serviceaccount:" + namespace + ":" + anchor_service_account + "'"
+                if anchor_service_account is not None else "false")
     recovery_reserve = (identity + " && " + old + "['pendingEpoch'] == '' && " + old + "['bootstrap'] == 'false' && " + old + "['recoveryTransition'] == '" + RECOVERY_NULL + "' && "
                         + new + "['recoveryTransition'] != '" + RECOVERY_NULL + "' && " + kept(FLAT_FIELDS) + " && "
                         + new + "['recoveryGeneration'] == " + old + "['recoveryGeneration'] && "
@@ -387,7 +437,7 @@ def anchor_policy(name, binding_name, namespace_selector, anchor_name, cluster_i
     return [policy, binding]
 
 
-def render(namespace, service_account_name, anchor_name, cluster_id, storage_identity, images, token=None, anchor_service_account=None, data_mode="standalone", local_workload_name=None):
+def render(namespace, service_account_name, anchor_name, cluster_id, storage_identity, images, token=None, anchor_service_account=None, data_mode="standalone", local_workload_name=None, standalone_workload_name=None):
     namespace = dns_label(namespace, "namespace")
     service_account_name = service_account(service_account_name)
     anchor_name = dns_label(anchor_name, "anchor ConfigMap")
@@ -400,9 +450,14 @@ def render(namespace, service_account_name, anchor_name, cluster_id, storage_ide
         local_workload_name = dns_label(local_workload_name, "local workload name")
     elif local_workload_name is not None:
         fail("local workload name requires Local mode")
-    if anchor_service_account is None:
+    if standalone_workload_name is not None:
+        if data_mode != "standalone":
+            fail("standalone workload name requires standalone mode")
+        standalone_workload_name = dns_label(standalone_workload_name, "standalone workload name")
+    if anchor_service_account is None and data_mode != "standalone":
         fail("the recovery anchor service account is required")
-    anchor_service_account = service_account(anchor_service_account)
+    if anchor_service_account is not None:
+        anchor_service_account = service_account(anchor_service_account)
     if anchor_service_account == service_account_name:
         fail("recovery and application service accounts must differ")
     if not re.fullmatch(r"[0-9a-f]{64}", storage_identity):
@@ -437,35 +492,41 @@ def render(namespace, service_account_name, anchor_name, cluster_id, storage_ide
     binding = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": metadata("ternal-trustguard-runtime-" + suffix, operator_labels, namespace),
                "subjects": [{"kind": "ServiceAccount", "name": service_account_name, "namespace": namespace}],
                "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": role["metadata"]["name"]}}
-    # The recovery authority is a separate identity: the admission policy names
+    # When explicitly configured, recovery authority is a separate identity:
+    # normal standalone omits it and denies every recovery transition.
+    # The admission policy names
     # it, so the account that may commit a transition must not be the account
     # that serves application traffic.  It reaches the same ConfigMap and
     # nothing else.
-    anchor_role = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": metadata("ternal-trustguard-anchor-runtime-" + suffix, operator_labels, namespace),
-                   "rules": [{"apiGroups": [""], "resources": ["configmaps"], "resourceNames": [anchor_name], "verbs": ["get", "update"]}]}
-    anchor_binding = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": metadata("ternal-trustguard-anchor-runtime-" + suffix, operator_labels, namespace),
-                      "subjects": [{"kind": "ServiceAccount", "name": anchor_service_account, "namespace": namespace}],
-                      "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": anchor_role["metadata"]["name"]}}
     namespace_resource = {"apiVersion": "v1", "kind": "Namespace", "metadata": metadata(namespace, {"ternal.dev/trustguard-scope": scope_label, "app.kubernetes.io/managed-by": "ternal-trustguard-operator"})}
-    items = [namespace_resource, anchor, role, binding, anchor_role, anchor_binding]
+    items = [namespace_resource, anchor, role, binding]
+    if anchor_service_account is not None:
+        anchor_role = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": metadata("ternal-trustguard-anchor-runtime-" + suffix, operator_labels, namespace),
+                       "rules": [{"apiGroups": [""], "resources": ["configmaps"], "resourceNames": [anchor_name], "verbs": ["get", "update"]}]}
+        anchor_binding = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": metadata("ternal-trustguard-anchor-runtime-" + suffix, operator_labels, namespace),
+                          "subjects": [{"kind": "ServiceAccount", "name": anchor_service_account, "namespace": namespace}],
+                          "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": anchor_role["metadata"]["name"]}}
+        items += [anchor_role, anchor_binding]
     items += api_policy(names["api_pods"], names["api_pods"] + "-binding", selector, namespace, service_account_name,
                         anchor_service_account, anchor_name, image_list, "pod", data_mode == "local", local_workload_name)
     items += api_policy(names["api_workloads"], names["api_workloads"] + "-binding", selector, namespace, service_account_name,
                         anchor_service_account, anchor_name, image_list, "workload", data_mode == "local", local_workload_name)
     items += anchor_policy(names["anchor_policy"], names["anchor_policy"] + "-binding", selector, anchor_name, cluster_id,
                            storage_identity, anchor_label, namespace, anchor_service_account)
-    if data_mode == "local":
-        scale_name = "ternal-trustguard-local-scale-" + suffix
+    if data_mode == "local" or standalone_workload_name is not None:
+        scale_mode = "Local" if data_mode == "local" else "standalone"
+        scale_workload = local_workload_name if data_mode == "local" else standalone_workload_name
+        scale_name = "ternal-trustguard-" + scale_mode.lower() + "-scale-" + suffix
         items.append({"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingAdmissionPolicy",
                       "metadata": metadata(scale_name), "spec": {"failurePolicy": "Fail",
                           "matchConstraints": {"resourceRules": [{"apiGroups": ["apps"], "apiVersions": ["v1"],
                               "operations": ["CREATE", "UPDATE"], "resources": ["statefulsets", "statefulsets/scale"],
-                              "resourceNames": [local_workload_name], "scope": "Namespaced"}]},
+                              "resourceNames": [scale_workload], "scope": "Namespaced"}]},
                           "matchConditions": [{"name": "owned-namespace", "expression": "request.namespace == '" + namespace + "'"}],
                           # ScaleSpec.replicas is a zero-valued int32 with json omitempty.
                           # https://github.com/kubernetes/api/blob/v0.34.3/autoscaling/v1/types.go
                           "validations": [{"expression": "!has(object.spec.replicas) || object.spec.replicas in [0, 1]",
-                                           "message": "the owned Local workload permits only zero or one replica; scale is not fencing"}]}})
+                                           "message": "the owned " + scale_mode + " workload permits only zero or one replica; scale is not fencing"}]}})
         items.append({"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingAdmissionPolicyBinding",
                       "metadata": metadata(scale_name + "-binding"), "spec": {"policyName": scale_name,
                           "validationActions": ["Deny"], "matchResources": {"namespaceSelector": selector}}})
@@ -476,15 +537,19 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--service-account", required=True)
-    parser.add_argument("--anchor-service-account", required=True)
+    parser.add_argument("--anchor-service-account", help="separate recovery authority; required for HA/Local, optional explicit recovery opt-in for standalone")
     parser.add_argument("--anchor-configmap", required=True)
     parser.add_argument("--cluster-id", required=True)
     parser.add_argument("--data-mode", choices=("standalone", "ha", "local"), default="standalone")
     parser.add_argument("--local-workload-name")
+    parser.add_argument("--standalone-workload-name", help="cap this durable standalone StatefulSet and its scale subresource at one replica; not fencing")
     identity = parser.add_mutually_exclusive_group()
     identity.add_argument("--storage-id")
     parser.add_argument("--provider")
     parser.add_argument("--endpoint", default="")
+    parser.add_argument("--azure-storage-account", default="")
+    parser.add_argument("--azure-blob-endpoint", default="")
+    parser.add_argument("--azure-emulator", action="store_true", help="identity only for an explicit local HTTP loopback emulator; never a production chart setting")
     parser.add_argument("--bucket")
     parser.add_argument("--prefix")
     parser.add_argument("--approved-api-image", action="append", default=[])
@@ -492,15 +557,20 @@ def main(argv=None):
     if args.storage_id is None:
         if not args.provider or not args.bucket or not args.prefix:
             parser.error("--provider, --bucket, and --prefix are required without --storage-id")
-        identity_value = storage_id(args.provider, args.endpoint, args.bucket, args.prefix, args.cluster_id, args.data_mode)
-    elif args.provider or args.bucket or args.prefix or args.endpoint:
+        try:
+            identity_value = storage_id(args.provider, args.endpoint, args.bucket, args.prefix, args.cluster_id, args.data_mode,
+                                        args.azure_storage_account, args.azure_blob_endpoint, args.azure_emulator)
+        except ValueError as error:
+            parser.error(str(error))
+    elif args.provider or args.bucket or args.prefix or args.endpoint or args.azure_storage_account or args.azure_blob_endpoint or args.azure_emulator:
         parser.error("storage inputs cannot accompany --storage-id")
     else:
         identity_value = args.storage_id
     try:
         output = render(args.namespace, args.service_account, args.anchor_configmap, args.cluster_id,
                         identity_value, args.approved_api_image, anchor_service_account=args.anchor_service_account,
-                        data_mode=args.data_mode, local_workload_name=args.local_workload_name)
+                        data_mode=args.data_mode, local_workload_name=args.local_workload_name,
+                        standalone_workload_name=args.standalone_workload_name)
     except ValueError as error:
         parser.error(str(error))
     json.dump(output, sys.stdout, sort_keys=True, separators=(",", ":"))

@@ -66,6 +66,43 @@ class TrustGuardRendererTest(unittest.TestCase):
         self.assertEqual(trustguard.storage_id("s3", "", "b", "//p", "c", "local"),
                          trustguard.storage_id("s3", "", "b", "/p", "c", "local"))
 
+    def test_azure_identity_binds_account_effective_url_and_go_json(self):
+        endpoint = "https://account123.blob.core.windows.net"
+        prefix = "p<&>\u2028\u2029"
+        encoded = '["azure","account123","https://account123.blob.core.windows.net","container","p\\u003c\\u0026\\u003e\\u2028\\u2029","cluster"]'.encode()
+        expected = hashlib.sha256(encoded).hexdigest()
+        args = ("azure", "", "container", prefix, "cluster")
+        self.assertEqual(trustguard.storage_id(*args, azure_storage_account="account123"), expected)
+        self.assertEqual(trustguard.storage_id(*args, azure_storage_account="account123", azure_blob_endpoint=endpoint), expected)
+        self.assertNotEqual(trustguard.storage_id(*args, azure_storage_account="account456"), expected)
+        local = trustguard.storage_id(*args, data_mode="local", azure_storage_account="account123")
+        local_base = trustguard.storage_id("azure", "", "container", prefix + "/cluster/local/v1", "cluster", azure_storage_account="account123")
+        self.assertEqual(local, hashlib.sha256(b"ternal-local-v1\x00" + local_base.encode()).hexdigest())
+
+    def test_azure_identity_rejects_ambiguous_or_credential_urls(self):
+        for endpoint in ("https://account123.blob.core.windows.net/", "http://account123.blob.core.windows.net",
+                         "https://user:secret@account123.blob.core.windows.net", "https://account123.blob.core.windows.net?sig=secret",
+                         "https://account123.blob.core.windows.net#fragment", "https://ACCOUNT123.blob.core.windows.net",
+                         "https://account123.blob.core.windows.net:", "https://account123.blob.core.windows.net:0",
+                         "https://account123.blob.core.windows.net:65536"):
+            with self.assertRaises(ValueError):
+                trustguard.storage_id("azure", "", "container", "prefix", "cluster", azure_storage_account="account123", azure_blob_endpoint=endpoint)
+        for kwargs in ({}, {"azure_storage_account": "INVALID"}, {"azure_storage_account": "account123", "azure_blob_endpoint": "http://127.0.0.1:4577/account123"}):
+            with self.assertRaises(ValueError):
+                trustguard.storage_id("azure", "", "container", "prefix", "cluster", **kwargs)
+        with self.assertRaises(ValueError):
+            trustguard.storage_id("azure", "generic.invalid", "container", "prefix", "cluster", azure_storage_account="account123")
+        with self.assertRaises(ValueError):
+            trustguard.storage_id("s3", "", "bucket", "prefix", "cluster", azure_storage_account="account123")
+        self.assertEqual(trustguard.azure_location("devstoreaccount1", "http://127.0.0.1:4577/devstoreaccount1", True),
+                         "http://127.0.0.1:4577/devstoreaccount1")
+        self.assertEqual(trustguard.azure_location("devstoreaccount1", "http://127.0.0.2:4577/devstoreaccount1", True),
+                         "http://127.0.0.2:4577/devstoreaccount1")
+        self.assertEqual(trustguard.azure_location("account123", "https://account123.blob.core.windows.net:443"),
+                         "https://account123.blob.core.windows.net:443")
+        with self.assertRaises(ValueError):
+            trustguard.azure_location("devstoreaccount1", "http://[::1%25lo0]:4577/devstoreaccount1", True)
+
     def local_render(self):
         return trustguard.render("ternal-test", "ternal-data", "ternal-trust-anchor", "ternal-cluster-a1", "b" * 64,
                                  [IMAGE], token=TOKEN, anchor_service_account=ANCHOR_SA,
@@ -89,6 +126,25 @@ class TrustGuardRendererTest(unittest.TestCase):
         self.assertEqual(policy["spec"]["validations"][0]["expression"], "!has(object.spec.replicas) || object.spec.replicas in [0, 1]")
         self.assertNotIn("label", json.dumps(policy))
 
+    def test_standalone_scale_guard_is_opt_in_and_exact_name_bound(self):
+        result = trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, [IMAGE],
+                                  anchor_service_account=ANCHOR_SA, standalone_workload_name="single")
+        policy = next(item for item in self.by_kind(result, "ValidatingAdmissionPolicy")
+                      if "standalone-scale" in item["metadata"]["name"])
+        rule = policy["spec"]["matchConstraints"]["resourceRules"][0]
+        self.assertEqual(rule["resources"], ["statefulsets", "statefulsets/scale"])
+        self.assertEqual(rule["resourceNames"], ["single"])
+        self.assertEqual(policy["spec"]["matchConditions"][0]["expression"], "request.namespace == 'ns'")
+        self.assertEqual(policy["spec"]["validations"][0]["expression"], "!has(object.spec.replicas) || object.spec.replicas in [0, 1]")
+        self.assertIn("not fencing", policy["spec"]["validations"][0]["message"])
+        self.assertFalse(any("standalone-scale" in item["metadata"]["name"] for item in self.render()["items"]))
+        for mode in ("ha", "local"):
+            with self.assertRaisesRegex(ValueError, "standalone workload name requires standalone mode"):
+                trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, [IMAGE],
+                                  anchor_service_account=ANCHOR_SA, data_mode=mode,
+                                  local_workload_name="local" if mode == "local" else None,
+                                  standalone_workload_name="single")
+
     def test_local_init_envelope_and_main_readonly_mount_guards_are_rendered(self):
         for policy in self.api_policies(self.local_render()):
             variables = {item["name"]: item["expression"] for item in policy["spec"]["variables"]}
@@ -97,7 +153,7 @@ class TrustGuardRendererTest(unittest.TestCase):
             self.assertFalse(any("OIDC" in name or "ADMIN_TOKEN" in name or "SESSION_KEY" in name for name in names))
             initializer = variables["approvedLocalInitContainers"]
             for required in ("c.name == 'ternal-local-restore'", "c.command == ['/usr/local/bin/ternal-api']",
-                             "c.args == ['local-restore']", "c.env.size() == 21", "c.securityContext.runAsUser == 65532",
+                             "c.args == ['local-restore']", "c.env.size() == variables.localRequiredDataNames.size() + variables.localRequiredCredentialNames.size() + 1", "c.securityContext.runAsUser == 65532",
                              "c.securityContext.readOnlyRootFilesystem", "!has(c.lifecycle)", "!has(m.subPath)",
                              "!has(m.subPathExpr)", "variables.serviceAccountVolumes.exists(v, v.name == m.name)",
                              "c.volumeMounts.filter(m, m.name == 'data' && m.mountPath == '/data' && (!has(m.readOnly) || !m.readOnly)).size() == 1"):
@@ -123,6 +179,21 @@ class TrustGuardRendererTest(unittest.TestCase):
                 self.assertIn("request.name == 'ternal-local-0'", envelope)
             else:
                 self.assertIn("request.resource.resource == 'statefulsets'", envelope)
+
+    def test_local_azure_env_remains_exact_and_secret_referenced(self):
+        for policy in self.api_policies(self.local_render()):
+            variables = {item["name"]: item["expression"] for item in policy["spec"]["variables"]}
+            public = json.loads(variables["localAzureDataNames"])
+            credentials = json.loads(variables["localAzureCredentialNames"])
+            self.assertEqual(len(public), 6)
+            self.assertEqual(credentials, ["TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT_KEY", "TERNAL_OBJECT_STORE_AZURE_CONNECTION_STRING", "TERNAL_OBJECT_STORE_AZURE_CLIENT_SECRET"])
+            self.assertFalse(any(name in public for name in credentials))
+            self.assertFalse(any("OIDC" in name or "SESSION_KEY" in name or "ADMIN_TOKEN" in name for name in public + credentials))
+            self.assertIn("e.value == 'azure'", variables["localAzure"])
+            self.assertEqual(variables["localRequiredCredentialNames"], "variables.localAzure ? variables.localAzureCredentialNames : variables.localCredentialNames")
+            initializer = variables["approvedLocalInitContainers"]
+            self.assertIn("e.valueFrom.secretKeyRef.key == e.name", initializer)
+            self.assertIn("TERNAL_OBJECT_STORE_AZURE_EMULATOR' && e.value == '0'", initializer)
 
     def test_local_ephemeral_subresource_and_extra_container_guards_are_rendered(self):
         for policy in self.api_policies(self.local_render()):
@@ -279,8 +350,41 @@ class TrustGuardRendererTest(unittest.TestCase):
             trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, ["ghcr.io/mrchypark/ternal:old"], token=TOKEN, anchor_service_account=ANCHOR_SA)
         with self.assertRaises(ValueError):
             trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, [], token=TOKEN, anchor_service_account=ANCHOR_SA)
+        for mode in ("ha", "local"):
+            with self.assertRaisesRegex(ValueError, "recovery anchor service account is required"):
+                trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, [IMAGE], token=TOKEN,
+                                  data_mode=mode, local_workload_name="local" if mode == "local" else None)
+
+    def test_standalone_without_recovery_keeps_anchor_guards_but_no_recovery_rbac(self):
+        result = trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, [IMAGE], token=TOKEN)
+        self.assertEqual(len(self.by_kind(result, "Role")), 1)
+        bindings = self.by_kind(result, "RoleBinding")
+        self.assertEqual(len(bindings), 1)
+        self.assertEqual(bindings[0]["subjects"][0]["name"], "api")
+        policies = self.by_kind(result, "ValidatingAdmissionPolicy")
+        anchor = next(p for p in policies if "anchor-policy" in p["metadata"]["name"])
+        expressions = [v["expression"] for v in anchor["spec"]["validations"]]
+        self.assertEqual(expressions[0], "request.operation != 'DELETE'")
+        self.assertIn("false && oldObject.data['pendingEpoch']", expressions[3])
+        self.assertIn("false && oldObject.data['recoveryTransition']", expressions[3])
+        self.assertNotIn("request.userInfo.username", expressions[3])
+        for policy in self.api_policies(result):
+            self.assertEqual(policy["spec"]["failurePolicy"], "Fail")
+            expressions = [v["expression"] for v in policy["spec"]["validations"]]
+            self.assertIn("variables.anchorContainers.size() == 0 || false", expressions)
+            self.assertTrue(any("must directly bind" in v["message"] for v in policy["spec"]["validations"]))
+            self.assertTrue(any("API image is not approved" in v["message"] for v in policy["spec"]["validations"]))
+
+    def test_explicit_recovery_authority_is_preserved_and_empty_is_not_omission(self):
+        args = ("ternal-test", "ternal-data", "ternal-trust-anchor", "ternal-cluster-a1", "b" * 64, [IMAGE])
+        for mode in ("standalone", "ha"):
+            result = trustguard.render(*args, token=TOKEN, anchor_service_account=ANCHOR_SA, data_mode=mode)
+            self.assertEqual(result, self.render())
+            self.assertEqual(len(self.by_kind(result, "Role")), 2)
+            subjects = [item["subjects"][0]["name"] for item in self.by_kind(result, "RoleBinding")]
+            self.assertEqual(subjects, ["ternal-data", ANCHOR_SA])
         with self.assertRaises(ValueError):
-            trustguard.render("ns", "api", "anchor", "cluster", "a" * 64, [IMAGE], token=TOKEN)
+            trustguard.render(*args, token=TOKEN, anchor_service_account="")
 
     def test_recovery_identity_must_differ_from_application_identity(self):
         with self.assertRaisesRegex(ValueError, "must differ"):

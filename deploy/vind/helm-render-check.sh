@@ -216,6 +216,69 @@ helm template ternal "$chart" \
 grep -q '^      serviceAccountName: "ternal-gcs"$' "$tmp/ha-gcs.yaml"
 grep -q 'TERNAL_OBJECT_STORE_PROVIDER: "gcs"' "$tmp/ha-gcs.yaml"
 
+# Azure routing identifiers are public; all authentication secrets remain in an
+# existing Secret and never become ConfigMap data or Helm credential values.
+azure_render() {
+	helm template ternal-azure "$chart" --set image.tag=render-check \
+		--set data.mode=ha --set-string data.clusterID=ternal-azure-a1 \
+		--set data.objectStore.provider=azure --set-string data.objectStore.bucket=ternal-archive \
+		--set-string data.objectStore.azure.storageAccount=account123 \
+		--set-string data.trustAnchorConfigMap=ternal-azure-trust \
+		--set-string serviceAccountName=ternal-azure-data \
+		--set-string secrets.existingSecret=ternal-azure-runtime "$@"
+}
+azure_render >"$tmp/azure-ha.yaml"
+azure_render --set data.mode=standalone --set data.requireObjectStore=true >"$tmp/azure-standalone.yaml"
+azure_render --set data.mode=local --set-string "image.digest=$digest" \
+	--set data.local.writerGCQuiescenceAcknowledged=true >"$tmp/azure-local.yaml"
+for mode in ha standalone local; do
+	grep -q 'TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT: "account123"' "$tmp/azure-$mode.yaml"
+	grep -q 'TERNAL_OBJECT_STORE_AZURE_BLOB_ENDPOINT: "https://account123.blob.core.windows.net"' "$tmp/azure-$mode.yaml"
+	if yq 'select(.kind=="ConfigMap") | .data | keys | .[]' "$tmp/azure-$mode.yaml" | grep -Eq 'AZURE_(STORAGE_ACCOUNT_KEY|CONNECTION_STRING|CLIENT_SECRET)$'; then
+		echo "Azure credential name leaked into ConfigMap data" >&2; exit 1
+	fi
+done
+yq 'select(.kind=="StatefulSet") | .spec.template.spec.initContainers[0]' "$tmp/azure-local.yaml" >"$tmp/azure-init.yaml"
+[ "$(yq '.env | length' "$tmp/azure-init.yaml")" = 27 ]
+[ "$(yq '.envFrom | length' "$tmp/azure-init.yaml")" = 0 ]
+for key in STORAGE_ACCOUNT_KEY CONNECTION_STRING CLIENT_SECRET; do
+	[ "$(yq ".env[] | select(.name==\"TERNAL_OBJECT_STORE_AZURE_$key\") | .valueFrom.secretKeyRef.name" "$tmp/azure-init.yaml")" = ternal-azure-runtime ]
+	[ "$(yq ".env[] | select(.name==\"TERNAL_OBJECT_STORE_AZURE_$key\") | .valueFrom.secretKeyRef.key" "$tmp/azure-init.yaml")" = "TERNAL_OBJECT_STORE_AZURE_$key" ]
+done
+if yq '.env[].name' "$tmp/azure-init.yaml" | grep -Eq 'OIDC|SESSION_KEY|ADMIN_TOKEN|CLUSTER_MEMBERS|^TERNAL_OBJECT_STORE_(ACCESS_KEY|SECRET_KEY|SESSION_TOKEN)$'; then
+	echo "Azure init received unrelated application or S3 credentials" >&2; exit 1
+fi
+azure_identity=$(yq 'select(.kind=="StatefulSet") | .spec.selector.matchLabels."ternal.dev/data-identity"' "$tmp/azure-ha.yaml")
+azure_explicit=$(azure_render --set-string data.objectStore.azure.blobEndpoint=https://account123.blob.core.windows.net | yq 'select(.kind=="StatefulSet") | .spec.selector.matchLabels."ternal.dev/data-identity"')
+[ "$azure_identity" = "$azure_explicit" ] || { echo "default/explicit Azure service URL changed identity" >&2; exit 1; }
+azure_other=$(azure_render --set-string data.objectStore.azure.storageAccount=account456 | yq 'select(.kind=="StatefulSet") | .spec.selector.matchLabels."ternal.dev/data-identity"')
+[ "$azure_identity" != "$azure_other" ] || { echo "Azure account failed to change identity" >&2; exit 1; }
+azure_auth=$(azure_render --set-string data.objectStore.azure.clientID=public-client-id | yq 'select(.kind=="StatefulSet") | .spec.selector.matchLabels."ternal.dev/data-identity"')
+[ "$azure_identity" = "$azure_auth" ] || { echo "Azure auth identifier leaked into immutable location identity" >&2; exit 1; }
+for invalid in \
+	'--set-string data.objectStore.azure.storageAccount=' \
+	'--set-string data.objectStore.azure.storageAccount=INVALID' \
+	'--set-string data.objectStore.endpoint=generic.invalid' \
+	'--set data.objectStore.insecure=true' \
+	'--set-string data.objectStore.azure.blobEndpoint=http://127.0.0.1:4577/account123' \
+	'--set-string data.objectStore.azure.blobEndpoint=https://account123.blob.core.windows.net/' \
+	'--set-string data.objectStore.azure.blobEndpoint=https://account123.blob.core.windows.net:' \
+	'--set-string data.objectStore.azure.blobEndpoint=https://account123.blob.core.windows.net:0' \
+	'--set-string data.objectStore.azure.blobEndpoint=https://account123.blob.core.windows.net:65536' \
+	'--set-string data.objectStore.azure.blobEndpoint=https://user:credential@account123.blob.core.windows.net' \
+	'--set-string data.objectStore.azure.blobEndpoint=https://account123.blob.core.windows.net?sig=credential' \
+	'--set-string data.objectStore.azure.storageAccountKey=not-a-real-secret' \
+	'--set-string data.objectStore.azure.connectionString=not-a-real-secret' \
+	'--set-string data.objectStore.azure.clientSecret=not-a-real-secret' \
+	'--set data.objectStore.azure.emulator=true' \
+	'--set-string secrets.existingSecret=' \
+	'--set operator.enabled=true'; do
+	# shellcheck disable=SC2086
+	if azure_render $invalid >"$tmp/azure-invalid.yaml" 2>"$tmp/azure-invalid.err"; then
+		echo "unsafe Azure render accepted: $invalid" >&2; exit 1
+	fi
+done
+
 for invalid in \
 	'--set data.mode=ha --set-string secrets.existingSecret=ternal-runtime --set data.objectStore.provider=s3 --set data.objectStore.bucket=ternal-ha' \
 	'--set data.mode=ha --set-string data.clusterID=ternal-ha-a1 --set data.objectStore.provider=s3 --set data.objectStore.bucket=ternal-ha' \
@@ -391,6 +454,64 @@ for invalid in \
 	# shellcheck disable=SC2086
 	if local_render $invalid >"$tmp/local-invalid.yaml" 2>"$tmp/local-invalid.err"; then
 		echo "unsafe Local configuration accepted: $invalid" >&2; exit 1
+	fi
+done
+
+single_node_render() {
+	helm template ternal-single "$chart" --namespace single-test -f "$chart/values-single-node.yaml" \
+		--set-string "image.digest=$digest" --set-string secrets.existingSecret=single-runtime \
+		--set-string serviceAccountName=single-api --set-string data.trustAnchorConfigMap=single-trust \
+		--set-string data.clusterID=single-test --set data.objectStore.provider=s3 \
+		--set-string data.objectStore.bucket=single-bucket "$@"
+}
+single_node_render >"$tmp/single.yaml"
+yq 'select(.kind=="StatefulSet")' "$tmp/single.yaml" >"$tmp/single-sts.yaml"
+yq '.spec.template.spec.containers[] | select(.name=="ternal-api")' "$tmp/single-sts.yaml" >"$tmp/single-api.yaml"
+[ "$(yq '.spec.replicas' "$tmp/single-sts.yaml")" = 1 ]
+[ "$(yq '.spec.updateStrategy.type' "$tmp/single-sts.yaml")" = OnDelete ]
+[ "$(yq '.spec.template.spec.initContainers | length' "$tmp/single-sts.yaml")" = 0 ]
+[ "$(yq '.spec.template.spec.volumes | length' "$tmp/single-sts.yaml")" = 1 ]
+[ "$(yq '.spec.template.spec.volumes[0].emptyDir' "$tmp/single-sts.yaml")" = '{}' ]
+[ "$(yq '.args | length' "$tmp/single-api.yaml")" = 0 ]
+[ "$(yq '.envFrom[0].configMapRef.name' "$tmp/single-api.yaml")" != null ]
+[ "$(yq '.envFrom[1].secretRef.name' "$tmp/single-api.yaml")" = single-runtime ]
+[ "$(yq '.env | length' "$tmp/single-api.yaml")" = "$(yq '.env | map(.name) | unique | length' "$tmp/single-api.yaml")" ]
+yq '.env | map({"key": .name, "value": .value}) | from_entries' "$tmp/single-api.yaml" >"$tmp/single-direct.yaml"
+[ "$(yq '.TERNAL_DATA_LOCAL' "$tmp/single-direct.yaml")" = 0 ]
+[ "$(yq '.TERNAL_DATA_MULTI_NODE' "$tmp/single-direct.yaml")" = 0 ]
+[ "$(yq '.TERNAL_OBJECT_STORE_DURABILITY' "$tmp/single-direct.yaml")" = before-ack ]
+[ "$(yq '.TERNAL_DATA_CLUSTER_ID' "$tmp/single-direct.yaml")" = single-test ]
+[ "$(yq '.TERNAL_OBJECT_STORE_BUCKET' "$tmp/single-direct.yaml")" = single-bucket ]
+[ "$(yq '.TERNAL_DATA_CLUSTER_MEMBERS' "$tmp/single-direct.yaml")" = '' ]
+[ "$(yq '.TERNAL_OPERATOR_BIND' "$tmp/single-direct.yaml")" = '' ]
+# Model Kubernetes precedence: ConfigMap, stale Secret, then direct env. Every
+# public value and mode pin must survive. The process bridge ignores stale
+# upstream aliases outside explicit HA, so standalone must not project any.
+yq 'select(.kind=="ConfigMap") | .data' "$tmp/single.yaml" >"$tmp/single-config.yaml"
+yq 'with_entries(.value = "stale-runtime-secret")' "$tmp/single-direct.yaml" >"$tmp/single-stale.yaml"
+yq eval-all '. as $item ireduce ({}; . * $item)' "$tmp/single-config.yaml" "$tmp/single-stale.yaml" "$tmp/single-direct.yaml" >"$tmp/single-effective.yaml"
+yq 'sort_keys(.)' "$tmp/single-direct.yaml" >"$tmp/single-direct-sorted.yaml"
+yq 'sort_keys(.)' "$tmp/single-effective.yaml" >"$tmp/single-effective-sorted.yaml"
+cmp "$tmp/single-direct-sorted.yaml" "$tmp/single-effective-sorted.yaml"
+upstream=RHIZA
+if yq '.env[].name' "$tmp/single-api.yaml" | grep -q "^${upstream}_"; then
+	echo "standalone unnecessarily projects Operator identity aliases" >&2; exit 1
+fi
+for provider in gcs azure; do
+	single_node_render --set "data.objectStore.provider=$provider" --set-string data.objectStore.azure.storageAccount=account123 >"$tmp/single-$provider.yaml"
+	[ "$(yq 'select(.kind=="StatefulSet") | .spec.template.spec.containers[0].env | map(.name) | unique | length' "$tmp/single-$provider.yaml")" = "$(yq 'select(.kind=="StatefulSet") | .spec.template.spec.containers[0].env | length' "$tmp/single-$provider.yaml")" ]
+done
+[ "$(yq 'select(.kind=="StatefulSet") | .spec.template.spec.containers[0].env[] | select(.name=="TERNAL_OBJECT_STORE_AZURE_BLOB_ENDPOINT") | .value' "$tmp/single-azure.yaml")" = https://account123.blob.core.windows.net ]
+for invalid in \
+	'--set data.mode=ha' '--set data.mode=local' \
+	'--set data.requireObjectStore=false' '--set operator.enabled=true' '--set anchor.enabled=true' \
+	'--set persistence.enabled=true' '--set data.objectStore.durability=async' \
+	'--set-string data.objectStore.provider=' '--set-string data.objectStore.bucket=' \
+	'--set-string data.clusterID=' '--set-string data.trustAnchorConfigMap=' \
+	'--set-string serviceAccountName=' '--set-string secrets.existingSecret=' '--set-string image.digest='; do
+	# shellcheck disable=SC2086
+	if single_node_render $invalid >"$tmp/single-invalid.yaml" 2>"$tmp/single-invalid.err"; then
+		echo "unsafe durable single-node configuration accepted: $invalid" >&2; exit 1
 	fi
 done
 

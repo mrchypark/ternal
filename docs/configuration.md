@@ -91,6 +91,24 @@ Optional object-store settings use the same suffixes under
 `REGION`, `INSECURE`, `ACCESS_KEY`, `SECRET_KEY`, `SESSION_TOKEN`, `DURABILITY`,
 `SYNC_INTERVAL`, and `BATCH_DELAY`.
 
+Azure Blob uses `PROVIDER=azure` and `BUCKET` as the container name. Its
+additional suffixes are `AZURE_STORAGE_ACCOUNT` (required),
+`AZURE_BLOB_ENDPOINT`, `AZURE_STORAGE_ACCOUNT_KEY`, `AZURE_CONNECTION_STRING`,
+`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and
+`AZURE_USER_ASSIGNED_ID`. The public effective Blob URL defaults to
+`https://<account>.blob.core.windows.net`. URLs must be canonical: no userinfo,
+query/SAS, fragment, whitespace, path, empty/out-of-range port, or trailing slash.
+Generic `ENDPOINT` and `INSECURE` overrides are rejected for Azure.
+
+Use exactly one authentication form: storage account key; account-key connection
+string; complete tenant/client/client-secret tuple; user-assigned identity; or
+the SDK default credential chain with all explicit forms absent. Connection
+strings must declare the same account and effective Blob endpoint; SAS and
+implicit development shortcuts are rejected. Account keys, connection strings
+and client secrets belong only in the external runtime Secret, never in Helm
+values, ConfigMaps, annotations, or storage identity. Ternal's application and
+recovery readers use the same canonical Azure configuration.
+
 ### Local, standalone, and HA
 
 The Helm chart exposes three explicit storage modes:
@@ -98,7 +116,7 @@ The Helm chart exposes three explicit storage modes:
 - `data.mode=local` uses Rhiza `Local:true`, one application writer, and a
   `ternal-api local-restore` init container that verifies authority, opens and
   closes the SDK on the same DataDir before main reopens it. It requires a seeded
-  compatible S3/GCS archive, a dedicated data directory, a mode-separated
+  compatible S3/GCS/Azure archive, a dedicated data directory, a mode-separated
   Kubernetes trust anchor, and explicit external writer/GC quiescence
   acknowledgement. It is not an HA mode or an automatic archive bootstrap.
   See [Local single-node operations](local-single-node.md) before enabling it.
@@ -112,9 +130,27 @@ The Helm chart exposes three explicit storage modes:
   anti-affinity, a two-voter disruption budget, and `OnDelete` updates.
 
 Durable standalone sets `data.requireObjectStore=true`. Local and HA imply that setting.
+Use `deploy/helm/ternal/values-single-node.yaml` for the supported durable
+standalone profile: `data.singleNode.enabled=true`, exactly one replica,
+BeforeAck, an immutable image digest, an external runtime Secret, no PVC and
+no Operator or recovery-anchor Deployment. The default values remain unchanged.
+This profile directly pins public ConfigMap values, storage routing, trust
+binding, mode and disabled Operator listener in the workload env, so stale
+runtime Secret entries cannot change them. Credentials remain only in the
+external Secret. Provision the external guard with `--data-mode=standalone
+--standalone-workload-name=<Helm-release-name>`; the named StatefulSet and
+its scale subresource allow zero or one replica. This is not fencing and does
+not prevent another controller or namespace from using the same archive.
+Normal standalone omits `--anchor-service-account` and renders no recovery
+RBAC. Supplying that existing argument explicitly enables a separate recovery
+authority; HA/Local retain their existing requirement and cannot use the API
+ServiceAccount for recovery. Anchor rollback and API image/binding guards remain
+active when recovery is omitted.
+See [single-node operations](local-single-node.md#durable-standalone-profile)
+for first start, graceful restart and empty-cache recovery.
 Every configured object store requires `before-ack` durability; durable
 standalone and HA also require a unique, stable `data.clusterID`, shared
-S3-compatible or GCS storage, `secrets.existingSecret`, an existing
+S3-compatible, GCS or Azure Blob storage, `secrets.existingSecret`, an existing
 `serviceAccountName`, and `data.trustAnchorConfigMap`. The external ConfigMap
 records a monotonic trust epoch independently of object storage. Restoring an
 old bucket snapshot cannot restore a logged-out session or revoked device:
@@ -194,6 +230,41 @@ data:
     durability: before-ack
 ```
 
+For Azure, the public storage block is:
+
+```yaml
+data:
+  objectStore:
+    provider: azure
+    bucket: ternal-checkpoints
+    azure:
+      storageAccount: yourstorageaccount
+      # Optional; this is the default effective URL. No trailing slash.
+      blobEndpoint: https://yourstorageaccount.blob.core.windows.net
+      # Optional public identifiers for the selected authentication form:
+      tenantID: ""
+      clientID: ""
+      userAssignedID: ""
+secrets:
+  existingSecret: ternal-runtime
+```
+
+The Secret keys are `TERNAL_OBJECT_STORE_AZURE_STORAGE_ACCOUNT_KEY`,
+`TERNAL_OBJECT_STORE_AZURE_CONNECTION_STRING`, and
+`TERNAL_OBJECT_STORE_AZURE_CLIENT_SECRET`; set only the selected authentication
+form. The chart cannot inspect the external Secret, so the runtime also rejects
+mixed/incomplete forms. Local init projects only these three optional Secret
+references and the public data configuration, not OIDC/session/admin credentials.
+The same account/effective URL is passed directly to main, init and the legacy
+non-Local anchor. The Helm chart never enables `AZURE_EMULATOR`; HTTP loopback
+path-style connection strings require explicit `TERNAL_OBJECT_STORE_AZURE_EMULATOR=1`
+in isolated local tests only. Azure Operator integration is not qualified and the
+chart rejects `operator.enabled=true` with Azure; this does not relax fencing.
+Managed/default identity is configuration wiring, not a real-cloud qualification.
+In particular, the minimal Local admission envelope does not admit arbitrary
+webhook-added environment variables or extra federated-token audiences; Azure
+federated workload-identity injection is not qualified by this change.
+
 The regular Service sends API traffic only to ready voters. `/ready` performs a
 linearizable read, so an isolated voter remains alive but leaves Service
 endpoints when it cannot reach quorum.
@@ -254,6 +325,17 @@ kubectl apply -f trustguard.json
 ```
 
 The helper prints resources only; it neither creates a bucket nor applies them.
+For Azure replace the storage arguments with `--provider azure
+--azure-storage-account YOUR_ACCOUNT --azure-blob-endpoint
+https://YOUR_ACCOUNT.blob.core.windows.net --bucket YOUR_CONTAINER --prefix
+YOUR_PREFIX`. The Blob endpoint may be omitted only for its default URL.
+The helper hashes `["azure", account, effectiveBlobURL, container, prefix,
+clusterID]`; credentials never enter this tuple. S3/GCS retain their original
+five-field identity. Local first applies its mode-separated namespace and then
+the existing `ternal-local-v1` domain. The helper and SDK both reject trailing
+slashes rather than silently canonicalizing to different identity bytes.
+The helper's `--azure-emulator` option is identity generation for an explicitly
+declared loopback test endpoint, not a production Helm option or a cloud bypass.
 It requires Kubernetes ValidatingAdmissionPolicy v1 support. Create the named
 API service account separately and grant its object-store access. The recovery
 service account must be distinct; the anchor chart creates it when enabled.

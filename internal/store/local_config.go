@@ -39,8 +39,8 @@ func localConfigFromEnv(dataDir string) (rhiza.Config, error) {
 		}
 	}
 	provider := os.Getenv("TERNAL_OBJECT_STORE_PROVIDER")
-	if provider != "s3" && provider != "gcs" {
-		return rhiza.Config{}, fmt.Errorf("Ternal Local mode requires an s3 or gcs archive")
+	if provider != "s3" && provider != "gcs" && provider != "azure" {
+		return rhiza.Config{}, fmt.Errorf("Ternal Local mode requires an s3, gcs or azure archive")
 	}
 	if os.Getenv("TERNAL_LOCAL_WRITER_GC_QUIESCENCE_ACK") != "1" {
 		return rhiza.Config{}, fmt.Errorf("TERNAL_LOCAL_WRITER_GC_QUIESCENCE_ACK=1 is required; the acknowledgement is not fencing proof")
@@ -74,7 +74,7 @@ func localConfigFromEnv(dataDir string) (rhiza.Config, error) {
 	if err != nil {
 		return rhiza.Config{}, err
 	}
-	return rhiza.Config{
+	config := rhiza.Config{
 		Local: true, ClusterID: clusterID, NodeID: envOr("TERNAL_DATA_NODE_ID", "node-1"), DataDir: dataDir,
 		ObjStoreProvider: provider, ObjStoreEndpoint: os.Getenv("TERNAL_OBJECT_STORE_ENDPOINT"),
 		ObjStoreBucket: os.Getenv("TERNAL_OBJECT_STORE_BUCKET"), ObjStorePrefix: prefix,
@@ -82,5 +82,9 @@ func localConfigFromEnv(dataDir string) (rhiza.Config, error) {
 		ObjStoreAccessKey: os.Getenv("TERNAL_OBJECT_STORE_ACCESS_KEY"), ObjStoreSecretKey: os.Getenv("TERNAL_OBJECT_STORE_SECRET_KEY"), ObjStoreSessionToken: os.Getenv("TERNAL_OBJECT_STORE_SESSION_TOKEN"),
 		ObjStoreDurability: rhiza.ObjectStoreDurabilityBeforeAck, ObjStoreSyncInterval: syncInterval,
 		ObjStoreBatchDelay: batchDelay, CheckpointInterval: checkpointInterval,
-	}, nil
+	}
+	if err := applyAzureStorageFromEnv(&config); err != nil {
+		return rhiza.Config{}, err
+	}
+	return config, nil
 }

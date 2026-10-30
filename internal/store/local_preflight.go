@@ -82,6 +82,9 @@ type localDataMode struct {
 }
 
 func localStorageID(c rhiza.Config) string {
+	if c.ObjStoreProvider == "azure" {
+		return localStorageDomain(AzureTrustAnchorStorageID(c.ObjStoreAzureStorageAccount, azureEndpointFromRhiza(c), c.ObjStoreBucket, path.Join(c.ObjStorePrefix, c.ClusterID, "local/v1"), c.ClusterID))
+	}
 	return LocalTrustAnchorStorageID(c.ObjStoreProvider, c.ObjStoreEndpoint, c.ObjStoreBucket, c.ObjStorePrefix, c.ClusterID)
 }
 
@@ -99,7 +102,7 @@ func readLocalArchive(ctx context.Context, bucket objstore.Bucket, c rhiza.Confi
 		return nil, localArchiveView{}, err
 	}
 	if a.Binding.ArchiveLocationHash != "" {
-		return nil, localArchiveView{}, errors.New("Ternal Local supports only remote S3/GCS archive bindings, not copied filesystem archives")
+		return nil, localArchiveView{}, errors.New("Ternal Local supports only remote S3/GCS/Azure archive bindings, not copied filesystem archives")
 	}
 	resolved, err := a.MaintenanceResolved(ctx)
 	if err != nil {
@@ -407,7 +410,7 @@ func prepareLocalOpen(ctx context.Context, c rhiza.Config) (err error) {
 		if err = legacyLocalAuthorityGuard(ctx, c); err != nil {
 			return err
 		}
-		if c.ObjStoreProvider != "s3" && c.ObjStoreProvider != "gcs" {
+		if c.ObjStoreProvider != "s3" && c.ObjStoreProvider != "gcs" && c.ObjStoreProvider != "azure" {
 			return nil
 		}
 	} else {

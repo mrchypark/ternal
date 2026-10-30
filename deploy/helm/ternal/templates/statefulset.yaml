@@ -14,6 +14,8 @@
 {{- $haMode := eq $dataMode "ha" -}}
 {{- $localMode := eq $dataMode "local" -}}
 {{- $local := default dict $data.local -}}
+{{- $singleNode := default dict $data.singleNode -}}
+{{- $singleNodeEnabled := $singleNode.enabled | default false -}}
 {{- $ha := default dict $data.ha -}}
 {{- $trustAnchor := default "" $data.trustAnchorConfigMap -}}
 {{- $operator := default dict .Values.operator -}}
@@ -30,6 +32,20 @@
 {{- end -}}
 {{- if .Values.persistence.enabled -}}
 {{- fail "PVC persistence is unsupported; use Rhiza object storage and keep persistence.enabled=false" -}}
+{{- end -}}
+{{- if $singleNodeEnabled -}}
+{{- if not (and (kindIs "bool" $singleNode.enabled) (eq $dataMode "standalone")) -}}
+{{- fail "data.singleNode.enabled requires data.mode=standalone and a boolean enabled value" -}}
+{{- end -}}
+{{- if not (and (kindIs "bool" $data.requireObjectStore) $data.requireObjectStore) -}}
+{{- fail "data.singleNode requires data.requireObjectStore=true" -}}
+{{- end -}}
+{{- if or $operatorEnabled ((default dict .Values.anchor).enabled | default false) -}}
+{{- fail "data.singleNode requires operator.enabled=false and anchor.enabled=false" -}}
+{{- end -}}
+{{- if not (and $imageDigest .Values.secrets.existingSecret) -}}
+{{- fail "data.singleNode requires image.digest and secrets.existingSecret" -}}
+{{- end -}}
 {{- end -}}
 {{- if and $haMode (not .Values.secrets.existingSecret) -}}
 {{- fail "data.mode=ha requires secrets.existingSecret with TERNAL_DATA_CLUSTER_MEMBERS" -}}
@@ -70,7 +86,7 @@ spec:
   {{- if $haMode }}
   podManagementPolicy: Parallel
   {{- end }}
-  {{- if or $haMode $localMode }}
+  {{- if or $haMode $localMode $singleNodeEnabled }}
   updateStrategy:
     type: OnDelete
   {{- end }}
@@ -134,7 +150,7 @@ spec:
             runAsGroup: 65532
           env:
             {{- include "ternal.localDataEnv" . | nindent 12 }}
-            {{- range $key := list "TERNAL_OBJECT_STORE_ACCESS_KEY" "TERNAL_OBJECT_STORE_SECRET_KEY" "TERNAL_OBJECT_STORE_SESSION_TOKEN" }}
+            {{- range $key := include "ternal.objectStoreCredentialKeys" . | fromJsonArray }}
             - name: {{ $key }}
               valueFrom:
                 secretKeyRef:
@@ -198,9 +214,11 @@ spec:
                 name: {{ include "ternal.dataConfigMapName" . }}
             - secretRef:
                 name: {{ $secretName }}
-          {{- if or $haMode $trustAnchor $operatorEnabled $localMode }}
+          {{- if or $haMode $trustAnchor $operatorEnabled $localMode $singleNodeEnabled (eq $data.objectStore.provider "azure") }}
           env:
-            {{- if $localMode }}
+            {{- if $singleNodeEnabled }}
+            {{- include "ternal.singleNodeEnv" . | nindent 12 }}
+            {{- else if $localMode }}
             {{- include "ternal.localDataEnv" . | nindent 12 }}
             - name: TERNAL_REQUIRE_DATA_ADMIN_TOKEN
               value: "0"
@@ -211,6 +229,9 @@ spec:
               value: {{ $trustAnchor | quote }}
             - name: TERNAL_TRUST_ANCHOR_NAMESPACE
               value: {{ .Release.Namespace | quote }}
+            {{- end }}
+            {{- if and (not $localMode) (not $singleNodeEnabled) }}
+            {{- include "ternal.azurePublicEnv" . | nindent 12 }}
             {{- end }}
             {{- if $haMode }}
             - name: TERNAL_DATA_MULTI_NODE

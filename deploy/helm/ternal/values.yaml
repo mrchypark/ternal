@@ -22,6 +22,9 @@ data:
   # standalone runs one embedded Rhiza voter. ha runs exactly three voters.
   # local is an opt-in, operator-free Local archive path; never an in-place conversion.
   mode: standalone
+  # Opt-in durable single-voter profile; defaults remain ephemeral standalone.
+  singleNode:
+    enabled: false
   local:
     replicas: 1
     # Manual acknowledgement only, not a fencing proof. Stop external writers
@@ -41,7 +44,7 @@ data:
   clusterID: ""
   checkpointInterval: 15m
   objectStore:
-    # Rhiza-certified S3-compatible or native GCS storage is the persistence
+    # Certified S3-compatible, native GCS, or Azure Blob storage is the persistence
     # authority. HA emptyDir WAL/identity loss requires fenced voter recovery.
     provider: ""
     endpoint: ""
@@ -51,6 +54,16 @@ data:
     region: ""
     insecure: false
     durability: before-ack
+    azure:
+      # Public routing/authentication identifiers only. Credentials belong in
+      # secrets.existingSecret, never in Helm values or release history.
+      storageAccount: ""
+      # Empty uses https://<storageAccount>.blob.core.windows.net. HTTPS only,
+      # with no path, credentials, query, fragment, or trailing slash.
+      blobEndpoint: ""
+      tenantID: ""
+      clientID: ""
+      userAssignedID: ""
   ha:
     peerPort: 9090
     # Operator recovery port for rhiza operator management endpoints.

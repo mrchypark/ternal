@@ -6,11 +6,68 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/mrchypark/rhiza"
 )
+
+func TestDurableStandaloneRequiresExplicitBeforeAckBeforeMutation(t *testing.T) {
+	for _, mode := range []string{"", "0"} {
+		for _, durability := range []string{"", "async", "unknown"} {
+			t.Run(mode+"/"+durability, func(t *testing.T) {
+				for _, name := range []string{"TERNAL_DATA_LOCAL", "TERNAL_DATA_CLUSTER_MEMBERS", "TERNAL_DATA_EXPECTED_MEMBER_IDS", "TERNAL_REQUIRE_DATA_ADMIN_TOKEN", "TERNAL_DATA_ADMIN_TOKEN", "TERNAL_OBJECT_STORE_DIR", "TERNAL_OBJECT_STORE_ENDPOINT"} {
+					t.Setenv(name, "")
+				}
+				t.Setenv("TERNAL_DATA_MULTI_NODE", mode)
+				t.Setenv("TERNAL_OBJECT_STORE_PROVIDER", "s3")
+				t.Setenv("TERNAL_OBJECT_STORE_BUCKET", "durable-standalone")
+				t.Setenv("TERNAL_OBJECT_STORE_DURABILITY", durability)
+				dir := filepath.Join(t.TempDir(), "must-not-exist")
+				if _, err := Open(context.Background(), dir); err == nil || !strings.Contains(err.Error(), "explicit before-ack") {
+					t.Fatal("unsafe standalone object-store policy accepted")
+				}
+				if _, err := os.Stat(dir); !os.IsNotExist(err) {
+					t.Fatal("unsafe standalone configuration mutated DataDir")
+				}
+			})
+		}
+	}
+}
+
+func TestDurableStandaloneConfigKeepsSingleVoterAndRejectsStaleHA(t *testing.T) {
+	for _, name := range []string{"TERNAL_DATA_CLUSTER_MEMBERS", "TERNAL_DATA_EXPECTED_MEMBER_IDS", "TERNAL_DATA_ADMIN_TOKEN", "TERNAL_REQUIRE_DATA_ADMIN_TOKEN", "TERNAL_OBJECT_STORE_DIR", "TERNAL_OBJECT_STORE_ENDPOINT"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("TERNAL_DATA_LOCAL", "0")
+	t.Setenv("TERNAL_DATA_MULTI_NODE", "0")
+	t.Setenv("TERNAL_DATA_CLUSTER_ID", "durable-standalone")
+	t.Setenv("TERNAL_DATA_NODE_ID", "standalone-0")
+	t.Setenv("TERNAL_OBJECT_STORE_PROVIDER", "s3")
+	t.Setenv("TERNAL_OBJECT_STORE_BUCKET", "durable-standalone")
+	t.Setenv("TERNAL_OBJECT_STORE_DURABILITY", "before-ack")
+	config, err := rhizaConfigFromEnv(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Local || len(config.Members) != 0 || config.PeerToken != "" || config.ObjStoreDurability != rhiza.ObjectStoreDurabilityBeforeAck || config.ClusterID != "durable-standalone" || config.NodeID != "standalone-0" {
+		t.Fatal("explicit durable standalone configuration changed mode or identity")
+	}
+	for _, name := range []string{"TERNAL_DATA_CLUSTER_MEMBERS", "TERNAL_DATA_EXPECTED_MEMBER_IDS"} {
+		t.Run(name, func(t *testing.T) {
+			value := "previous-ha-0,previous-ha-1,previous-ha-2"
+			if name == "TERNAL_DATA_CLUSTER_MEMBERS" {
+				value = `[{"node_id":"previous-ha-0"}]`
+			}
+			t.Setenv(name, value)
+			if _, err := rhizaConfigFromEnv(t.TempDir()); err == nil || !strings.Contains(err.Error(), "requires TERNAL_DATA_MULTI_NODE=1") {
+				t.Fatal("stale HA membership silently adopted by standalone")
+			}
+		})
+	}
+}
 
 func TestWaitUntilReady(t *testing.T) {
 	checks := 0
