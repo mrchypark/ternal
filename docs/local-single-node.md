@@ -94,7 +94,7 @@ or actual Kubernetes admission execution. Those require their own evidence.
 ## True Local mode (seeded archive)
 
 Ternal's explicit `data.mode=local` / `TERNAL_DATA_LOCAL=1` path uses the
-published Rhiza v0.21.2 `Local:true` SDK. It has one writer, no voter listeners,
+published Rhiza v0.24.0 `Local:true` SDK. It has one writer, no voter listeners,
 no peer membership, and no Operator. The existing `standalone` mode still runs
 one embedded voter with `Local:false`; HA still runs three voters. None of
 their defaults change.
@@ -108,7 +108,7 @@ Local archive recovery-anchor service.
 ## Prerequisites and safety boundary
 
 Use a fresh dedicated DataDir, object-store prefix, cluster ID, and external
-trust anchor. Rhiza v0.21 changes the Local archive format for all providers;
+trust anchor. Rhiza v0.21 changed the Local archive format for all providers;
 there is no automatic migration, adoption, cleanup, or downgrade. Never point
 this configuration at a legacy archive or unknown nonempty directory.
 
@@ -212,22 +212,18 @@ binding/configuration, not the old tip, snapshot, or prefix hash: the same write
 may legitimately have advanced history. The independently opened SDK and trust
 anchor remain responsible for validating current history and readiness.
 
-This follows the published [init-container guide](https://github.com/mrchypark/rhiza/blob/v0.21.2/docs/local-init-container-recovery.md).
+This follows the published [init-container guide](https://github.com/mrchypark/rhiza/blob/v0.24.0/docs/local-init-container-recovery.md).
 Ternal deliberately retains its stricter seeded-checkpoint and external-trust
 requirements; this command does not implement the SDK's empty-archive adoption.
 Read-only preflight downloads verification evidence before the SDK restore, so
 it is not a download-avoidance optimization or a typed staging handoff.
 
-Rhiza v0.21.2 corrects Local maintenance release acknowledgement handling without
-changing public APIs, archive format, identity, or receipts. If the active
-holder's conditional release upload returns an error, bounded stable readback
-must prove the exact expected free control at a changed object version before
-release completion is accepted. The upload timeout is unchanged; work errors,
-cancellation, and uncertain operations remain fail-closed. This does not let a
-new process clear an orphaned held token or bypass Ternal's guards.
-The [release notes](https://github.com/mrchypark/rhiza/releases/tag/v0.21.2) retain
-earlier S3 failure evidence and describe upstream emulator qualification. Those
-results are not Ternal production-cloud or operational recovery qualification.
+Rhiza v0.24.0 requires Go 1.27.4 and keeps Local archive format 2. Ternal does
+not migrate, adopt, or downgrade archives. The Local path remains one writer,
+object-store backed, and fail-closed when holder, trust state, or archive
+continuity is uncertain. [Rhiza v0.24.0 release notes](https://github.com/mrchypark/rhiza/releases/tag/v0.24.0)
+cover managed HA membership changes, not a Ternal production-cloud recovery
+qualification.
 
 ## Identity, rollback, and retention
 
