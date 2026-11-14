@@ -70,8 +70,8 @@ data:
     # Only used in HA mode when operator.enabled is true.
     operatorPort: 9091
 
-# Rhiza operator for HA observation and recovery preparation.
-# Requires data.mode=ha and a shared object store.
+# The legacy Operator path is not qualified with Rhiza v0.24. Its managed
+# v1alpha2 contract is not rendered by this chart; keep it disabled.
 operator:
   enabled: false
   # Annotations for the operator ServiceAccount. Use for GCS Workload Identity
@@ -79,10 +79,12 @@ operator:
   serviceAccountAnnotations: {}
   image:
     repository: ghcr.io/mrchypark/rhiza-operator
+    # This legacy image is intentionally not consumed: operator.enabled is
+    # rejected until this chart has a qualified v1alpha2 integration.
     tag: v0.20.0
     digest: ""
     pullPolicy: IfNotPresent
-  # Not yet qualified. The operator template rejects true. See docs/rhiza-ha.md.
+  # Unqualified until this chart implements and qualifies v1alpha2 resources.
   automaticRecovery: false
   pollInterval: 10s
   # The published operator image targets linux/amd64.

@@ -22,9 +22,8 @@ import (
 	"github.com/thanos-io/objstore"
 )
 
-// TestRhizaProviderContract runs only against an explicitly selected local
-// emulator; an ordinary unit-test run must never discover cloud credentials.
-func TestRhizaProviderContract(t *testing.T) {
+func providerContractSetup(t *testing.T) (context.Context, objstore.Bucket) {
+	t.Helper()
 	provider := os.Getenv("TERNAL_TEST_PROVIDER")
 	if provider == "" {
 		t.Skip("set TERNAL_TEST_PROVIDER, TERNAL_TEST_ENDPOINT and TERNAL_TEST_BUCKET for local emulator coverage")
@@ -111,6 +110,13 @@ func TestRhizaProviderContract(t *testing.T) {
 			t.Error(err)
 		}
 	})
+	return ctx, bucket
+}
+
+// TestRhizaProviderContract runs only against an explicitly selected local
+// emulator; an ordinary unit-test run must never discover cloud credentials.
+func TestRhizaProviderContract(t *testing.T) {
+	ctx, bucket := providerContractSetup(t)
 	t.Run("actual-adapter-operations", func(t *testing.T) {
 		name := "contract/" + uuid.NewString()
 		if _, err := bucket.Get(ctx, name); !bucket.IsObjNotFoundErr(err) {
@@ -147,6 +153,15 @@ func TestRhizaProviderContract(t *testing.T) {
 		closeErr := reader.Close()
 		if readErr != nil || closeErr != nil || string(body) != "second" {
 			t.Fatalf("get = %q, read error = %v, close error = %v", body, readErr, closeErr)
+		}
+		reader, err = bucket.GetRange(ctx, name, 1, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr = io.ReadAll(reader)
+		closeErr = reader.Close()
+		if readErr != nil || closeErr != nil || string(body) != "eco" {
+			t.Fatalf("range get = %q, read error = %v, close error = %v", body, readErr, closeErr)
 		}
 		found := false
 		if err := bucket.Iter(ctx, "contract/", func(entry string) error { found = found || entry == name; return nil }); err != nil || !found {
@@ -292,13 +307,19 @@ func TestRhizaProviderContract(t *testing.T) {
 		if _, err := seed.ExecContext(ctx, "CREATE TABLE provider_seed (id INTEGER PRIMARY KEY)"); err != nil {
 			t.Fatal(err)
 		}
-		// The public SDK checkpoints on a timer, not through a synchronous DB
-		// method. Give the fixture a bounded publication window, then quiesce it.
-		// Never poll a second archive view while the seed writer is maintaining it.
-		select {
-		case <-time.After(time.Second):
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
+		// The public SDK checkpoints on a timer. Wait for a certified snapshot
+		// through a read-only view before closing the writer, then verify it again
+		// after quiescence before starting either init phase.
+		checkpointCtx, cancelCheckpoint := context.WithTimeout(ctx, 30*time.Second)
+		var checkpointErr error
+		err = waitUntilReady(checkpointCtx, func() bool {
+			archive, err := recovery.OpenLocalArchive(checkpointCtx, readOnlyLocalBucket{bucket}, localNamespace(config))
+			checkpointErr = err
+			return err == nil && archive.Snapshot() != nil
+		})
+		cancelCheckpoint()
+		if err != nil {
+			t.Fatalf("manual seed checkpoint publication: %v (last archive read: %v)", err, checkpointErr)
 		}
 		if err := seed.Close(); err != nil {
 			t.Fatal(err)
