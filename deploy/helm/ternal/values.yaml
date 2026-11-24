@@ -70,7 +70,7 @@ data:
     # Only used in HA mode when operator.enabled is true.
     operatorPort: 9091
 
-# The legacy Operator path is not qualified with Rhiza v0.24. Its managed
+# The legacy Operator path is not qualified with the embedded Rhiza SDK. Its managed
 # v1alpha2 contract is not rendered by this chart; keep it disabled.
 operator:
   enabled: false

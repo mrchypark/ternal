@@ -6,8 +6,8 @@ case $(basename "$0") in
       version:) printf '%s\n' 'go version go1.27.4 mock' ;;
       env:GOMODCACHE|env:GOCACHE) printf '%s\n' "$CONTRACT_MOCK_DIR/cache" ;;
       mod:download)
-        [ "${3-}" = -json ] && [ "${4-}" = github.com/mrchypark/rhiza@v0.24.0 ] || exit 64
-        printf '%s\n' '{"Path":"github.com/mrchypark/rhiza","Version":"v0.24.0","Sum":"h1:Z7sW9W5CI1OtjCfpeeYHGv8gTP9+jSiaSZ4WnG4R2LQ=","GoModSum":"h1:1pZZ6wJXdVuPBeyCGhF1JZ7JT4Q74D3Mt0CflQ3DIro="}'
+        [ "${3-}" = -json ] && [ "${4-}" = github.com/mrchypark/rhiza@v0.27.4 ] || exit 64
+        printf '%s\n' '{"Path":"github.com/mrchypark/rhiza","Version":"v0.27.4","Sum":"h1:Ahu7+37UsIPRWIIb8kqkPnLeM42SS/1SG7C3ewFuJHw=","GoModSum":"h1:Xj44Kx/DKbSSMegwSLElrY4Lyho4kq2hmFLN8mk4jS4="}'
         exit 0
         ;;
       *) exit 64 ;;
@@ -86,7 +86,7 @@ write_valid_log() {
     "    rhiza_upgrade_test.go:99: Ternal fixture $2 passed: dependency=$3 Go=go1.27.4 cold=$4" \
     '--- PASS: TestRhizaUpgradeFixture (0.01s)' PASS > "$1"
 }
-for spec in seed:v0.21.2:false verify:v0.24.0:false verify:v0.24.0:true; do
+for spec in seed:v0.21.2:false verify:v0.27.4:false verify:v0.27.4:true; do
   phase=${spec%%:*}
   rest=${spec#*:}
   version=${rest%%:*}
@@ -98,7 +98,7 @@ printf '' > "$tmp/empty.log"
 printf '%s\n' 'testing: warning: no tests to run' PASS > "$tmp/no-test.log"
 printf '%s\n' '=== RUN   TestRhizaUpgradeFixture' '--- SKIP: TestRhizaUpgradeFixture (0.00s)' PASS > "$tmp/skip.log"
 write_valid_log "$tmp/wrong-phase.log" verify v0.21.2 false
-write_valid_log "$tmp/wrong-version.log" seed v0.24.0 false
+write_valid_log "$tmp/wrong-version.log" seed v0.27.4 false
 write_valid_log "$tmp/wrong-cold.log" seed v0.21.2 true
 printf '%s\n' '    rhiza_upgrade_test.go:99: Ternal fixture seed passed: dependency=v0.21.2 Go=go1.27.4 cold=false' '--- PASS: TestOtherFixture (0.01s)' PASS > "$tmp/wrong-name.log"
 for invalid in empty no-test skip wrong-phase wrong-version wrong-cold wrong-name; do

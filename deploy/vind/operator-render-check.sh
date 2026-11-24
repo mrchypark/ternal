@@ -32,12 +32,12 @@ ha() {
 		--set-string secrets.existingSecret=ternal-runtime "$@"
 }
 
-# The legacy operator path is unqualified; this is not a v0.24 managed-v1alpha2 integration.
+# The legacy operator path is unqualified; this is not a managed-v1alpha2 integration.
 if ha --set operator.enabled=true >"$tmp/operator.yaml" 2>"$tmp/operator.err"; then
 	echo 'operator.enabled=true was accepted for an unsupported contract' >&2
 	exit 1
 fi
-grep -F 'operator.enabled is unqualified with Rhiza v0.24' "$tmp/operator.err" >/dev/null
+grep -F 'operator.enabled is unqualified with the embedded Rhiza SDK' "$tmp/operator.err" >/dev/null
 
 # The default remains operator-free and renders no operator resources.
 ha >"$tmp/ha.yaml"

@@ -6,7 +6,7 @@
 {{- $data := default dict .Values.data -}}
 {{- $dataMode := default "standalone" $data.mode -}}
 {{- if (default dict .Values.operator).enabled -}}
-{{- fail "operator.enabled is unqualified with Rhiza v0.24; keep operator.enabled=false" -}}
+{{- fail "operator.enabled is unqualified with the embedded Rhiza SDK; keep operator.enabled=false" -}}
 {{- end -}}
 {{- if not (has $dataMode (list "standalone" "ha" "local")) -}}
 {{- fail "data.mode must be standalone, ha, or local" -}}
