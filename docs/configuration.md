@@ -259,7 +259,7 @@ The same account/effective URL is passed directly to main, init and the legacy
 non-Local anchor. The Helm chart never enables `AZURE_EMULATOR`; HTTP loopback
 path-style connection strings require explicit `TERNAL_OBJECT_STORE_AZURE_EMULATOR=1`
 in isolated local tests only. The chart rejects `operator.enabled=true` for all
-providers while its legacy Operator contract is unqualified for Rhiza v0.24;
+providers while its legacy Operator contract is unqualified for the embedded Rhiza SDK;
 this does not relax fencing.
 Managed/default identity is configuration wiring, not a real-cloud qualification.
 In particular, the minimal Local admission envelope does not admit arbitrary

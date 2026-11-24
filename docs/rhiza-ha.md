@@ -2,7 +2,7 @@
 
 ## Supported runtime
 
-Ternal uses Rhiza v0.24.0 and Go 1.27.4. `data.mode=ha` runs exactly three
+Ternal uses Rhiza v0.27.4 and Go 1.27.4. `data.mode=ha` runs exactly three
 embedded voters with `emptyDir` and a shared object store. It does not create a
 PVC. `before-ack` is required, so a successful write acknowledgement depends
 on archive persistence.
@@ -34,9 +34,9 @@ recovery. Unknown holder, trust, or archive continuity is a stop condition.
 
 ## Operator is unavailable
 
-Rhiza v0.24.0 provides a managed v1alpha2 Operator contract, but this chart
+Rhiza v0.27.4 provides a managed v1alpha2 Operator contract, but this chart
 does not render that contract. The historical v0.20-era Operator path is not
-qualified with the v0.24 SDK, so `operator.enabled=true` fails at render time.
+qualified with the embedded v0.27.4 SDK, so `operator.enabled=true` fails at render time.
 This is a fail-closed qualification boundary, not a claim that every legacy
 handler call is broken. The legacy image pin remains inert chart data.
 

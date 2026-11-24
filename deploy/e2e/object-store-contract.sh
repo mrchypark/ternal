@@ -5,7 +5,7 @@ exec 3>&2
 usage() { printf '%s\n' 'usage: object-store-contract.sh [--plan] s3|gcs|azure' '       object-store-contract.sh --check-fixture LOG seed|verify VERSION false|true' >&2; exit 2; }
 fixture_passed() {
   [ -f "$1" ] && [ -r "$1" ] || return 1
-  case "$2:$3:$4" in seed:v0.21.2:false|verify:v0.24.0:false|verify:v0.24.0:true) ;; *) return 1 ;; esac
+  case "$2:$3:$4" in seed:v0.21.2:false|verify:v0.27.4:false|verify:v0.27.4:true) ;; *) return 1 ;; esac
   passes=$(grep -Ec '^--- PASS: TestRhizaUpgradeFixture \([0-9]+([.][0-9]+)?s\)$' "$1" || true)
   [ "$passes" = 1 ] || return 1
   if grep -Eq '^--- (SKIP|FAIL): TestRhizaUpgradeFixture([ /]|$)|no tests to run' "$1"; then return 1; fi
@@ -42,12 +42,12 @@ fi
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 GO=${GO:-$(GOTOOLCHAIN=go1.27.4 go env GOROOT)/bin/go}
 [ "$("$GO" version | cut -d ' ' -f 3)" = go1.27.4 ] || { printf '%s\n' 'Go 1.27.4 is required' >&2; exit 1; }
-release_json=$(GOWORK=off "$GO" mod download -json github.com/mrchypark/rhiza@v0.24.0)
+release_json=$(GOWORK=off "$GO" mod download -json github.com/mrchypark/rhiza@v0.27.4)
 printf '%s\n' "$release_json" | jq -e \
   '.Path == "github.com/mrchypark/rhiza" and
-   .Version == "v0.24.0" and
-   .Sum == "h1:Z7sW9W5CI1OtjCfpeeYHGv8gTP9+jSiaSZ4WnG4R2LQ=" and
-   .GoModSum == "h1:1pZZ6wJXdVuPBeyCGhF1JZ7JT4Q74D3Mt0CflQ3DIro="' >/dev/null
+   .Version == "v0.27.4" and
+   .Sum == "h1:Ahu7+37UsIPRWIIb8kqkPnLeM42SS/1SG7C3ewFuJHw=" and
+   .GoModSum == "h1:Xj44Kx/DKbSSMegwSLElrY4Lyho4kq2hmFLN8mk4jS4="' >/dev/null
 modcache=$("$GO" env GOMODCACHE)
 gocache=$("$GO" env GOCACHE)
 owner="tc-$provider-$$-$(date +%s)"
@@ -202,7 +202,7 @@ go_env "$GO" version -m "$work/old.test" > "$work/old-build.txt"
 go_env "$GO" version -m "$work/new.test" > "$work/new-build.txt"
 grep -F 'go1.27.4' "$work/old-build.txt" "$work/new-build.txt"
 grep -Fx "$(printf '\tdep\tgithub.com/mrchypark/rhiza\tv0.21.2\th1:q1bAEo2pHpm7dBpSEGWZ4VjbQk++dtB62sB8BKu7dn0=')" "$work/old-build.txt"
-grep -Fx "$(printf '\tdep\tgithub.com/mrchypark/rhiza\tv0.24.0\th1:Z7sW9W5CI1OtjCfpeeYHGv8gTP9+jSiaSZ4WnG4R2LQ=')" "$work/new-build.txt"
+grep -Fx "$(printf '\tdep\tgithub.com/mrchypark/rhiza\tv0.27.4\th1:Ahu7+37UsIPRWIIb8kqkPnLeM42SS/1SG7C3ewFuJHw=')" "$work/new-build.txt"
 for mode in warm cold; do
   mkdir "$work/$mode"
   prefix="upgrade/$owner/$mode"
@@ -211,10 +211,10 @@ for mode in warm cold; do
   fixture_passed "$work/$mode-old.log" seed v0.21.2 false
   cold=0
   [ "$mode" != cold ] || cold=1
-  test_env env TERNAL_UPGRADE_PHASE=verify TERNAL_UPGRADE_EXPECTED_VERSION=v0.24.0 TERNAL_UPGRADE_ROOT="$work/$mode" TERNAL_UPGRADE_PREFIX="$prefix" TERNAL_UPGRADE_COLD="$cold" \
+  test_env env TERNAL_UPGRADE_PHASE=verify TERNAL_UPGRADE_EXPECTED_VERSION=v0.27.4 TERNAL_UPGRADE_ROOT="$work/$mode" TERNAL_UPGRADE_PREFIX="$prefix" TERNAL_UPGRADE_COLD="$cold" \
     "$work/new.test" -test.v -test.timeout=4m -test.run '^TestRhizaUpgradeFixture$' > "$work/$mode-new.log" 2>&1
   cold_bool=false
   [ "$cold" -ne 1 ] || cold_bool=true
-  fixture_passed "$work/$mode-new.log" verify v0.24.0 "$cold_bool"
-  printf 'provider=%s upgrade=v0.21.2-to-v0.24.0 mode=%s PASS\n' "$provider" "$mode"
+  fixture_passed "$work/$mode-new.log" verify v0.27.4 "$cold_bool"
+  printf 'provider=%s upgrade=v0.21.2-to-v0.27.4 mode=%s PASS\n' "$provider" "$mode"
 done

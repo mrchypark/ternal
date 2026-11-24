@@ -94,7 +94,7 @@ or actual Kubernetes admission execution. Those require their own evidence.
 ## True Local mode (seeded archive)
 
 Ternal's explicit `data.mode=local` / `TERNAL_DATA_LOCAL=1` path uses the
-published Rhiza v0.24.0 `Local:true` SDK. It has one writer, no voter listeners,
+published Rhiza v0.27.4 `Local:true` SDK. It has one writer, no voter listeners,
 no peer membership, and no Operator. The existing `standalone` mode still runs
 one embedded voter with `Local:false`; HA still runs three voters. None of
 their defaults change.
@@ -212,18 +212,18 @@ binding/configuration, not the old tip, snapshot, or prefix hash: the same write
 may legitimately have advanced history. The independently opened SDK and trust
 anchor remain responsible for validating current history and readiness.
 
-This follows the published [init-container guide](https://github.com/mrchypark/rhiza/blob/v0.24.0/docs/local-init-container-recovery.md).
+This follows the published [init-container guide](https://github.com/mrchypark/rhiza/blob/v0.27.4/docs/local-init-container-recovery.md).
 Ternal deliberately retains its stricter seeded-checkpoint and external-trust
 requirements; this command does not implement the SDK's empty-archive adoption.
 Read-only preflight downloads verification evidence before the SDK restore, so
 it is not a download-avoidance optimization or a typed staging handoff.
 
-Rhiza v0.24.0 requires Go 1.27.4 and keeps Local archive format 2. Ternal does
+Rhiza v0.27.4 requires Go 1.27.4 and keeps Local archive format 2. Ternal does
 not migrate, adopt, or downgrade archives. The Local path remains one writer,
 object-store backed, and fail-closed when holder, trust state, or archive
-continuity is uncertain. [Rhiza v0.24.0 release notes](https://github.com/mrchypark/rhiza/releases/tag/v0.24.0)
-cover managed HA membership changes, not a Ternal production-cloud recovery
-qualification.
+continuity is uncertain. [Rhiza v0.27.4 release notes](https://github.com/mrchypark/rhiza/releases/tag/v0.27.4)
+cover the bounded HTTP service failover client and diagnostics, not a Ternal
+production-cloud recovery qualification.
 
 ## Identity, rollback, and retention
 

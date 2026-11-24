@@ -29,7 +29,7 @@ func TestRhizaUpgradeFixture(t *testing.T) {
 		t.Fatal("unknown upgrade fixture phase")
 	}
 	wantVersion := os.Getenv("TERNAL_UPGRADE_EXPECTED_VERSION")
-	if wantVersion != "v0.21.2" && wantVersion != "v0.24.0" {
+	if wantVersion != "v0.21.2" && wantVersion != "v0.27.4" {
 		t.Fatal("fixture requires an exact supported dependency version")
 	}
 	build, ok := debug.ReadBuildInfo()
