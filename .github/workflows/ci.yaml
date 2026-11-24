@@ -89,6 +89,7 @@ jobs:
           python3 deploy/release/release-candidate-workflow.test.py
           sh deploy/release/qualify-native-archives.test.sh
           python3 deploy/release/tag-release-workflow.test.py
+          sh deploy/release/verify-candidate-capsule.test.sh
           sh deploy/vind/helm-render-check.sh
 
       - name: Verify scratch init command dispatch

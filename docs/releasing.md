@@ -19,12 +19,16 @@ those original roots and authorities; never clear evidence to bypass refusal.
 2. Build and qualify the Go CLI/agent candidate archives from that commit with
    the manual candidate workflow. It builds the pinned pigeons transport from
    its content-addressed fork source.
-3. Push the intended `v*` tag for that exact commit. The tag workflow rebuilds
-   the same native archives, publishes the API image, packages the Helm chart,
-   and creates a GitHub Release only after every asset is present and verified.
+3. Push the intended `v*` tag for that exact commit. The tag workflow does not
+   rebuild native archives: it downloads the newest successful candidate
+   capsule for that commit, re-verifies the capsule checksums and provenance
+   against the tag commit, and publishes exactly those bytes. It also publishes
+   the API image, packages the Helm chart, and creates a GitHub Release only
+   after every asset is present and verified.
 4. Record archive, image, chart, source commit, pigeons repository/source/lock,
    and generated frontend asset digests without recording credentials.
-5. Require the tag-built archives to match the qualified candidate bytes.
+5. Require the published archives to be the qualified candidate bytes. A
+   missing, stale, or mismatched capsule fails the release closed.
 6. Qualify the exact release bytes and tagged image digest in a disposable
    greenfield target with the
    provider, relay, SSH, rollback, and isolation gates in `verification.md`.
@@ -45,7 +49,7 @@ A passing `test` job alone does not permit merging. Tag release admission remain
 a mandatory sequential gate before image publication.
 
 The shared native workflow qualifies the actual extracted Linux/macOS archives
-before upload, for both manual candidates and tag releases. It checks isolated
+before upload, for manual candidates. It checks isolated
 unauthenticated `whoami` refusal, host-key fingerprint acceptance and rejection,
 and persistent pigeons endpoint identity. Linux agent archives additionally
 check device-key creation with mode 0600 and refusal to overwrite an existing

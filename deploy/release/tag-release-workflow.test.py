@@ -14,8 +14,16 @@ if args == ["--failure-fixture"]:
         "if recorded_chart != [chart_digest, chart.name]:",
         'if recorded_chart != [chart_digest, f"dist/release/{chart.name}"]:',
     )
+elif args == ["--publish-rebuild-fixture"]:
+    workflow = workflow.replace(
+        "cp staged/candidate/*.tar.gz staged/candidate/*.zip release/",
+        "cp staged/native/* release/",
+    )
 elif args not in ([], ["--valid-fixture"]):
-    raise SystemExit("usage: tag-release-workflow.test.py [--failure-fixture|--valid-fixture]")
+    raise SystemExit(
+        "usage: tag-release-workflow.test.py "
+        "[--failure-fixture|--valid-fixture|--publish-rebuild-fixture]"
+    )
 
 if not workflow.startswith('name: Tag release\n\non:\n  push:\n    tags: ["v*"]\n'):
     raise SystemExit("tag release workflow must only start from a v* tag push")
@@ -31,8 +39,10 @@ if not uses or any(
     for action in uses
 ):
     raise SystemExit("every external tag release action must use a full commit pin")
-if workflow.count(f"uses: {allowed_local}") != 1:
-    raise SystemExit("tag release must call the local native build exactly once")
+if workflow.count(f"uses: {allowed_local}") != 0:
+    raise SystemExit("tag release must publish the qualified candidate instead of rebuilding native assets")
+if "staged/native" in workflow:
+    raise SystemExit("tag release must not stage archives rebuilt from the tag")
 
 ci = pathlib.Path(".github/workflows/ci.yaml").read_text()
 local_job = re.search(r"(?ms)^  local-admission:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)", ci)
@@ -122,6 +132,7 @@ if re.search(r"(?m)^\s*(?:if|continue-on-error):", probe):
 
 for required in (
     "IMAGE_NAME: ghcr.io/mrchypark/ternal",
+    "actions: read",
     "packages: write",
     "id-token: write",
     "platforms: linux/amd64,linux/arm64",
@@ -140,7 +151,12 @@ for required in (
     "cosign verify",
     "docker buildx imagetools create",
     "contents: write",
-    "needs:\n      - native\n      - release",
+    "needs:\n      - release",
+    "--workflow release-candidate.yaml",
+    "name: ternal-go-candidate-",
+    "deploy/release/verify-candidate-capsule.sh",
+    "cp staged/candidate/*.tar.gz staged/candidate/*.zip release/",
+    '"candidate_run_id": os.environ["CANDIDATE_RUN_ID"]',
     "release-provenance.json",
     '"pigeons_repository": build["PIGEONS_REPOSITORY"]',
     '"pigeons_cargo_lock_sha256": build["PIGEONS_CARGO_LOCK_SHA256"]',
