@@ -19,7 +19,7 @@ body { margin: 0; min-width: 320px; background: var(--color-background); color: 
 .portal-workspace-header { display: flex; justify-content: space-between; align-items: end; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }
 .portal-workspace h1 { font-size: clamp(2rem, 3vw, 3rem); font-weight: 600; letter-spacing: -.04em; margin: .5rem 0; }
 .portal-tables { display: grid; gap: 2rem; }
-.portal-table { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); padding: 1rem; }
+.portal-table { min-width: 0; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); padding: 1rem; }
 .portal-count { color: var(--color-muted-foreground); font-size: .75rem; text-align: right; }
 .portal-table table { min-width: 44rem; width: 100%; }
 .portal-table caption { text-align: left; font-size: 1.1rem; font-weight: 600; padding-bottom: 1rem; color: var(--color-foreground); }

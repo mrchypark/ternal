@@ -118,7 +118,6 @@ func (s *Server) view(r *http.Request, identity *auth.AuthContext, view string) 
 		}
 		return []tableData{hostsTable(items)}, "Host inventory", "Registered endpoints and just-in-time SSH access.", err
 	case "keys":
-		identity := auth.GetAuth(r)
 		items, err := s.store.ListSSHKeys(r.Context(), identity.User.PrincipalID())
 		return []tableData{keysTable(items)}, "SSH keys", "User credentials authorized for access grants.", err
 	case "policies":
