@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	ui "github.com/mrchypark/ely-htmx"
+	ui "github.com/mrchypark/elysdui/ui/gohtmx"
 
 	"github.com/mrchypark/ternal/internal/auth"
 	"github.com/mrchypark/ternal/internal/store"

@@ -25,7 +25,7 @@ body { margin: 0; min-width: 320px; background: var(--color-background); color: 
 .portal-table caption { text-align: left; font-size: 1.1rem; font-weight: 600; padding-bottom: 1rem; color: var(--color-foreground); }
 .portal-table td { overflow-wrap: anywhere; }
 .portal-skip { position: absolute; left: -10000px; }
-.portal-skip:focus { position: fixed; left: 1rem; top: 1rem; z-index: 50; padding: 1rem; background: var(--color-background); }
+.portal-skip:focus-visible { position: fixed; left: 1rem; top: 1rem; z-index: 50; padding: 1rem; background: var(--color-background); }
 @media (max-width: 1100px) {
  .portal-shell { grid-template-columns: minmax(0, 1fr); }
  .portal-sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
@@ -40,3 +40,4 @@ body { margin: 0; min-width: 320px; background: var(--color-background); color: 
 }
 @media (pointer: coarse) { [data-slot="button"] { min-height: 44px; } }
 @media (prefers-reduced-motion: reduce) { *, ::before, ::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+#portal-error { margin: 1.25rem; padding: 1rem; border: 1px solid var(--color-destructive); border-radius: var(--radius-md); }

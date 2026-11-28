@@ -7,7 +7,7 @@ users short-lived, policy-checked SSH access without exposing device SSH ports
 to the public internet.
 
 The server, CLI, device agent, and web UI are written in Go. The web UI uses Go
-`html/template` and bundled [Ely HTMX](https://github.com/mrchypark/ely-htmx)
+`html/template` and bundled [elysdui](https://github.com/mrchypark/elysdui)
 assets. It has no Node.js runtime or client-side application framework.
 
 > Ternal is under active development. The current code uses a greenfield data
