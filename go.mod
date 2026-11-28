@@ -8,11 +8,11 @@ require (
 	github.com/go-chi/cors v1.2.2
 	github.com/go-kit/log v0.2.1
 	github.com/google/uuid v1.6.0
+	github.com/mrchypark/elysdui v0.4.12
 	github.com/mrchypark/rhiza v0.27.4
 	github.com/thanos-io/objstore v0.0.0-20260817070452-e42d91c337ee
 	golang.org/x/crypto v0.58.0
 	golang.org/x/oauth2 v0.36.0
-	maragu.dev/gomponents v1.3.0
 )
 
 require (
@@ -32,6 +32,7 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.33.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.53.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.53.0 // indirect
+	github.com/andybalholm/brotli v1.2.6 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.30.4 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.27.30 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.29 // indirect
@@ -46,6 +47,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.30.5 // indirect
 	github.com/aws/smithy-go v1.20.4 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/boombuler/barcode v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -66,7 +68,7 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.11 // indirect
 	github.com/googleapis/gax-go/v2 v2.17.0 // indirect
-	github.com/klauspost/compress v1.20.2 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
@@ -90,6 +92,7 @@ require (
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.8.1 // indirect
 	github.com/tinylib/msgp v1.3.0 // indirect
+	github.com/yuin/goldmark v1.8.6 // indirect
 	go.etcd.io/bbolt v1.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.44.0 // indirect
